@@ -1,3 +1,4 @@
+import os from "os";
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import { getTableColumns, hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
@@ -171,6 +172,20 @@ router.get("/summary", async (req, res) => {
       console.warn("dashboard summary whatsapp status", e);
     }
 
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem > freeMem ? totalMem - freeMem : 0;
+    const host = {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      uptime_seconds: Math.floor(os.uptime()),
+      load_avg_1m: os.loadavg()[0] ?? 0,
+      cpu_count: os.cpus().length,
+      memory_total_bytes: totalMem,
+      memory_used_bytes: usedMem,
+      memory_used_percent: totalMem > 0 ? Math.round((usedMem / totalMem) * 1000) / 10 : 0,
+    };
+
     res.json({
       active_subscribers,
       expired_subscribers,
@@ -179,6 +194,7 @@ router.get("/summary", async (req, res) => {
       nas,
       backup,
       whatsapp,
+      host,
     });
   } catch (e) {
     console.error("dashboard /summary fatal", e);
@@ -208,6 +224,16 @@ router.get("/summary", async (req, res) => {
         auto_send_new: true,
         last_error: null,
         last_check_at: null,
+      },
+      host: {
+        hostname: "—",
+        platform: "—",
+        uptime_seconds: 0,
+        load_avg_1m: 0,
+        cpu_count: 0,
+        memory_total_bytes: 0,
+        memory_used_bytes: 0,
+        memory_used_percent: 0,
       },
     });
   }

@@ -13,6 +13,30 @@ import { cn } from "../lib/utils";
 type Pkg = Record<string, unknown>;
 const currencies = ["USD", "SYP"] as const;
 
+function quotaGbToBytesString(gbStr: string): string {
+  const n = parseFloat(String(gbStr).replace(",", "."));
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  const bytes = Math.round(n * 1024 ** 3);
+  return String(bytes);
+}
+
+function bytesToQuotaGbField(bytes: unknown): string {
+  const raw = String(bytes ?? "0").trim();
+  if (!raw || raw === "0") return "0";
+  try {
+    const b = BigInt(raw);
+    if (b <= 0n) return "0";
+    const gb = Number(b) / 1024 ** 3;
+    if (!Number.isFinite(gb)) return "0";
+    return gb >= 10 ? gb.toFixed(1) : gb.toFixed(2);
+  } catch {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return "0";
+    const gb = n / 1024 ** 3;
+    return gb >= 10 ? gb.toFixed(1) : gb.toFixed(2);
+  }
+}
+
 export function PackagesPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -28,7 +52,7 @@ export function PackagesPage() {
 
   const [name, setName] = useState("");
   const [rate, setRate] = useState("");
-  const [quota, setQuota] = useState("0");
+  const [quotaGb, setQuotaGb] = useState("0");
   const [price, setPrice] = useState("0");
   const [currency, setCurrency] = useState("USD");
   const [billingDays, setBillingDays] = useState("30");
@@ -59,7 +83,7 @@ export function PackagesPage() {
     setEditId(null);
     setName("");
     setRate("");
-    setQuota("0");
+    setQuotaGb("0");
     setPrice("0");
     setCurrency("USD");
     setBillingDays("30");
@@ -73,7 +97,7 @@ export function PackagesPage() {
     setEditId(String(p.id));
     setName(String(p.name ?? ""));
     setRate(String(p.mikrotik_rate_limit ?? ""));
-    setQuota(String(p.quota_total_bytes ?? "0"));
+    setQuotaGb(bytesToQuotaGbField(p.quota_total_bytes));
     setPrice(String(p.price ?? "0"));
     setCurrency(String(p.currency ?? "USD"));
     setBillingDays(String(p.billing_period_days ?? "30"));
@@ -94,7 +118,7 @@ export function PackagesPage() {
           body: JSON.stringify({
             name,
             mikrotik_rate_limit: rate || null,
-            quota_total_bytes: quota,
+            quota_total_bytes: quotaGbToBytesString(quotaGb),
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
@@ -115,7 +139,7 @@ export function PackagesPage() {
           body: JSON.stringify({
             name,
             mikrotik_rate_limit: rate || null,
-            quota_total_bytes: quota,
+            quota_total_bytes: quotaGbToBytesString(quotaGb),
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
@@ -185,8 +209,12 @@ export function PackagesPage() {
                 <dd className="text-end font-medium">{String(p.mikrotik_rate_limit ?? "—")}</dd>
               </div>
               <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
-                <dt className="opacity-60">{t("packages.quotaBytes")}</dt>
-                <dd className="text-end font-mono">{String(p.quota_total_bytes)}</dd>
+                <dt className="opacity-60">{t("packages.quotaGb")}</dt>
+                <dd className="text-end font-mono">
+                  {String(p.quota_total_bytes ?? "0") === "0"
+                    ? t("packages.unlimited")
+                    : `${bytesToQuotaGbField(p.quota_total_bytes)} GB`}
+                </dd>
               </div>
               <div className="flex justify-between gap-2">
                 <dt className="opacity-60">{t("packages.price")}</dt>
@@ -217,9 +245,15 @@ export function PackagesPage() {
           <TextField label={t("packages.name")} value={name} onChange={(e) => setName(e.target.value)} required />
           <TextField label={t("packages.rateLimit")} value={rate} onChange={(e) => setRate(e.target.value)} />
           <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label={t("packages.quotaBytes")} value={quota} onChange={(e) => setQuota(e.target.value)} />
+            <TextField
+              label={t("packages.quotaGb")}
+              value={quotaGb}
+              onChange={(e) => setQuotaGb(e.target.value)}
+              placeholder="0"
+            />
             <TextField label={t("packages.pool")} value={framedPool} onChange={(e) => setFramedPool(e.target.value)} />
           </div>
+          <p className="text-xs opacity-60">{t("packages.quotaGbHint")}</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label={t("packages.price")} value={price} onChange={(e) => setPrice(e.target.value)} />
             <SelectField label={t("packages.currency")} value={currency} onChange={(e) => setCurrency(e.target.value)}>

@@ -13,7 +13,12 @@ import { Events } from "../events/eventTypes.js";
 import { defaultExpirationNoonFromNow, extendSubscriptionByDaysNoon } from "../lib/billing.js";
 import { pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
 import { AccountingService } from "../services/accounting.service.js";
-import { chargeManagerWallet, ManagerBalanceError } from "../services/manager-wallet.service.js";
+import {
+  chargeManagerWallet,
+  chargeManagerWalletWithConnection,
+  ManagerBalanceError,
+} from "../services/manager-wallet.service.js";
+import { withTransaction } from "../db/transaction.js";
 import { writeAuditLog } from "../services/audit-log.service.js";
 import type { RowDataPacket } from "mysql2";
 import { resolveSubscriberState } from "../lib/subscriber-state.js";
@@ -101,6 +106,7 @@ const subscribersQuerySchema = z.object({
       "status",
       "package_name",
       "nas_network",
+      "region_name",
       "created_by",
       "created_at",
       "start_date",
@@ -135,12 +141,15 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const hasStaffTbl = await hasTable(pool, "staff_users");
     const hasInvoicesTbl = await hasTable(pool, "invoices");
     const hasQuotaStateTbl = await hasTable(pool, "user_quota_state");
+    const hasRadacctTbl = await hasTable(pool, "radacct");
+    const hasRegionsTbl = await hasTable(pool, "subscriber_regions");
     const pkgCols = hasPkgTbl ? await getTableColumns(pool, "packages") : new Set<string>();
     const nasCols = hasNasTbl ? await getTableColumns(pool, "nas_servers") : new Set<string>();
     const staffCols = hasStaffTbl ? await getTableColumns(pool, "staff_users") : new Set<string>();
     const joinPkg = hasPkgTbl && subCols.has("package_id") && pkgCols.has("id");
     const joinNas = hasNasTbl && subCols.has("nas_server_id") && nasCols.has("id");
     const joinCreator = hasStaffTbl && subCols.has("created_by") && staffCols.has("id");
+    const joinReg = hasRegionsTbl && subCols.has("region_id");
     const safeSubCols = pickExistingColumns(subCols, [
       "id",
       "tenant_id",
@@ -157,6 +166,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       "nickname",
       "phone",
       "address",
+      "region_id",
       "notes",
       "ip_address",
       "mac_address",
@@ -177,6 +187,18 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       selectParts.push(creatorExpr);
       selectParts.push(`su.email AS creator_email`);
     }
+    if (hasRadacctTbl && subCols.has("username")) {
+      selectParts.push(
+        `CASE WHEN EXISTS (
+          SELECT 1 FROM radacct r_online
+          WHERE r_online.username = s.username AND r_online.acctstoptime IS NULL
+          LIMIT 1
+        ) THEN 1 ELSE 0 END AS is_online`
+      );
+    }
+    if (joinReg) {
+      selectParts.push(`reg.name AS region_name`);
+    }
     if (selectParts.length === 0) {
       res.json({ items: [] });
       return;
@@ -185,6 +207,11 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     if (joinPkg) joins.push(`LEFT JOIN packages p ON p.id = s.package_id`);
     if (joinNas) joins.push(`LEFT JOIN nas_servers n ON n.id = s.nas_server_id`);
     if (joinCreator) joins.push(`LEFT JOIN staff_users su ON su.id = s.created_by AND su.tenant_id = s.tenant_id`);
+    if (joinReg) {
+      joins.push(
+        `LEFT JOIN subscriber_regions reg ON reg.id = s.region_id AND reg.tenant_id = s.tenant_id`
+      );
+    }
     if (hasInvoicesTbl) {
       joins.push(
         `LEFT JOIN (
@@ -218,6 +245,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       if (joinNas && nasCols.has("ip")) searchParts.push(`n.ip LIKE ?`);
       if (joinCreator && staffCols.has("name")) searchParts.push(`su.name LIKE ?`);
       if (joinCreator && staffCols.has("email")) searchParts.push(`su.email LIKE ?`);
+      if (joinReg) searchParts.push(`reg.name LIKE ?`);
       if (searchParts.length) {
         where.push(`(${searchParts.join(" OR ")})`);
         for (let i = 0; i < searchParts.length; i++) params.push(like);
@@ -236,6 +264,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       status: subCols.has("status") ? "s.status" : "s.username",
       package_name: joinPkg && pkgCols.has("name") ? "p.name" : "s.username",
       nas_network: joinNas && nasCols.has("name") ? "n.name" : joinNas && nasCols.has("ip") ? "n.ip" : "s.username",
+      region_name: joinReg ? "reg.name" : "s.username",
       created_by: joinCreator && staffCols.has("name") ? "su.name" : joinCreator && staffCols.has("email") ? "su.email" : "s.username",
       created_at: subCols.has("created_at") ? "s.created_at" : "s.username",
       start_date: subCols.has("start_date") ? "s.start_date" : "s.username",
@@ -309,6 +338,7 @@ const createBody = z.object({
   mac_address: z.string().optional(),
   pool: z.string().optional(),
   nas_server_id: z.string().uuid().nullable().optional(),
+  region_id: z.string().uuid().nullable().optional(),
 });
 
 const createSubscriberHandler = async (req: Request, res: Response) => {
@@ -333,6 +363,7 @@ const createSubscriberHandler = async (req: Request, res: Response) => {
     mac_address,
     pool: poolName,
     nas_server_id,
+    region_id,
   } = parsed.data;
   const expiration_date = parsed.data.expiration_date
     ? new Date(parsed.data.expiration_date)
@@ -342,6 +373,18 @@ const createSubscriberHandler = async (req: Request, res: Response) => {
   if (!pkg) {
     res.status(400).json({ error: "invalid_package" });
     return;
+  }
+  if (region_id) {
+    if (await hasTable(pool, "subscriber_regions")) {
+      const [reg] = await pool.query<RowDataPacket[]>(
+        `SELECT id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [region_id, tenant]
+      );
+      if (!reg[0]) {
+        res.status(400).json({ error: "invalid_region" });
+        return;
+      }
+    }
   }
   await radius.createRadiusUser({
     username,
@@ -376,6 +419,7 @@ const createSubscriberHandler = async (req: Request, res: Response) => {
   push("nickname", nickname ?? null);
   push("phone", phone ?? null);
   push("address", address ?? null);
+  push("region_id", region_id ?? null);
   push("notes", notes ?? null);
   push("ip_address", ip_address ?? null);
   push("mac_address", mac_address ?? null);
@@ -742,6 +786,245 @@ router.post(
   }
 );
 
+router.post(
+  "/:id/current-package-invoice",
+  routePolicy({
+    allow: ["admin", "manager", "accountant"],
+    managerPermission: "manage_invoices",
+    allowAccountantWrite: true,
+  }),
+  async (req, res) => {
+    const tenant = req.auth!.tenantId;
+    const subscriberId = req.params.id;
+    if (!(await hasTable(pool, "invoices"))) {
+      res.status(503).json({ error: "invoices_table_missing" });
+      return;
+    }
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT s.package_id, p.price, p.currency, p.billing_period_days
+       FROM subscribers s
+       LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
+       WHERE s.id = ? AND s.tenant_id = ?
+       LIMIT 1`,
+      [subscriberId, tenant]
+    );
+    const sub = rows[0];
+    if (!sub) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const packageId = sub.package_id ? String(sub.package_id) : "";
+    const amount = Number(sub.price ?? 0);
+    const currency = String(sub.currency ?? "USD").toUpperCase() === "SYP" ? "SYP" : "USD";
+    const billingDays = Number(sub.billing_period_days ?? 30);
+    if (!packageId || amount <= 0) {
+      res.status(400).json({ error: "no_package_price" });
+      return;
+    }
+    const [open] = await pool.query<RowDataPacket[]>(
+      `SELECT id, invoice_no, amount, currency, status
+       FROM invoices
+       WHERE tenant_id = ? AND subscriber_id = ? AND status IN ('draft','sent')
+       ORDER BY issue_date DESC, created_at DESC
+       LIMIT 1`,
+      [tenant, subscriberId]
+    );
+    if (open[0]) {
+      res.json({
+        invoice_id: String(open[0].id),
+        invoice_no: String(open[0].invoice_no ?? ""),
+        amount: Number(open[0].amount ?? 0),
+        currency: String(open[0].currency ?? currency),
+        created: false,
+      });
+      return;
+    }
+    const id = randomUUID();
+    const invNo = `PKG-${Date.now()}`;
+    const today = new Date().toISOString().slice(0, 10);
+    await pool.execute(
+      `INSERT INTO invoices (id, tenant_id, subscriber_id, period, invoice_no, issue_date, due_date,
+        amount, currency, status, meta)
+       VALUES (?, ?, ?, 'monthly', ?, ?, ?, ?, ?, 'sent',
+        JSON_OBJECT('billing_days', ?, 'package_id', ?, 'source', 'package'))`,
+      [id, tenant, subscriberId, invNo, today, today, amount, currency, billingDays, packageId]
+    );
+    res.status(201).json({
+      invoice_id: id,
+      invoice_no: invNo,
+      amount,
+      currency,
+      created: true,
+    });
+  }
+);
+
+router.post(
+  "/:id/record-package-payment",
+  routePolicy({
+    allow: ["admin", "manager", "accountant"],
+    managerPermission: "manage_invoices",
+    allowAccountantWrite: true,
+  }),
+  async (req, res) => {
+    const tenant = req.auth!.tenantId;
+    const subscriberId = req.params.id;
+    if (!(await hasTable(pool, "invoices")) || !(await hasTable(pool, "payments"))) {
+      res.status(503).json({ error: "billing_tables_missing" });
+      return;
+    }
+    try {
+      const tx = await withTransaction(async (conn) => {
+        const [subRows] = await conn.query<RowDataPacket[]>(
+          `SELECT s.package_id, p.price, p.currency, p.billing_period_days, s.expiration_date
+           FROM subscribers s
+           LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
+           WHERE s.id = ? AND s.tenant_id = ?
+           LIMIT 1 FOR UPDATE`,
+          [subscriberId, tenant]
+        );
+        const sub = subRows[0];
+        if (!sub) return { kind: "not_found" as const };
+        const packageId = sub.package_id ? String(sub.package_id) : "";
+        let amount = Number(sub.price ?? 0);
+        let currency = String(sub.currency ?? "USD").toUpperCase() === "SYP" ? "SYP" : "USD";
+        const billingDays = Number(sub.billing_period_days ?? 30);
+        if (!packageId || amount <= 0) return { kind: "no_package_price" as const };
+
+        const [openRows] = await conn.query<RowDataPacket[]>(
+          `SELECT id FROM invoices
+           WHERE tenant_id = ? AND subscriber_id = ? AND status IN ('draft','sent')
+           ORDER BY issue_date DESC, created_at DESC
+           LIMIT 1 FOR UPDATE`,
+          [tenant, subscriberId]
+        );
+        let invoiceId: string;
+        if (openRows[0]) {
+          invoiceId = String(openRows[0].id);
+        } else {
+          invoiceId = randomUUID();
+          const invNo = `PKG-${Date.now()}`;
+          const today = new Date().toISOString().slice(0, 10);
+          await conn.execute(
+            `INSERT INTO invoices (id, tenant_id, subscriber_id, period, invoice_no, issue_date, due_date,
+              amount, currency, status, meta)
+             VALUES (?, ?, ?, 'monthly', ?, ?, ?, ?, ?, 'sent',
+              JSON_OBJECT('billing_days', ?, 'package_id', ?, 'source', 'package'))`,
+            [
+              invoiceId,
+              tenant,
+              subscriberId,
+              invNo,
+              today,
+              today,
+              amount,
+              currency,
+              billingDays,
+              packageId,
+            ]
+          );
+        }
+
+        const [invRows] = await conn.query<RowDataPacket[]>(
+          `SELECT * FROM invoices WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
+          [invoiceId, tenant]
+        );
+        const inv = invRows[0];
+        if (!inv) return { kind: "not_found" as const };
+        if (String(inv.status ?? "").toLowerCase() === "paid") return { kind: "already_paid" as const };
+
+        amount = Number(inv.amount ?? 0);
+        currency = String(inv.currency ?? "USD");
+        const invoiceNo = String(inv.invoice_no ?? "");
+
+        if (req.auth!.role === "manager") {
+          await chargeManagerWalletWithConnection(conn, {
+            tenantId: tenant,
+            staffId: req.auth!.sub,
+            amount,
+            currency,
+            reason: "invoice_mark_paid",
+            subscriberId,
+            note: invoiceNo,
+          });
+        }
+
+        const paidAt = new Date();
+        await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [
+          invoiceId,
+          tenant,
+        ]);
+        const payId = randomUUID();
+        await conn.execute(
+          `INSERT INTO payments (id, tenant_id, invoice_id, amount, method, paid_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [payId, tenant, invoiceId, amount, "manual", paidAt]
+        );
+
+        let metaDays = billingDays;
+        try {
+          const parsedMeta = typeof inv.meta === "string" ? JSON.parse(inv.meta) : inv.meta;
+          metaDays = Number((parsedMeta as { billing_days?: unknown } | null)?.billing_days ?? billingDays);
+        } catch {
+          metaDays = billingDays;
+        }
+        const current = new Date(sub.expiration_date as string);
+        const nextExpiration = extendSubscriptionByDaysNoon(current, metaDays);
+        await conn.execute(
+          `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
+          [nextExpiration, subscriberId, tenant]
+        );
+
+        return {
+          kind: "ok" as const,
+          paymentId: payId,
+          invoiceId,
+          amount,
+          currency,
+          invoiceNo,
+          paidAt: paidAt.toISOString(),
+          nextExpiration: nextExpiration.toISOString(),
+        };
+      });
+
+      if (tx.kind === "not_found") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (tx.kind === "no_package_price") {
+        res.status(400).json({ error: "no_package_price" });
+        return;
+      }
+      if (tx.kind === "already_paid") {
+        res.status(409).json({ error: "already_paid" });
+        return;
+      }
+      try {
+        await pushRadiusForSubscriber(pool, radius, tenant, subscriberId);
+      } catch (error) {
+        console.warn("push radius after package payment failed", error);
+      }
+      await emitEvent(Events.INVOICE_PAID, {
+        tenantId: tenant,
+        invoiceId: tx.invoiceId,
+        subscriberId,
+        invoiceNo: tx.invoiceNo,
+        amount: tx.amount,
+        currency: tx.currency,
+        paidAt: tx.paidAt,
+      });
+      res.json({ ok: true, payment_id: tx.paymentId, invoice_id: tx.invoiceId });
+    } catch (error) {
+      if (error instanceof ManagerBalanceError && error.code === "insufficient_balance") {
+        res.status(400).json({ error: "insufficient_manager_balance" });
+        return;
+      }
+      console.error("record-package-payment", error);
+      res.status(500).json({ error: "package_payment_failed" });
+    }
+  }
+);
+
 const patchBody = z.object({
   nas_server_id: z.string().uuid().nullable().optional(),
   pool: z.string().nullable().optional(),
@@ -752,6 +1035,7 @@ const patchBody = z.object({
   nickname: z.string().max(128).nullable().optional(),
   phone: z.string().max(32).nullable().optional(),
   address: z.string().max(255).nullable().optional(),
+  region_id: z.string().uuid().nullable().optional(),
   package_id: z.string().uuid().optional(),
 });
 
@@ -813,6 +1097,20 @@ router.patch(
     if (b.address !== undefined && subCols.has("address")) {
       sets.push("address = ?");
       vals.push(b.address);
+    }
+    if (b.region_id !== undefined && subCols.has("region_id")) {
+      if (b.region_id) {
+        const [reg] = await pool.query<RowDataPacket[]>(
+          `SELECT id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
+          [b.region_id, tenant]
+        );
+        if (!reg[0]) {
+          res.status(400).json({ error: "invalid_region" });
+          return;
+        }
+      }
+      sets.push("region_id = ?");
+      vals.push(b.region_id);
     }
     if (b.package_id !== undefined && subCols.has("package_id")) {
       sets.push("package_id = ?");

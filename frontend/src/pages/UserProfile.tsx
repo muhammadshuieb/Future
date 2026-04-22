@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, X, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
@@ -10,11 +10,14 @@ import { useAuth } from "../context/AuthContext";
 import { canManageOperations } from "../lib/permissions";
 import { cn } from "../lib/utils";
 
+type RegionOpt = { id: string; name: string; parent_id?: string | null };
+
 type Row = {
   id: string;
   username: string;
   status?: string | null;
   package_id?: string | null;
+  region_id?: string | null;
   package_name?: string | null;
   nas_server_id?: string | null;
   pool?: string | null;
@@ -49,6 +52,26 @@ export function UserProfilePage() {
   const canPayInvoice = user?.role === "admin" || user?.role === "manager" || user?.role === "accountant";
   const canCreateInvoice = canPayInvoice;
 
+  const regionSelectOptions = useMemo(() => {
+    const byParent = new Map<string | null, RegionOpt[]>();
+    for (const r of regions) {
+      const p = r.parent_id ?? null;
+      if (!byParent.has(p)) byParent.set(p, []);
+      byParent.get(p)!.push(r);
+    }
+    for (const list of byParent.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    const out: { id: string; label: string }[] = [];
+    function walk(parent: string | null, depth: number) {
+      for (const r of byParent.get(parent) ?? []) {
+        const pad = depth > 0 ? `${"— ".repeat(depth)}` : "";
+        out.push({ id: r.id, label: `${pad}${r.name}` });
+        walk(r.id, depth + 1);
+      }
+    }
+    walk(null, 0);
+    return out;
+  }, [regions]);
+
   const [row, setRow] = useState<Row | null>(null);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [nasList, setNasList] = useState<Nas[]>([]);
@@ -72,16 +95,25 @@ export function UserProfilePage() {
   const [nickname, setNickname] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
+  const [regionId, setRegionId] = useState("");
+  const [regions, setRegions] = useState<RegionOpt[]>([]);
 
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     try {
-      const [rSub, rPkg, rNas] = await Promise.all([
+      const [rSub, rPkg, rNas, rReg] = await Promise.all([
         apiFetch("/api/subscribers/"),
         apiFetch("/api/packages/"),
         apiFetch("/api/nas/"),
+        apiFetch("/api/regions/"),
       ]);
+      if (rReg.ok) {
+        const jr = (await rReg.json()) as { items: RegionOpt[] };
+        setRegions(jr.items ?? []);
+      } else {
+        setRegions([]);
+      }
       const pkgItems = rPkg.ok ? ((await rPkg.json()) as { items: Pkg[] }).items : [];
       setPackages(pkgItems);
       if (rNas.ok) {
@@ -103,6 +135,7 @@ export function UserProfilePage() {
           setNickname(String(found.nickname ?? ""));
           setPhone(String(found.phone ?? ""));
           setAddress(String(found.address ?? ""));
+          setRegionId(found.region_id ? String(found.region_id) : "");
           const pkg = pkgItems.find((x) => x.id === String(found.package_id ?? ""));
           if (pkg) {
             const p = Number(pkg.price ?? 0);
@@ -149,6 +182,7 @@ export function UserProfilePage() {
           nickname: nickname || null,
           phone: phone || null,
           address: address || null,
+          region_id: regionId || null,
         }),
       });
       if (r.ok) {
@@ -317,6 +351,19 @@ export function UserProfilePage() {
             <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
           </div>
           <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
+          <SelectField
+            label={`${t("users.region")} (${t("common.optional")})`}
+            value={regionId}
+            onChange={(e) => setRegionId(e.target.value)}
+            disabled={!canManage}
+          >
+            <option value="">—</option>
+            {regionSelectOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.label}
+              </option>
+            ))}
+          </SelectField>
           {canManage ? (
             <div className="flex flex-wrap gap-2 pt-2">
               <Button type="submit" disabled={saving}>

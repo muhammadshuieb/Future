@@ -59,6 +59,16 @@ type Summary = {
     last_error: string | null;
     last_check_at: string | null;
   };
+  host?: {
+    hostname: string;
+    platform: string;
+    uptime_seconds: number;
+    load_avg_1m: number;
+    cpu_count: number;
+    memory_total_bytes: number;
+    memory_used_bytes: number;
+    memory_used_percent: number;
+  };
 };
 
 type Tone = "blue" | "amber" | "green" | "violet" | "emerald" | "rose" | "cyan" | "indigo";
@@ -111,6 +121,16 @@ export function DashboardPage() {
     };
     return () => ws.close();
   }, []);
+
+  const fmtUptime = (sec: number) => {
+    if (!sec || sec < 0) return "—";
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  };
 
   const fmtBytes = (n: number) => {
     if (!n) return "0 B";
@@ -304,6 +324,47 @@ export function DashboardPage() {
             delay={3}
           />
         </div>
+      )}
+
+      {summary?.host && (
+        <Card>
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-500">
+              <Server className="h-5 w-5" />
+            </div>
+            <h2 className="font-semibold">{t("dash.hostTitle")}</h2>
+          </div>
+          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostHostname")}</dt>
+              <dd className="font-mono text-xs font-medium">{summary.host.hostname}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostPlatform")}</dt>
+              <dd className="font-mono text-xs">{summary.host.platform}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostUptime")}</dt>
+              <dd className="font-medium">{fmtUptime(summary.host.uptime_seconds)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostLoad")}</dt>
+              <dd className="font-mono text-xs">{summary.host.load_avg_1m.toFixed(2)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostCpus")}</dt>
+              <dd>{summary.host.cpu_count}</dd>
+            </div>
+            <div>
+              <dt className="text-xs opacity-60">{t("dash.hostRam")}</dt>
+              <dd>
+                {summary.host.memory_used_percent.toFixed(1)}% · {fmtBytes(summary.host.memory_used_bytes)} /{" "}
+                {fmtBytes(summary.host.memory_total_bytes)}
+              </dd>
+            </div>
+          </dl>
+          <p className="mt-3 text-xs opacity-50">{t("dash.hostFootnote")}</p>
+        </Card>
       )}
 
       {summary && (

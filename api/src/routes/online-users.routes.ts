@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { hasTable } from "../db/schemaGuards.js";
@@ -7,10 +8,67 @@ import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js"
 import { AccountingService } from "../services/accounting.service.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
 import { enqueueCoaDisconnect, waitForJobResult } from "../services/task-queue.service.js";
-import type { DisconnectResult } from "../services/coa.service.js";
+import { CoaService, type DisconnectResult } from "../services/coa.service.js";
 
 const router = Router();
 const accounting = new AccountingService(pool);
+const coa = new CoaService(pool);
+
+type DisconnectOutcome =
+  | { status: "not_found" }
+  | { status: "failed"; result: DisconnectResult }
+  | { status: "ok"; result: DisconnectResult };
+
+async function disconnectSessionByRadacctId(tenantId: string, radacctid: string): Promise<DisconnectOutcome> {
+  const id = String(radacctid ?? "").trim();
+  if (!id) return { status: "not_found" };
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT username, nasipaddress, acctsessionid
+     FROM radacct
+     WHERE radacctid = ? AND acctstoptime IS NULL
+     LIMIT 1`,
+    [id]
+  );
+  const row = rows[0];
+  if (!row) {
+    return { status: "not_found" };
+  }
+
+  const username = String(row.username ?? "");
+  if (await hasTable(pool, "subscribers")) {
+    const [owned] = await pool.query<RowDataPacket[]>(
+      `SELECT id FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
+      [tenantId, username]
+    );
+    if (!owned[0]) {
+      return { status: "not_found" };
+    }
+  }
+
+  const nasIp = String(row.nasipaddress ?? "");
+  const acctSessionId = row.acctsessionid ? String(row.acctsessionid) : undefined;
+
+  const job = await enqueueCoaDisconnect({
+    tenantId,
+    username,
+    nasIp,
+    acctSessionId,
+  });
+
+  let result = await waitForJobResult<DisconnectResult>(job, 8000);
+  if (!result) {
+    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId);
+  } else if (!result.ok) {
+    const direct = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId);
+    result = direct;
+  }
+
+  if (!result.ok) {
+    return { status: "failed", result };
+  }
+  return { status: "ok", result };
+}
 
 router.use(requireAuth);
 
@@ -81,6 +139,46 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
   }
 });
 
+const bulkDisconnectBody = z.object({
+  radacct_ids: z.array(z.string().min(1)).min(1).max(100),
+});
+
+router.post(
+  "/bulk-disconnect",
+  requireRole("admin", "manager"),
+  denyViewerWrites,
+  denyAccountant,
+  async (req, res) => {
+    if (req.auth!.role === "manager" && !requestHasManagerPermission(req, "disconnect_users")) {
+      res.status(403).json({ error: "forbidden", detail: "missing_manager_permission" });
+      return;
+    }
+    const parsed = bulkDisconnectBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid_body" });
+      return;
+    }
+    const tenant = req.auth!.tenantId;
+    try {
+      const results: { radacctid: string; ok: boolean; error?: string }[] = [];
+      for (const rid of parsed.data.radacct_ids) {
+        const outcome = await disconnectSessionByRadacctId(tenant, rid);
+        if (outcome.status === "not_found") {
+          results.push({ radacctid: rid, ok: false, error: "session_not_found" });
+        } else if (outcome.status === "failed") {
+          results.push({ radacctid: rid, ok: false, error: outcome.result.message });
+        } else {
+          results.push({ radacctid: rid, ok: true });
+        }
+      }
+      res.json({ results });
+    } catch (e) {
+      console.error("online users bulk disconnect", e);
+      res.status(500).json({ error: "online_user_disconnect_failed" });
+    }
+  }
+);
+
 router.post(
   "/:radacctid/disconnect",
   requireRole("admin", "manager"),
@@ -97,45 +195,19 @@ router.post(
       return;
     }
     try {
-      const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT username, nasipaddress, acctsessionid
-         FROM radacct
-         WHERE radacctid = ? AND acctstoptime IS NULL
-         LIMIT 1`,
-        [radacctid]
-      );
-      const row = rows[0];
-      if (!row) {
+      const outcome = await disconnectSessionByRadacctId(req.auth!.tenantId, radacctid);
+      if (outcome.status === "not_found") {
         res.status(404).json({ error: "session_not_found" });
         return;
       }
-
-      if (await hasTable(pool, "subscribers")) {
-        const [owned] = await pool.query<RowDataPacket[]>(
-          `SELECT id
-           FROM subscribers
-           WHERE tenant_id = ? AND username = ?
-           LIMIT 1`,
-          [req.auth!.tenantId, String(row.username ?? "")]
-        );
-        if (!owned[0]) {
-          res.status(404).json({ error: "session_not_found" });
-          return;
-        }
-      }
-
-      const job = await enqueueCoaDisconnect({
-        tenantId: req.auth!.tenantId,
-        username: String(row.username ?? ""),
-        nasIp: String(row.nasipaddress ?? ""),
-        acctSessionId: row.acctsessionid ? String(row.acctsessionid) : undefined,
-      });
-      const result = await waitForJobResult<DisconnectResult>(job, 8000);
-      if (!result) {
-        res.status(202).json({ ok: true, queued: true, job_id: String(job.id ?? "") });
+      if (outcome.status === "failed") {
+        res.status(502).json({
+          error: "disconnect_failed",
+          detail: outcome.result.message,
+        });
         return;
       }
-      res.json({ ok: result.ok, queued: false, result });
+      res.json({ ok: true, result: outcome.result });
     } catch (e) {
       console.error("online users disconnect", e);
       res.status(500).json({ error: "online_user_disconnect_failed" });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Download, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Banknote, Download, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -36,9 +36,12 @@ type SubscriberRow = {
   nickname?: string | null;
   phone?: string | null;
   address?: string | null;
+  region_name?: string | null;
+  is_online?: number | string | null;
 };
-type Pkg = { id: string; name: string };
+type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
 type Nas = { id: string; name: string; ip: string };
+type RegionRow = { id: string; name: string; parent_id?: string | null };
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500] as const;
 type SortKey =
   | "username"
@@ -47,6 +50,7 @@ type SortKey =
   | "status"
   | "package_name"
   | "nas_network"
+  | "region_name"
   | "created_by"
   | "created_at"
   | "start_date"
@@ -77,6 +81,13 @@ function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
     nickname: value.nickname != null ? String(value.nickname) : null,
     phone: value.phone != null ? String(value.phone) : null,
     address: value.address != null ? String(value.address) : null,
+    region_name: value.region_name != null ? String(value.region_name) : null,
+    is_online:
+      typeof value.is_online === "number"
+        ? value.is_online
+        : typeof value.is_online === "string"
+          ? Number(value.is_online)
+          : null,
     used_bytes:
       typeof value.used_bytes === "number" || typeof value.used_bytes === "string"
         ? value.used_bytes
@@ -96,9 +107,10 @@ function formatNasLabel(row: SubscriberRow): string {
   return "—";
 }
 
-function getRowState(row: SubscriberRow): "online" | "expired" | "disabled" | "active" | "default" {
+function getRowState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
+  if (Number(row.is_online ?? 0) > 0) return "online";
   const smart = String(row.state ?? "").trim().toUpperCase();
-  if (smart === "LIMITED") return "online";
+  if (smart === "LIMITED") return "limited";
   if (smart === "BLOCKED") return "disabled";
   if (smart === "EXPIRED") return "expired";
   if (smart === "ACTIVE") return "active";
@@ -115,6 +127,7 @@ function getRowState(row: SubscriberRow): "online" | "expired" | "disabled" | "a
 function getRowClass(row: SubscriberRow): string {
   const state = getRowState(row);
   if (state === "online") return "bg-blue-500/20 hover:bg-blue-500/25";
+  if (state === "limited") return "bg-cyan-500/15 hover:bg-cyan-500/20";
   if (state === "expired") return "bg-amber-500/20 hover:bg-amber-500/25";
   if (state === "disabled") return "bg-red-500/20 hover:bg-red-500/25";
   if (state === "active") return "bg-emerald-500/20 hover:bg-emerald-500/25";
@@ -127,10 +140,13 @@ export function UsersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const canManage = canManageOperations(user?.role);
   const canRevealPassword = user?.role === "admin" || user?.role === "manager";
+  const canPayPackage =
+    user?.role === "admin" || user?.role === "manager" || user?.role === "accountant";
 
   const [items, setItems] = useState<SubscriberRow[]>([]);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [nasList, setNasList] = useState<Nas[]>([]);
+  const [regions, setRegions] = useState<RegionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -139,6 +155,7 @@ export function UsersPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
+  const [payPackageLoadingId, setPayPackageLoadingId] = useState<string | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const [username, setUsername] = useState("");
@@ -154,6 +171,7 @@ export function UsersPage() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
+  const [regionId, setRegionId] = useState("");
   const [pageSize, setPageSize] = useState<number>(25);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalItems, setTotalItems] = useState<number>(0);
@@ -173,10 +191,11 @@ export function UsersPage() {
         sort_dir: sortDir,
       });
       if (appliedSearch) q.set("q", appliedSearch);
-      const [rSub, rPkg, rNas] = await Promise.all([
+      const [rSub, rPkg, rNas, rReg] = await Promise.all([
         apiFetch(`/api/subscribers/?${q.toString()}`),
         apiFetch("/api/packages/"),
         apiFetch("/api/nas/"),
+        apiFetch("/api/regions/"),
       ]);
       const errParts: string[] = [];
       if (rSub.ok) {
@@ -206,6 +225,12 @@ export function UsersPage() {
         const raw = await readApiError(rNas);
         errParts.push(`${t("nav.nas")}: ${formatStaffApiError(rNas.status, raw, t)}`);
       }
+      if (rReg.ok) {
+        const j = (await rReg.json()) as { items: RegionRow[] };
+        setRegions(j.items ?? []);
+      } else {
+        setRegions([]);
+      }
       if (errParts.length) setLoadError(errParts.join("\n"));
     } finally {
       setLoading(false);
@@ -219,6 +244,25 @@ export function UsersPage() {
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const visibleItems = items;
+  const regionSelectOptions = useMemo(() => {
+    const byParent = new Map<string | null, RegionRow[]>();
+    for (const r of regions) {
+      const p = r.parent_id ?? null;
+      if (!byParent.has(p)) byParent.set(p, []);
+      byParent.get(p)!.push(r);
+    }
+    for (const list of byParent.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    const out: { id: string; label: string }[] = [];
+    function walk(parent: string | null, depth: number) {
+      for (const r of byParent.get(parent) ?? []) {
+        const pad = depth > 0 ? `${"— ".repeat(depth)}` : "";
+        out.push({ id: r.id, label: `${pad}${r.name}` });
+        walk(r.id, depth + 1);
+      }
+    }
+    walk(null, 0);
+    return out;
+  }, [regions]);
   const selectedVisibleCount = visibleItems.filter((item) => selectedSet.has(item.id)).length;
   const allSelected = visibleItems.length > 0 && selectedVisibleCount === visibleItems.length;
   const selectedRows = useMemo(() => items.filter((item) => selectedSet.has(item.id)), [items, selectedSet]);
@@ -261,6 +305,7 @@ export function UsersPage() {
           mac_address: macAddress || undefined,
           pool: pool || undefined,
           notes: notes || undefined,
+          region_id: regionId || null,
         }),
       });
       if (!r.ok) {
@@ -283,6 +328,7 @@ export function UsersPage() {
       setPhone("");
       setAddress("");
       setNotes("");
+      setRegionId("");
       setSelectedIds([]);
       await load();
     } finally {
@@ -305,7 +351,30 @@ export function UsersPage() {
     setPhone("");
     setAddress("");
     setNotes("");
+    setRegionId("");
     setModal(true);
+  }
+
+  async function recordPackagePayment(subscriberId: string) {
+    if (!canPayPackage) return;
+    if (!confirm(t("users.payPackageConfirm"))) return;
+    setPayPackageLoadingId(subscriberId);
+    setMsg(null);
+    try {
+      const r = await apiFetch(`/api/subscribers/${subscriberId}/record-package-payment`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setMsg({ type: "err", text: formatStaffApiError(r.status, raw, t) });
+        return;
+      }
+      setMsg({ type: "ok", text: t("users.packagePaid") });
+      await load();
+    } finally {
+      setPayPackageLoadingId(null);
+    }
   }
 
   function toggleOne(id: string) {
@@ -365,6 +434,7 @@ export function UsersPage() {
       nickname: row.nickname ?? "",
       phone: row.phone ?? "",
       address: row.address ?? "",
+      region: row.region_name ?? "",
       created_at: row.created_at ?? "",
       start_date: row.start_date ?? "",
       expiration_date: row.expiration_date ?? "",
@@ -599,6 +669,7 @@ export function UsersPage() {
                 {header(t("users.status"), "status", isRtl ? "text-right" : "text-left")}
                 {header(t("users.package"), "package_name", isRtl ? "text-right" : "text-left")}
                 {header(t("users.nasNetwork"), "nas_network", isRtl ? "text-right" : "text-left")}
+                {header(t("users.region"), "region_name", isRtl ? "text-right" : "text-left")}
                 {header(t("users.createdBy"), "created_by", isRtl ? "text-right" : "text-left")}
                 {header(t("users.createdAt"), "created_at", isRtl ? "text-right" : "text-left")}
                 {header(t("users.startDate"), "start_date", isRtl ? "text-right" : "text-left")}
@@ -669,6 +740,7 @@ export function UsersPage() {
                   </td>
                   <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td>
                   <td className="px-4 py-3 opacity-90">{formatNasLabel(s)}</td>
+                  <td className="px-4 py-3 opacity-90">{String(s.region_name ?? "—")}</td>
                   <td className="px-4 py-3 opacity-90">{String(s.creator_name ?? s.creator_email ?? "—")}</td>
                   <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.created_at)}</td>
                   <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.start_date)}</td>
@@ -683,6 +755,18 @@ export function UsersPage() {
                       >
                         {t("users.profile")}
                       </Link>
+                      {canPayPackage ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="px-2 py-1 text-xs"
+                          onClick={() => void recordPackagePayment(s.id)}
+                          disabled={payPackageLoadingId === s.id}
+                        >
+                          <Banknote className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
+                          {payPackageLoadingId === s.id ? t("common.loading") : t("users.payPackage")}
+                        </Button>
+                      ) : null}
                       {canManage ? (
                         <Button
                           type="button"
@@ -749,6 +833,18 @@ export function UsersPage() {
             value={address}
             onChange={(e) => setAddress(e.target.value)}
           />
+          <SelectField
+            label={`${t("users.region")} (${t("common.optional")})`}
+            value={regionId}
+            onChange={(e) => setRegionId(e.target.value)}
+          >
+            <option value="">—</option>
+            {regionSelectOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.label}
+              </option>
+            ))}
+          </SelectField>
           <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} required>
             <option value="">{t("common.required")}</option>
             {packages.map((p) => (
