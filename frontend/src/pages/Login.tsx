@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Globe, LogIn, ShieldCheck } from "lucide-react";
+import { Globe, LogIn } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { TextField } from "../components/ui/TextField";
+import { LogoLockup, LogoMark } from "../components/brand/Logo";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -38,9 +39,9 @@ export function LoginPage() {
     >
       {/* Ambient animated blobs */}
       <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute -top-24 -end-24 h-80 w-80 rounded-full bg-[hsl(var(--primary))]/30 blur-3xl" />
-        <div className="absolute -bottom-24 -start-24 h-96 w-96 rounded-full bg-[hsl(var(--accent))]/25 blur-3xl" />
-        <div className="absolute inset-y-0 start-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-500/15 blur-3xl" />
+        <div className="absolute -top-32 -end-32 h-96 w-96 animate-pulse rounded-full bg-[hsl(var(--primary))]/30 blur-3xl" />
+        <div className="absolute -bottom-32 -start-32 h-[28rem] w-[28rem] animate-pulse rounded-full bg-[hsl(var(--accent))]/25 blur-3xl" />
+        <div className="absolute inset-y-0 start-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-cyan-500/15 blur-3xl" />
       </div>
 
       <motion.div
@@ -49,13 +50,8 @@ export function LoginPage() {
         transition={{ duration: 0.35, ease: "easeOut" }}
         className="w-full max-w-md"
       >
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[hsl(var(--primary))] to-[hsl(var(--accent))] text-white shadow-glow">
-              FR
-            </div>
-            <span>{t("app.name")}</span>
-          </div>
+        <div className="mb-5 flex items-center justify-between">
+          <LogoLockup size="sm" />
           <button
             type="button"
             onClick={() => setLocale(locale === "ar" ? "en" : "ar")}
@@ -67,14 +63,18 @@ export function LoginPage() {
         </div>
 
         <Card className="shadow-glow-lg">
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-500 ring-1 ring-indigo-500/20">
-              <ShieldCheck className="h-6 w-6" />
+          <div className="mb-6 flex flex-col items-center text-center">
+            <div className="mb-3 flex items-center justify-center rounded-3xl bg-gradient-to-br from-[hsl(var(--primary))]/15 to-[hsl(var(--accent))]/15 p-3 ring-1 ring-[hsl(var(--primary))]/20">
+              <LogoMark size="lg" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">{t("login.title")}</h1>
-              <p className="text-xs opacity-70">{t("login.subtitle")}</p>
+            <div className="bg-gradient-to-r from-[hsl(var(--primary))] via-violet-500 to-[hsl(var(--accent))] bg-clip-text text-2xl font-extrabold tracking-tight text-transparent">
+              Future Radius
             </div>
+            <p className="mt-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+              {t("login.brand_tagline")}
+            </p>
+            <h1 className="mt-4 text-lg font-semibold">{t("login.title")}</h1>
+            <p className="mt-1 text-xs opacity-70">{t("login.subtitle")}</p>
           </div>
 
           <form onSubmit={onSubmit} className="flex flex-col gap-4">

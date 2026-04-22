@@ -3,6 +3,9 @@ import { Redis } from "ioredis";
 import { Queue, Worker } from "bullmq";
 import { config } from "../config.js";
 import { pool, waitForDbReady } from "../db/pool.js";
+import { installLogger, markDbReady, log } from "../services/logger.service.js";
+
+installLogger({ source: "worker" });
 import { importSubscribersFromDma } from "../dma/importSubscribersFromDma.js";
 import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
@@ -14,6 +17,7 @@ import {
   sendUsageThresholdAlerts,
   testWhatsAppConnection,
 } from "../services/whatsapp.service.js";
+import { pruneOldLogs } from "../services/logger.service.js";
 import { runUsageAndExpiryCycle } from "../worker/usage.worker.js";
 import type { RowDataPacket } from "mysql2";
 import {
@@ -117,6 +121,7 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await add("daily-backup", everyDay);
   await add("whatsapp-health-check", everyMin);
+  await add("prune-server-logs", everyDay);
   await add("whatsapp-usage-alerts", everyMin * 30);
   await replaceRepeatablesByName("whatsapp-expiry-reminders");
   await replaceRepeatablesByName("whatsapp-payment-due-reminders");
@@ -126,6 +131,8 @@ async function bootstrapRepeatables() {
 
 async function main() {
   await waitForDbReady();
+  markDbReady();
+  log.info("worker boot", {}, "bootstrap");
   await connection.set(workerHeartbeatKey, new Date().toISOString());
   setInterval(() => {
     connection.set(workerHeartbeatKey, new Date().toISOString()).catch(() => {});
@@ -175,6 +182,9 @@ async function main() {
         case "whatsapp-health-check":
           await testWhatsAppConnection(tenantId);
           break;
+        case "prune-server-logs":
+          await pruneOldLogs(14);
+          break;
         case QueueJobNames.WAHA_SEND_INVOICE_RECEIPT: {
           const payload = job.data as WahaInvoiceReceiptJobData;
           await sendInvoicePaidWhatsApp({
@@ -204,6 +214,11 @@ async function main() {
   );
 
   worker.on("failed", (job, err) => {
+    log.error(`job_failed ${job?.name ?? "unknown"}: ${err?.message ?? "unknown"}`, {
+      jobId: job?.id,
+      name: job?.name,
+      attemptsMade: job?.attemptsMade,
+    }, "worker");
     console.error("job failed", job?.name, err);
   });
 

@@ -19,6 +19,7 @@ import {
   ListChecks,
   UserCog,
   ClipboardList,
+  ScrollText,
   LogOut,
   Moon,
   Sun,
@@ -36,6 +37,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
+import { LogoMark } from "../components/brand/Logo";
 
 type NavItem = {
   to: string;
@@ -165,7 +167,10 @@ export function AdminShell() {
     { to: "/accounting", labelKey: "nav.accounting", icon: Activity, tone: "emerald" },
     { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
     ...((user?.role === "admin" || user?.role === "manager")
-      ? ([{ to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" }] as NavItem[])
+      ? ([
+          { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
+          { to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" },
+        ] as NavItem[])
       : []),
     { to: "/settings", labelKey: "nav.settings", icon: Settings, tone: "slate" },
   ];
@@ -197,11 +202,11 @@ export function AdminShell() {
       {/* Sidebar */}
       <aside className="glass sticky top-0 flex h-screen w-72 flex-col border-0 border-e border-[hsl(var(--border))]/70 rounded-none">
         <div className="flex items-center gap-3 px-5 pb-5 pt-6">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[hsl(var(--primary))] to-[hsl(var(--accent))] text-sm font-bold text-white shadow-glow">
-            FR
-          </div>
+          <LogoMark size="md" />
           <div className="min-w-0">
-            <div className="truncate text-sm font-bold tracking-tight">{t("app.name")}</div>
+            <div className="truncate bg-gradient-to-r from-[hsl(var(--primary))] via-violet-500 to-[hsl(var(--accent))] bg-clip-text text-sm font-extrabold tracking-tight text-transparent">
+              Future Radius
+            </div>
             <div className="truncate text-xs opacity-60">{t("app.tagline")}</div>
           </div>
         </div>

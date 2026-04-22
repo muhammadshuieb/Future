@@ -26,6 +26,7 @@ import { WhatsAppBroadcastPage } from "./pages/WhatsAppBroadcast";
 import { WhatsAppLogsPage } from "./pages/WhatsAppLogs";
 import { OnlineUsersPage } from "./pages/OnlineUsers";
 import { ObservabilityPage } from "./pages/Observability";
+import { ServerLogsPage } from "./pages/ServerLogs";
 
 function ProtectedAdmin({ children }: { children: React.ReactElement }) {
   const { user } = useAuth();
@@ -56,6 +57,7 @@ function AppRoutes() {
         <Route path="nas" element={<NasPage />} />
         <Route path="accounting" element={<AccountingPage />} />
         <Route path="observability" element={<ObservabilityPage />} />
+        <Route path="server-logs" element={<ServerLogsPage />} />
         <Route path="online-users" element={<OnlineUsersPage />} />
         <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />
         <Route path="inventory/categories" element={<ExpenseCategoriesPage />} />

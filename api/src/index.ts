@@ -1,9 +1,9 @@
 import http from "http";
 import express from "express";
+import { installLogger, log, markDbReady } from "./services/logger.service.js";
 
-process.on("unhandledRejection", (reason) => {
-  console.error("[process] unhandledRejection", reason);
-});
+installLogger({ source: "api" });
+
 import cors from "cors";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
@@ -30,6 +30,7 @@ import whatsappRoutes from "./routes/whatsapp.routes.js";
 import onlineUsersRoutes from "./routes/online-users.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
 import observabilityRoutes from "./routes/observability.routes.js";
+import serverLogsRoutes from "./routes/server-logs.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
@@ -70,6 +71,23 @@ app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/online-users", onlineUsersRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/observability", observabilityRoutes);
+app.use("/api/server-logs", serverLogsRoutes);
+
+// Express error handler: captures unhandled async errors from any route.
+// Must be declared AFTER all routes.
+app.use(
+  (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const e = err instanceof Error ? err : new Error(String(err));
+    log.error(`http_error ${req.method} ${req.originalUrl}: ${e.message}`, {
+      method: req.method,
+      url: req.originalUrl,
+      status: 500,
+    }, "http");
+    if (!res.headersSent) {
+      res.status(500).json({ error: "internal_error" });
+    }
+  }
+);
 
 const server = http.createServer(app);
 
@@ -113,6 +131,9 @@ async function start() {
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);
   }
+  // From this point `server_logs` should exist — flush anything buffered.
+  markDbReady();
+  log.info("api boot: migrations applied, flushing buffered logs", {}, "bootstrap");
   try {
     const result = await ensureRadiusDbUser();
     console.log(`[bootstrap] radius db user: ${result.status}`);
