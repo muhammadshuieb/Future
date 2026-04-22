@@ -297,11 +297,17 @@ async function getSettingsRow(tenantId: string): Promise<WhatsAppSettingsRow> {
   if (!rows[0]) throw new Error("whatsapp_settings_not_found");
   const envKey = process.env.WAHA_API_KEY?.trim() || null;
   const envUrl = process.env.WAHA_INTERNAL_URL?.trim() || null;
+  const envSession = process.env.WAHA_SESSION_NAME?.trim() || null;
   const row = rows[0];
+  // Prefer deployment env values over DB row to avoid stale keys after redeploy.
+  const resolvedUrl = envUrl || row.waha_url || null;
+  const resolvedSession = envSession || row.session_name || "default";
+  const resolvedKey = envKey || row.api_key || null;
   return {
     ...row,
-    api_key: row.api_key || envKey,
-    waha_url: row.waha_url || envUrl,
+    api_key: resolvedKey,
+    waha_url: resolvedUrl,
+    session_name: resolvedSession,
   };
 }
 
@@ -348,6 +354,10 @@ async function sendWahaMessage(
   if (settings.api_key) {
     headers.Authorization = `Bearer ${settings.api_key}`;
     headers["X-Api-Key"] = settings.api_key;
+  }
+  const runtime = await getSessionRuntimeStatus(settings);
+  if (!runtime.connected) {
+    throw new Error(`waha_session_not_ready:${runtime.status ?? "unknown"}`);
   }
   const response = await fetch(`${baseUrl}/api/sendText`, {
     method: "POST",
@@ -547,15 +557,36 @@ async function insertMessageLog(input: {
 export async function getWhatsAppStatus(tenantId: string): Promise<WhatsAppStatus> {
   const settings = await getSettingsRow(tenantId);
   const configured = Boolean(settings.waha_url && settings.session_name);
+  let connected = Boolean(settings.enabled && configured && settings.last_check_ok);
+  let lastError = settings.last_error ?? null;
+  if (settings.enabled && configured) {
+    const runtime = await getSessionRuntimeStatus(settings);
+    if (runtime.status) {
+      connected = runtime.connected;
+      if (runtime.connected) {
+        await setLastCheck(tenantId, true, null);
+        lastError = null;
+      } else {
+        const runtimeErr = `session_not_ready:${runtime.status}`;
+        await setLastCheck(tenantId, false, runtimeErr);
+        lastError = runtimeErr;
+      }
+    } else if (!runtime.connected) {
+      connected = false;
+      const runtimeErr = "session_unreachable";
+      await setLastCheck(tenantId, false, runtimeErr);
+      lastError = runtimeErr;
+    }
+  }
   return {
     enabled: Boolean(settings.enabled),
     configured,
-    connected: Boolean(settings.enabled && configured && settings.last_check_ok),
+    connected,
     reminder_days: Number(settings.reminder_days ?? 5),
     message_interval_seconds: Number(settings.message_interval_seconds ?? 30),
     auto_send_new: Boolean(settings.auto_send_new),
     usage_alert_thresholds: parseUsageThresholds(settings.usage_alert_thresholds),
-    last_error: settings.last_error ?? null,
+    last_error: lastError,
     last_check_at: settings.last_check_at ?? null,
   };
 }
@@ -629,6 +660,10 @@ export async function testWhatsAppConnection(tenantId: string): Promise<WhatsApp
       throw new Error(`waha_check_failed: ${resp.status} ${text.slice(0, 300)}`);
     }
     await ensureSessionReady(settings);
+    const runtime = await getSessionRuntimeStatus(settings);
+    if (!runtime.connected) {
+      throw new Error(`session_not_ready:${runtime.status ?? "unknown"}`);
+    }
     await setLastCheck(tenantId, true, null);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -990,6 +1025,7 @@ export async function getWhatsAppQr(tenantId: string): Promise<WhatsAppQrView> {
       await setLastCheck(tenantId, true, null);
       return { qr_data_url: null, connected: true, message: null };
     }
+    await setLastCheck(tenantId, false, `session_not_ready:${runtime.status ?? "unknown"}`);
   }
   if (qr.connected) {
     await setLastCheck(tenantId, true, null);

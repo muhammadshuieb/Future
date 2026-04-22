@@ -79,6 +79,7 @@ services:
       BACKUP_RETENTION_DAYS: "7"
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
+      WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@local.test}
       SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-admin}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-muhammadshuieb}
@@ -118,6 +119,7 @@ services:
       BACKUP_RETENTION_DAYS: "7"
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
+      WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
     volumes:
       - backup_data:/app/backups
     depends_on:
