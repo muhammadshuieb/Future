@@ -5,15 +5,15 @@ services:
       dockerfile: docker/mysql/Dockerfile
     image: futureradius-mysql:local
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: radius
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-radius}
       MYSQL_INITDB_SKIP_TZINFO: "1"
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -29,8 +29,8 @@ services:
       - "3799:3799/udp"
     environment:
       MYSQL_HOST: mysql
-      MYSQL_USER: radius
-      MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:-radius123}
+      MYSQL_USER: ${RADIUS_DB_USER:-radius}
+      MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       FREERADIUS_DEBUG: ${FREERADIUS_DEBUG:-0}
     depends_on:
       mysql:
@@ -39,7 +39,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -53,11 +53,11 @@ services:
     environment:
       WAHA_PRINT_QR: "true"
       WAHA_LOG_LEVEL: "info"
-      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
-      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
-      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-future-radius-dashboard-pass}
-      WHATSAPP_SWAGGER_USERNAME: ${WHATSAPP_SWAGGER_USERNAME:-admin}
-      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:-future-radius-dashboard-pass}
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:?set WAHA_DASHBOARD_USERNAME in .env}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      WHATSAPP_SWAGGER_USERNAME: ${WHATSAPP_SWAGGER_USERNAME:?set WHATSAPP_SWAGGER_USERNAME in .env}
+      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:?set WHATSAPP_SWAGGER_PASSWORD in .env}
     volumes:
       - waha_sessions:/app/.sessions
     restart: unless-stopped
@@ -69,15 +69,15 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: mysql://root:rootpass@mysql:3306/radius
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      AES_SECRET_KEY: ${AES_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      AES_SECRET_KEY: ${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
       DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
       PORT: "3000"
       BACKUP_DIR: /app/backups
       BACKUP_RETENTION_DAYS: "7"
-      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
     volumes:
       - backup_data:/app/backups
@@ -106,14 +106,14 @@ services:
       dockerfile: Dockerfile
     command: ["node", "dist/workers/index.js"]
     environment:
-      DATABASE_URL: mysql://root:rootpass@mysql:3306/radius
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      AES_SECRET_KEY: ${AES_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      AES_SECRET_KEY: ${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
       DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
       BACKUP_DIR: /app/backups
       BACKUP_RETENTION_DAYS: "7"
-      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
     volumes:
       - backup_data:/app/backups
