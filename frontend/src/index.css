@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 220 20% 97%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --border: 214 32% 91%;
+  --primary: 221 83% 53%;
+  --muted: 210 40% 96%;
+  --accent: 262 83% 58%;
+}
+
+.dark {
+  --background: 222 47% 6%;
+  --foreground: 210 40% 98%;
+  --card: 222 40% 10%;
+  --border: 217 33% 17%;
+  --primary: 217 91% 60%;
+  --muted: 217 33% 14%;
+  --accent: 263 70% 50%;
+}
+
+body {
+  margin: 0;
+  font-family: Cairo, Inter, system-ui, "Segoe UI", sans-serif;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+html[dir="ltr"] body {
+  font-family: Inter, Cairo, system-ui, sans-serif;
+}

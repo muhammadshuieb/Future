@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  triggered_by ENUM('system','manual') NOT NULL DEFAULT 'system',
+  created_by_staff_id CHAR(36) NULL,
+  status ENUM('running','success','failed') NOT NULL DEFAULT 'running',
+  local_path VARCHAR(512) NULL,
+  file_name VARCHAR(255) NULL,
+  file_size_bytes BIGINT UNSIGNED NULL,
+  drive_file_id VARCHAR(128) NULL,
+  drive_uploaded TINYINT(1) NOT NULL DEFAULT 0,
+  local_deleted_count INT UNSIGNED NOT NULL DEFAULT 0,
+  drive_deleted_count INT UNSIGNED NOT NULL DEFAULT 0,
+  error_message TEXT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_backup_tenant_started (tenant_id, started_at),
+  INDEX idx_backup_tenant_status (tenant_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

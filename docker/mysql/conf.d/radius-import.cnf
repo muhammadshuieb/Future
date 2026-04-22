@@ -1,0 +1,9 @@
+[mysqld]
+# توسيع التوافق مع dump phpMyAdmin / قديم (NO_ZERO_DATE، GROUP BY، إلخ) — يمكن تشديد الإعداد لاحقاً في الإنتاج
+sql_mode=NO_ENGINE_SUBSTITUTION
+
+character-set-server=utf8mb4
+collation-server=utf8mb4_unicode_ci
+
+# مطلوب لحدث cleanup_radacct (sql/migrations/004_radacct_cleanup_event.sql)
+event_scheduler=ON

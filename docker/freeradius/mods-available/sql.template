@@ -1,0 +1,46 @@
+# Future Radius — rlm_sql + MySQL (Radius Manager schema)
+# Variables: MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD (see docker-entrypoint.sh + envsubst)
+
+sql {
+    dialect = "mysql"
+    driver = "rlm_sql_${dialect}"
+
+    server = "${MYSQL_HOST}"
+    port = 3306
+    login = "${MYSQL_USER}"
+    password = "${MYSQL_PASSWORD}"
+
+    radius_db = "radius"
+
+    read_clients = yes
+    read_profiles = yes
+
+    # FreeRADIUS 3.2+ mysql/queries.conf expands ${group_attribute}; must be set here.
+    group_attribute = "SQL-Group"
+
+    # NAS list from DB (nasname + secret). User auth still uses radcheck/radreply via queries.conf.
+    client_table = "nas"
+    authcheck_table = "radcheck"
+    authreply_table = "radreply"
+    groupcheck_table = "radgroupcheck"
+    groupreply_table = "radgroupreply"
+    usergroup_table = "radusergroup"
+    acct_table1 = "radacct"
+    acct_table2 = "radacct"
+    postauth_table = "radpostauth"
+
+    connect_timeout = 5
+
+    pool {
+        start = 5
+        min = 5
+        max = 20
+        spare = 5
+        uses = 0
+        retry_delay = 30
+        lifetime = 0
+        idle_timeout = 60
+    }
+
+    $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+}

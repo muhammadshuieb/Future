@@ -1,0 +1,139 @@
+services:
+  mysql:
+    build:
+      context: .
+      dockerfile: docker/mysql/Dockerfile
+    image: futureradius-mysql:local
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: radius
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  freeradius:
+    build:
+      context: .
+      dockerfile: docker/freeradius/Dockerfile
+    image: futureradius-freeradius:local
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+      - "3799:3799/udp"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: radius
+      MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:-radius123}
+      FREERADIUS_DEBUG: ${FREERADIUS_DEBUG:-0}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  waha:
+    image: devlikeapro/waha:latest
+    ports:
+      - "3001:3000"
+    environment:
+      WAHA_PRINT_QR: "true"
+      WAHA_LOG_LEVEL: "info"
+      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-future-radius-dashboard-pass}
+      WHATSAPP_SWAGGER_USERNAME: ${WHATSAPP_SWAGGER_USERNAME:-admin}
+      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:-future-radius-dashboard-pass}
+    volumes:
+      - waha_sessions:/app/.sessions
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: mysql://root:rootpass@mysql:3306/radius
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      AES_SECRET_KEY: ${AES_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
+      PORT: "3000"
+      BACKUP_DIR: /app/backups
+      BACKUP_RETENTION_DAYS: "7"
+      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
+      WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
+    volumes:
+      - backup_data:/app/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Use Node (always present); curl may be missing in older api images → permanent unhealthy.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
+
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: ["node", "dist/workers/index.js"]
+    environment:
+      DATABASE_URL: mysql://root:rootpass@mysql:3306/radius
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      AES_SECRET_KEY: ${AES_SECRET_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
+      BACKUP_DIR: /app/backups
+      BACKUP_RETENTION_DAYS: "7"
+      WAHA_API_KEY: ${WAHA_API_KEY:-future-radius-waha-key}
+      WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
+    volumes:
+      - backup_data:/app/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  backup_data:
+  waha_sessions:

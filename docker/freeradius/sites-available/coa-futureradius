@@ -1,0 +1,19 @@
+# -*- text -*-
+# CoA / Disconnect (UDP 3799) — compatible with Future Radius Node CoA service & MikroTik
+
+listen {
+    type = coa
+    ipaddr = *
+    port = 3799
+    virtual_server = coa
+}
+
+server coa {
+    recv-coa {
+        suffix
+        ok
+    }
+    send-coa {
+        ok
+    }
+}

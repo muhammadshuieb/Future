@@ -1,0 +1,74 @@
+Future Radius — FreeRADIUS 3 (Debian) + MySQL (Radius Manager schema)
+=======================================================================
+
+Docker
+------
+  docker compose up -d mysql freeradius
+
+Debug (verbose, foreground):
+  FREERADIUS_DEBUG=1 docker compose run --rm --service-ports freeradius
+
+Bare metal (مثال)
+-----------------
+  sudo ln -sf /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
+  sudo systemctl restart freeradius
+  sudo freeradius -X    # اختبار بدون systemd
+
+الجلسات النشطة (Active sessions) — مصدر الحقيقة في MySQL
+--------------------------------------------------------
+  FreeRADIUS لا يعرّف «online» كحالة منفصلة؛ النظام والـ SaaS يعتمدان على radacct:
+
+    acctstoptime IS NULL  →  جلسة ما زالت مفتوحة (نشطة)
+    acctstoptime IS NOT NULL  →  جلسة منتهية
+
+  هذا ما تستخدمه خدمات CoA واللوحة والمحاسبة في المشروع (استعلامات على radacct).
+
+تنظيف radacct (احتفاظ 30 يوم للجلسات المغلقة)
+----------------------------------------------
+  - ملف: sql/migrations/004_radacct_cleanup_event.sql
+  - يُنشئ EVENT يومي: حذف الصفوف حيث acctstoptime IS NOT NULL وأقدم من 30 يوم.
+  - يتطلب event_scheduler=ON (مفعّل في docker/mysql/conf.d/radius-import.cnf).
+  - لقاعدة قائمة: نفّذ الملف يدوياً كمسؤول MySQL.
+
+MikroTik — Interim-Update (استهلاك حي)
+--------------------------------------
+  /radius set [find] interim-update=1m
+
+  أو لكل خادم RADIUS المضاف:
+  /radius set numbers=0 interim-update=1m
+
+MikroTik — CoA / Disconnect (مهم جداً)
+--------------------------------------
+  بدون قبول الحزم الواردة من خادم RADIUS، لن يعمل Disconnect-Request من المنفذ 3799:
+
+  /radius incoming
+  set accept=yes
+
+  (في WinBox: IP → RADIUS → Incoming → Accept)
+
+  تحقق أن سر NAS في جدول nas يطابق إعدادات /radius على الميكروتيك.
+
+اختبار سريع
+-----------
+  radtest USER PASSWORD RADIUS_HOST 0 SECRET
+  radtest -x USER PASSWORD RADIUS_HOST 1812 SECRET
+
+FreeRADIUS 3.2.x (Debian bookworm)
+-----------------------------------
+  - يتطلب تعريف group_attribute في كتلة sql (مضبوط في mods-available/sql.template)؛
+    بدونه يفشل التحميل برسالة: Reference "${group_attribute}" not found في queries.conf.
+
+ملاحظات
+-------
+- مصادقة المستخدمين من radcheck / radreply؛ أسرار NAS من جدول nas (read_clients = yes).
+- authorize_check_query في queries.conf يقرأ المستخدم من radcheck؛ عمودا nasname و secret خاصان بجدول nas ويُستخدمان عبر client_query وليس authorize_check_query.
+- إن فشل FreeRADIUS بسبب عمود server في nas، أضف العمود أو عدّل client_query في
+  /etc/freeradius/3.0/mods-config/sql/main/mysql/queries.conf
+
+- إن ظهر Access denied for user 'radius'@'...' فالمستخدم غير مُنشأ أو كلمة المرور
+  لا تطابق MYSQL_PASSWORD في compose. نفّذ يدوياً docker/mysql/opt/03-freeradius-user.sql
+  على قاعدة radius (أو أعد إنشاء الحجم إن كانت بيئة تطوير فقط).
+
+فهارس radacct
+-------------
+  نفّذ sql/migrations/003_radacct_indexes.sql على قاعدة radius (مرة واحدة).
