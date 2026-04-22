@@ -501,6 +501,36 @@ async function getSessionRuntimeStatus(
   }
 }
 
+async function getSessionOwnerPhoneFromRuntime(settings: WhatsAppSettingsRow): Promise<string | null> {
+  const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
+  const session = String(settings.session_name ?? "").trim();
+  if (!baseUrl || !session) return null;
+  const headers: Record<string, string> = {};
+  if (settings.api_key) {
+    headers.Authorization = `Bearer ${settings.api_key}`;
+    headers["X-Api-Key"] = settings.api_key;
+  }
+  try {
+    const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(session)}`, { headers });
+    if (!resp.ok) return null;
+    const parsed = (await resp.json()) as Record<string, unknown>;
+    const me = (parsed.me ?? null) as Record<string, unknown> | null;
+    const candidates = [
+      typeof me?.id === "string" ? me.id : null,
+      typeof me?.user === "string" ? me.user : null,
+      typeof me?.wid === "string" ? me.wid : null,
+      typeof parsed.id === "string" ? parsed.id : null,
+    ].filter(Boolean) as string[];
+    for (const raw of candidates) {
+      const phone = normalizePhone(raw.replace(/@c\.us$/i, ""));
+      if (phone) return phone;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function enforceMessageInterval(tenantId: string, settings: WhatsAppSettingsRow): Promise<void> {
   const sec = Math.max(0, Number(settings.message_interval_seconds ?? 30));
   if (sec <= 0) return;
@@ -1418,5 +1448,56 @@ export async function sendInvoicePaidWhatsApp(input: {
       errorMessage: err.slice(0, 4000),
     });
     await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+  }
+}
+
+export async function resolveWhatsAppSessionOwnerPhone(tenantId: string): Promise<string | null> {
+  const settings = await getSettingsRow(tenantId);
+  return getSessionOwnerPhoneFromRuntime(settings);
+}
+
+export async function sendOperationalAlertWhatsApp(
+  tenantId: string,
+  phoneOverride: string | null,
+  message: string,
+  options?: { preferSessionOwner?: boolean }
+): Promise<{ sent: boolean; reason?: string; phone?: string | null }> {
+  const settings = await getSettingsRow(tenantId);
+  if (!settings.enabled) return { sent: false, reason: "whatsapp_disabled" };
+  let target = normalizePhone(phoneOverride ?? "");
+  if (options?.preferSessionOwner) {
+    const owner = await getSessionOwnerPhoneFromRuntime(settings);
+    if (owner) target = owner;
+  }
+  if (!target) return { sent: false, reason: "missing_target_phone" };
+  try {
+    await enforceMessageInterval(tenantId, settings);
+    const result = await sendWahaMessage(settings, target, message);
+    await insertMessageLog({
+      tenantId,
+      subscriberId: null,
+      phone: target,
+      templateKey: null,
+      messageBody: message,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(tenantId, true, null);
+    return { sent: true, phone: target };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId,
+      subscriberId: null,
+      phone: target,
+      templateKey: null,
+      messageBody: message,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(tenantId, false, err.slice(0, 4000));
+    return { sent: false, reason: err.slice(0, 400), phone: target };
   }
 }

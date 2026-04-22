@@ -5,7 +5,7 @@ import { pool } from "../db/pool.js";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
-import { encryptSecret } from "../services/crypto.service.js";
+import { decryptSecret, encryptSecret } from "../services/crypto.service.js";
 import { CoaService } from "../services/coa.service.js";
 import type { RowDataPacket } from "mysql2";
 
@@ -13,6 +13,46 @@ const router = Router();
 const coa = new CoaService(pool);
 
 router.use(requireAuth);
+
+async function upsertLegacyNas(input: {
+  legacyId?: number | null;
+  ip: string;
+  name: string;
+  type?: string | null;
+  secret: string;
+}): Promise<number | null> {
+  if (!(await hasTable(pool, "nas"))) return null;
+  const type = (input.type || "other").trim() || "other";
+  const shortName = input.name.trim() || input.ip;
+  if (input.legacyId && Number.isFinite(input.legacyId)) {
+    await pool.execute(
+      `UPDATE nas
+       SET nasname = ?, shortname = ?, type = ?, secret = ?, description = COALESCE(description, '')
+       WHERE id = ?`,
+      [input.ip, shortName, type, input.secret, input.legacyId]
+    );
+    return input.legacyId;
+  }
+  const [existing] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM nas WHERE nasname = ? LIMIT 1`,
+    [input.ip]
+  );
+  if (existing[0]?.id) {
+    await pool.execute(
+      `UPDATE nas
+       SET shortname = ?, type = ?, secret = ?, description = COALESCE(description, '')
+       WHERE id = ?`,
+      [shortName, type, input.secret, Number(existing[0].id)]
+    );
+    return Number(existing[0].id);
+  }
+  const [ins] = await pool.execute(
+    `INSERT INTO nas (nasname, shortname, type, secret, description)
+     VALUES (?, ?, ?, ?, '')`,
+    [input.ip, shortName, type, input.secret]
+  );
+  return Number((ins as { insertId?: number }).insertId ?? 0) || null;
+}
 
 router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req: Request, res: Response) => {
   try {
@@ -140,6 +180,21 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
       `INSERT INTO nas_servers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
       vals
     );
+    // FreeRADIUS authorizes NAS clients from legacy `nas` table.
+    const legacyId = await upsertLegacyNas({
+      legacyId: parsed.data.legacy_nas_id ?? null,
+      ip: parsed.data.ip,
+      name: parsed.data.name,
+      type: parsed.data.type ?? "mikrotik",
+      secret: parsed.data.secret,
+    });
+    if (legacyId && col.has("legacy_nas_id")) {
+      await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
+        legacyId,
+        id,
+        req.auth!.tenantId,
+      ]);
+    }
     res.status(201).json({ id });
   } catch (e) {
     console.error("nas POST", e);
@@ -165,7 +220,10 @@ router.patch(
     }
     const tenant = req.auth!.tenantId;
     const [existing] = await pool.query<RowDataPacket[]>(
-      `SELECT id FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      `SELECT id, name, ip, type, secret_encrypted, legacy_nas_id
+       FROM nas_servers
+       WHERE id = ? AND tenant_id = ?
+       LIMIT 1`,
       [req.params.id, tenant]
     );
     if (!existing[0]) {
@@ -226,6 +284,29 @@ router.patch(
         req.params.id,
         tenant,
       ]);
+      const currentName = String(existing[0].name ?? "");
+      const currentIp = String(existing[0].ip ?? "");
+      const currentType = String(existing[0].type ?? "mikrotik");
+      let currentSecret = "";
+      try {
+        currentSecret = decryptSecret(Buffer.from(existing[0].secret_encrypted as Uint8Array));
+      } catch {
+        currentSecret = "";
+      }
+      const syncedLegacyId = await upsertLegacyNas({
+        legacyId: b.legacy_nas_id ?? (existing[0].legacy_nas_id != null ? Number(existing[0].legacy_nas_id) : null),
+        ip: b.ip ?? currentIp,
+        name: b.name ?? currentName,
+        type: b.type ?? currentType,
+        secret: b.secret && b.secret.length > 0 ? b.secret : currentSecret,
+      });
+      if (syncedLegacyId && col.has("legacy_nas_id")) {
+        await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
+          syncedLegacyId,
+          req.params.id,
+          tenant,
+        ]);
+      }
       res.json({ ok: true });
     } catch (e) {
       console.error("nas PATCH", e);
@@ -249,6 +330,27 @@ router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, 
   const testUser = "coa-probe-disconnect-invalid-user";
   const r = await coa.disconnectUserForTenant(testUser, rows[0].ip as string, req.auth!.tenantId);
   res.json({ result: r });
+});
+
+router.get("/:id/secret", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT secret_encrypted
+     FROM nas_servers
+     WHERE id = ? AND tenant_id = ?
+     LIMIT 1`,
+    [req.params.id, req.auth!.tenantId]
+  );
+  const row = rows[0];
+  if (!row?.secret_encrypted) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  try {
+    const secret = decryptSecret(Buffer.from(row.secret_encrypted as Uint8Array));
+    res.json({ secret });
+  } catch {
+    res.status(500).json({ error: "secret_decrypt_failed" });
+  }
 });
 
 export default router;

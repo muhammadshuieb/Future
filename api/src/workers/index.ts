@@ -11,6 +11,8 @@ import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
 import { runDatabaseBackup } from "../services/backup.service.js";
 import {
+  sendOperationalAlertWhatsApp,
+  resolveWhatsAppSessionOwnerPhone,
   sendExpiryReminders,
   sendInvoicePaidWhatsApp,
   sendPaymentDueReminders,
@@ -28,6 +30,8 @@ import {
 } from "../services/task-queue.service.js";
 import { listenEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
+import { getSystemSettings } from "../services/system-settings.service.js";
+import { hasTable } from "../db/schemaGuards.js";
 
 const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 const publisher = connection.duplicate();
@@ -39,6 +43,85 @@ const nasHealth = new NasHealthService(pool, coa, (ev) => {
 });
 
 export const jobQueue = new Queue("radius-manager", { connection });
+
+function isCriticalLogMessage(message: string): boolean {
+  const low = message.toLowerCase();
+  return (
+    low.includes("access denied") ||
+    low.includes("uncaughtexception") ||
+    low.includes("unhandledrejection") ||
+    low.includes("db_error") ||
+    low.includes("er_no_such_table") ||
+    low.includes("econnrefused") ||
+    low.includes("etimedout") ||
+    low.includes("waha_send_failed") ||
+    low.includes("session_not_ready") ||
+    low.includes("worker bootstrap failed") ||
+    low.includes("job_failed") ||
+    low.includes("illegal mix of collations") ||
+    low.includes("migrations") && low.includes("failed") ||
+    low.includes("freeradius") ||
+    low.includes("radius-user") ||
+    low.includes("bootstrap failed") ||
+    low.includes("socket hang up") ||
+    low.includes("no reply from server") ||
+    low.includes("eai_again") ||
+    low.includes("enotfound")
+  );
+}
+
+async function sendCriticalOpsAlerts(tenantId: string): Promise<void> {
+  if (!(await hasTable(pool, "server_logs")) || !(await hasTable(pool, "server_log_alerts"))) return;
+  const systemSettings = await getSystemSettings(tenantId);
+  if (!systemSettings.critical_alert_enabled) return;
+  let targetPhone = systemSettings.critical_alert_phone || "";
+  if (systemSettings.critical_alert_use_session_owner) {
+    const owner = await resolveWhatsAppSessionOwnerPhone(tenantId).catch(() => null);
+    if (owner) targetPhone = owner;
+  }
+  if (!targetPhone) return;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT l.id, l.created_at, l.source, l.category, l.message
+     FROM server_logs l
+     LEFT JOIN server_log_alerts a ON a.log_id = l.id
+     WHERE l.level = 'error'
+       AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+       AND a.log_id IS NULL
+     ORDER BY l.id ASC
+     LIMIT 8`
+  );
+  for (const row of rows) {
+    const message = String(row.message ?? "");
+    if (!isCriticalLogMessage(message)) {
+      await pool.execute(
+        `INSERT INTO server_log_alerts (id, log_id, tenant_id, status, error_message)
+         VALUES (?, ?, ?, 'skipped', ?)`,
+        [randomUUID(), Number(row.id), tenantId, "not_critical_pattern"]
+      );
+      continue;
+    }
+    const stamp = new Date(row.created_at as string | Date).toISOString().replace("T", " ").slice(0, 19);
+    const body =
+      "تنبيه صيانة عاجل\n" +
+      `الوقت: ${stamp}\n` +
+      `المصدر: ${String(row.source ?? "system")}${row.category ? `/${String(row.category)}` : ""}\n` +
+      `الخطأ: ${message.slice(0, 280)}`;
+    const sent = await sendOperationalAlertWhatsApp(tenantId, targetPhone, body, {
+      preferSessionOwner: systemSettings.critical_alert_use_session_owner,
+    });
+    await pool.execute(
+      `INSERT INTO server_log_alerts (id, log_id, tenant_id, status, error_message)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        randomUUID(),
+        Number(row.id),
+        tenantId,
+        sent.sent ? "sent" : "failed",
+        sent.sent ? null : (sent.reason ?? "send_failed").slice(0, 4000),
+      ]
+    );
+  }
+}
 
 async function generateMonthlyInvoices(): Promise<void> {
   const tenantId = config.defaultTenantId;
@@ -121,7 +204,8 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await add("daily-backup", everyDay);
   await add("whatsapp-health-check", everyMin);
-  await add("prune-server-logs", everyDay);
+  await add("prune-server-logs", everyMin * 60 * 6);
+  await add("ops-critical-alerts", everyMin * 2);
   await add("whatsapp-usage-alerts", everyMin * 30);
   await replaceRepeatablesByName("whatsapp-expiry-reminders");
   await replaceRepeatablesByName("whatsapp-payment-due-reminders");
@@ -183,7 +267,10 @@ async function main() {
           await testWhatsAppConnection(tenantId);
           break;
         case "prune-server-logs":
-          await pruneOldLogs(14);
+          await pruneOldLogs((await getSystemSettings(tenantId)).server_log_retention_days);
+          break;
+        case "ops-critical-alerts":
+          await sendCriticalOpsAlerts(tenantId);
           break;
         case QueueJobNames.WAHA_SEND_INVOICE_RECEIPT: {
           const payload = job.data as WahaInvoiceReceiptJobData;

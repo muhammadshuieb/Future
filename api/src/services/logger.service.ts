@@ -183,16 +183,30 @@ export function installLogger(options: { source?: LogSource } = {}): void {
   });
 }
 
-/** Daily retention prune: keep last N days. */
-export async function pruneOldLogs(retentionDays = 14): Promise<number> {
+/**
+ * Delete log rows older than `retentionDays`, then trim `server_log_alerts`
+ * so the alerts table does not grow without bound.
+ */
+export async function pruneOldLogs(retentionDays = 14): Promise<{ logs: number; alerts: number }> {
+  let logs = 0;
+  let alerts = 0;
   try {
-    const [result] = await pool.execute(
+    const [logResult] = await pool.execute(
       `DELETE FROM server_logs WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
       [retentionDays]
     );
-    const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
-    return affected;
+    logs = (logResult as { affectedRows?: number }).affectedRows ?? 0;
   } catch {
-    return 0;
+    /* table may not exist yet */
   }
+  try {
+    const [alertResult] = await pool.execute(
+      `DELETE FROM server_log_alerts WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+      [Math.max(retentionDays, 7)]
+    );
+    alerts = (alertResult as { affectedRows?: number }).affectedRows ?? 0;
+  } catch {
+    /* optional table */
+  }
+  return { logs, alerts };
 }
