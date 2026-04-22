@@ -98,6 +98,39 @@ function splitSqlStatements(script: string): string[] {
   return statements;
 }
 
+/** MySQL errors that are normal when re-applying migrations on an already-migrated DB. */
+function isBenignMigrationError(err: unknown): boolean {
+  const e = err as { errno?: number; code?: string; message?: string };
+  const errno = e.errno;
+  const code = String(e.code ?? "");
+  const msg = String(e.message ?? "").toLowerCase();
+  if (
+    code === "ER_DUP_FIELDNAME" ||
+    code === "ER_DUP_KEYNAME" ||
+    code === "ER_TABLE_EXISTS_ERROR" ||
+    code === "ER_FK_DUP_NAME"
+  ) {
+    return true;
+  }
+  const benignErrnos = new Set([
+    1050, // ER_TABLE_EXISTS_ERROR
+    1060, // ER_DUP_FIELDNAME
+    1061, // ER_DUP_KEYNAME
+    1826, // duplicate foreign key constraint name (MySQL 8+)
+  ]);
+  if (errno !== undefined && benignErrnos.has(errno)) return true;
+  if (
+    msg.includes("duplicate column name") ||
+    msg.includes("duplicate key name") ||
+    msg.includes("duplicate foreign key constraint name") ||
+    msg.includes("duplicate key") ||
+    (msg.includes("already exists") && (msg.includes("table") || msg.includes("database")))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Apply all idempotent SQL migrations in filename order. Each statement is
  * executed independently so a broken migration does not block later ones.
@@ -109,11 +142,12 @@ export async function applyAllMigrations(): Promise<{
   ran: number;
   failed: number;
   skipped: number;
+  benign: number;
 }> {
   const dir = resolveMigrationsDir();
   if (!dir) {
     console.warn("[migrations] no sql/migrations directory found — skipping");
-    return { ran: 0, failed: 0, skipped: 0 };
+    return { ran: 0, failed: 0, skipped: 0, benign: 0 };
   }
   const files = fs
     .readdirSync(dir)
@@ -122,6 +156,7 @@ export async function applyAllMigrations(): Promise<{
   let ran = 0;
   let failed = 0;
   let skipped = 0;
+  let benignTotal = 0;
   for (const file of files) {
     const full = path.join(dir, file);
     let script: string;
@@ -146,11 +181,15 @@ export async function applyAllMigrations(): Promise<{
         try {
           await conn.query(sql);
         } catch (error) {
-          perFileFailures++;
-          console.error(`[migrations] ${file} statement failed`, {
-            message: (error as Error).message,
-            snippet: sql.slice(0, 180),
-          });
+          if (isBenignMigrationError(error)) {
+            benignTotal++;
+          } else {
+            perFileFailures++;
+            console.error(`[migrations] ${file} statement failed`, {
+              message: (error as Error).message,
+              snippet: sql.slice(0, 180),
+            });
+          }
         }
       }
     } finally {
@@ -161,7 +200,7 @@ export async function applyAllMigrations(): Promise<{
   }
   invalidateColumnCache();
   console.log(
-    `[migrations] applied=${ran} failed=${failed} skipped=${skipped} (of ${files.length})`
+    `[migrations] applied=${ran} failed=${failed} skipped=${skipped} benign=${benignTotal} (of ${files.length})`
   );
-  return { ran, failed, skipped };
+  return { ran, failed, skipped, benign: benignTotal };
 }

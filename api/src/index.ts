@@ -128,7 +128,7 @@ async function start() {
   try {
     const report = await applyAllMigrations();
     console.log(
-      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped}`
+      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped} benign=${report.benign}`
     );
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);

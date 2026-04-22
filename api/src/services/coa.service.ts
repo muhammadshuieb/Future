@@ -78,9 +78,20 @@ export class CoaService {
     tenantId: string,
     acctSessionId?: string
   ): Promise<DisconnectResult> {
-    const secret =
-      (await this.getSecretFromNasServer(nasIp, tenantId)) ??
-      (await this.getSecretForNasIp(nasIp));
+    let secret: string | null = null;
+    try {
+      secret =
+        (await this.getSecretFromNasServer(nasIp, tenantId)) ??
+        (await this.getSecretForNasIp(nasIp));
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      return {
+        host: nasIp,
+        port: 3799,
+        ok: false,
+        message: `Secret resolution failed for ${nasIp}: ${err}`,
+      };
+    }
     if (!secret) {
       return {
         host: nasIp,
