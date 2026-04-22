@@ -34,7 +34,7 @@ export function Modal({
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div
         role="presentation"
-        className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-black/60 backdrop-blur-[3px]"
         onClick={closeOnBackdrop ? onClose : undefined}
         aria-hidden
       />
@@ -43,15 +43,15 @@ export function Modal({
         aria-modal
         aria-labelledby="modal-title"
         className={cn(
-          "relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-xl",
+          "glass-strong relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-2xl p-6 shadow-2xl animate-fade-in-up",
           wide ? "max-w-2xl" : "max-w-lg"
         )}
       >
         <div className="mb-4 flex items-start justify-between gap-4">
-          <h2 id="modal-title" className="text-lg font-semibold">
+          <h2 id="modal-title" className="text-lg font-semibold tracking-tight">
             {title}
           </h2>
-          <Button type="button" variant="ghost" className="shrink-0 p-2" onClick={onClose} aria-label="Close">
+          <Button type="button" variant="ghost" className="shrink-0 rounded-full p-2" onClick={onClose} aria-label="Close">
             <X className="h-4 w-4" />
           </Button>
         </div>

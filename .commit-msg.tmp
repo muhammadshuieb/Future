@@ -1,0 +1,8 @@
+Modernize UI: glass-morphism surfaces, colored nav icons, refined design tokens
+
+- Add glass utility classes and ambient gradient background in index.css
+- Extend Tailwind theme with status colors, glow shadows, fade-in animation
+- Redesign Card/Button/TextField/Modal primitives with translucent surfaces
+- Revamp AdminShell with per-section colored icon tiles and gradient active state
+- Refresh Dashboard with colored stat cards, status pills, gradient charts
+- Polish Login page with ambient blobs and gradient login button
