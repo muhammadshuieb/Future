@@ -59,7 +59,7 @@ function isCriticalLogMessage(message: string): boolean {
     low.includes("worker bootstrap failed") ||
     low.includes("job_failed") ||
     low.includes("illegal mix of collations") ||
-    low.includes("migrations") && low.includes("failed") ||
+    (low.includes("migrations") && low.includes("failed")) ||
     low.includes("freeradius") ||
     low.includes("radius-user") ||
     low.includes("bootstrap failed") ||
@@ -107,7 +107,7 @@ async function sendCriticalOpsAlerts(tenantId: string): Promise<void> {
       `المصدر: ${String(row.source ?? "system")}${row.category ? `/${String(row.category)}` : ""}\n` +
       `الخطأ: ${message.slice(0, 280)}`;
     const sent = await sendOperationalAlertWhatsApp(tenantId, targetPhone, body, {
-      preferSessionOwner: systemSettings.critical_alert_use_session_owner,
+      preferSessionOwner: false,
     });
     await pool.execute(
       `INSERT INTO server_log_alerts (id, log_id, tenant_id, status, error_message)
@@ -204,7 +204,7 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await add("daily-backup", everyDay);
   await add("whatsapp-health-check", everyMin);
-  await add("prune-server-logs", everyMin * 60 * 6);
+  await add("prune-server-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
   await add("whatsapp-usage-alerts", everyMin * 30);
   await replaceRepeatablesByName("whatsapp-expiry-reminders");

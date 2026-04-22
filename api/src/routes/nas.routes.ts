@@ -332,7 +332,8 @@ router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, 
   res.json({ result: r });
 });
 
-router.get("/:id/secret", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
+/** Plaintext shared secret — admin/manager only (never expose to viewer/accountant). */
+router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req: Request, res: Response) => {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT secret_encrypted
      FROM nas_servers

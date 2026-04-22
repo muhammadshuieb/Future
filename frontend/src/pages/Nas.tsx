@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, RefreshCw } from "lucide-react";
+import { Eye, EyeOff, Pencil, Plus, RefreshCw } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -24,6 +24,10 @@ export function NasPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** Show/hide RADIUS secret on card (fetched once per id). */
+  const [secretShown, setSecretShown] = useState<Record<string, boolean>>({});
+  const [secretValues, setSecretValues] = useState<Record<string, string | undefined>>({});
+  const [secretLoading, setSecretLoading] = useState<Record<string, boolean>>({});
 
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
@@ -50,6 +54,28 @@ export function NasPage() {
       setLoading(false);
     }
   }, [t]);
+
+  async function toggleRevealSecret(nasId: string) {
+    if (secretShown[nasId]) {
+      setSecretShown((prev) => ({ ...prev, [nasId]: false }));
+      return;
+    }
+    if (secretValues[nasId] !== undefined) {
+      setSecretShown((prev) => ({ ...prev, [nasId]: true }));
+      return;
+    }
+    setSecretLoading((prev) => ({ ...prev, [nasId]: true }));
+    try {
+      const r = await apiFetch(`/api/nas/${nasId}/secret`);
+      if (r.ok) {
+        const j = (await r.json()) as { secret?: string };
+        setSecretValues((prev) => ({ ...prev, [nasId]: j.secret ?? "" }));
+        setSecretShown((prev) => ({ ...prev, [nasId]: true }));
+      }
+    } finally {
+      setSecretLoading((prev) => ({ ...prev, [nasId]: false }));
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -145,6 +171,11 @@ export function NasPage() {
         </div>
       ) : null}
 
+      <Card variant="subtle" className="border-sky-500/25 bg-sky-500/5">
+        <div className="text-sm font-semibold text-sky-700 dark:text-sky-300">{t("nas.radiusHelpTitle")}</div>
+        <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-85">{t("nas.radiusHelpBody")}</p>
+      </Card>
+
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("nas.title")}</h1>
@@ -206,6 +237,30 @@ export function NasPage() {
               <span>
                 {t("nas.mikrotikApiEnabled")}: {Boolean(n.mikrotik_api_enabled) ? t("common.yes") : t("common.no")}
               </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[hsl(var(--border))]/40 pt-2">
+              <span className="text-xs font-medium opacity-70">{t("nas.secret")}:</span>
+              {canManage ? (
+                <>
+                  <code className="max-w-[min(100%,18rem)] truncate rounded-lg bg-[hsl(var(--muted))]/50 px-2 py-1 font-mono text-[11px]">
+                    {secretShown[String(n.id)]
+                      ? (secretValues[String(n.id)] ?? "—")
+                      : t("users.passwordHidden")}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => void toggleRevealSecret(String(n.id))}
+                    disabled={Boolean(secretLoading[String(n.id)])}
+                    className="rounded-lg p-1.5 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]/80 disabled:opacity-50"
+                    title={secretShown[String(n.id)] ? t("common.hide") : t("nas.secretReveal")}
+                    aria-label={t("nas.secretReveal")}
+                  >
+                    {secretShown[String(n.id)] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </>
+              ) : (
+                <span className="text-[11px] opacity-50">{t("users.passwordRestricted")}</span>
+              )}
             </div>
           </Card>
         ))}

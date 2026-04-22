@@ -3,7 +3,10 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { routePolicy } from "../middleware/policy.js";
 import { getSystemSettings, updateSystemSettings } from "../services/system-settings.service.js";
-import { sendOperationalAlertWhatsApp } from "../services/whatsapp.service.js";
+import {
+  resolveWhatsAppSessionOwnerPhone,
+  sendOperationalAlertWhatsApp,
+} from "../services/whatsapp.service.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -43,11 +46,15 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
 router.post("/test-alert", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {
     const settings = await getSystemSettings(req.auth!.tenantId);
-    const target = settings.critical_alert_phone || null;
+    let target = (settings.critical_alert_phone || "").trim() || null;
+    if (settings.critical_alert_use_session_owner) {
+      const owner = await resolveWhatsAppSessionOwnerPhone(req.auth!.tenantId).catch(() => null);
+      if (owner) target = owner;
+    }
     const message =
       "تنبيه تجريبي من النظام: هذا اختبار لقناة تنبيهات الأخطاء الحرجة. إذا وصلك الآن فالإعدادات صحيحة.";
     const result = await sendOperationalAlertWhatsApp(req.auth!.tenantId, target, message, {
-      preferSessionOwner: settings.critical_alert_use_session_owner,
+      preferSessionOwner: false,
     });
     res.json({ ok: true, result });
   } catch (e) {

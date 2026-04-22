@@ -138,6 +138,16 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.mikrotikApiPassword": "Mikrotik API password",
     "nas.type": "النوع",
     "nas.sessions": "الجلسات",
+    "nas.secretReveal": "إظهار/إخفاء السر",
+    "nas.radiusHelpTitle": "استكشاف أخطاء RADIUS (انتهاء الوقت / لا قبول ولا رفض)",
+    "nas.radiusHelpBody":
+      "إذا كان MikroTik يعرض Timeouts فقط (بدون Accepts أو Rejects) فالطلبات لا تصل إلى FreeRADIUS أو لا يُرجع رد.\n" +
+      "• تأكد أن حاوية freeradius تعمل: docker compose ps\n" +
+      "• افتح جدار الحماية على VPS لـ UDP 1812 و 1813 (و 3799 لـ CoA إن لزم).\n" +
+      "• في MikroTik حقل Address يجب أن يكون IP السيرفر الذي يستضيف Docker (مثلاً نفس IP لوحة التحكم).\n" +
+      "• Secret في الراوتر يجب أن يطابق السر المحفوظ هنا لنفس IP الـNAS (عمود IP في البطاقة = nasname في قاعدة FreeRADIUS).\n" +
+      "• زد مهلة Timeout في MikroTik (مثلاً 3000–5000 ms) إن كان الاتصال عبر إنترنت بطيء.\n" +
+      "• حالة «أوفلاين» في لوحة المستقبل تعني غالباً فشل ping/API وليست بالضرورة فشل RADIUS — راجع النقاط أعلاه.",
     "nas.status": "الاتصال",
     "nas.updated": "تم تحديث NAS",
     "nas.created": "تم إضافة NAS",
@@ -271,6 +281,23 @@ export const translations: Record<Locale, Record<string, string>> = {
     "logs.clear_all": "حذف الكل",
     "logs.confirm_clear_all": "هل أنت متأكد من حذف جميع السجلات؟ لا يمكن التراجع.",
     "logs.confirm_clear_old": "سيتم حذف السجلات الأقدم من 7 أيام. متابعة؟",
+    "settings.title": "الإعدادات",
+    "settings.saved": "تم حفظ الإعدادات",
+    "settings.appearance": "المظهر",
+    "settings.theme": "الوضع الحالي",
+    "settings.toggleTheme": "تبديل الوضع",
+    "settings.serverLogs": "سجل السيرفر",
+    "settings.logRetentionDays": "احتفاظ بسجلات الأخطاء (أيام)",
+    "settings.logRetentionHint":
+      "يُنظَّف الجدول تلقائياً كل ساعة تقريباً حسب عدد الأيام هنا (افتراضي أصغر = مساحة أقل).",
+    "settings.criticalAlerts": "تنبيهات واتساب للأخطاء الحرجة",
+    "settings.enableCriticalAlerts": "تفعيل إرسال تنبيه واتساب عند أخطاء تستدعي التدخل",
+    "settings.alertPhone": "رقم واتساب للتنبيهات",
+    "settings.alertPhoneHint":
+      "أدخل الرقم بصيغة دولية بدون +. إن فعّلت «استخدام رقم جلسة الواتساب» يُفضَّل الرقم المربوط بنفس جلسة WAHA.",
+    "settings.useSessionOwner": "استخدام رقم صاحب جلسة الواتساب المربوطة (إن وُجد) بدلاً من الرقم أعلاه",
+    "settings.sendTestAlert": "إرسال رسالة تجريبية",
+    "settings.testAlertSent": "تم إرسال التنبيه التجريبي (تحقق من الواتساب).",
     "maintenance.title": "الصيانة والنسخ الاحتياطي",
     "maintenance.subtitle": "نسخ يومي محلي + رفع تلقائي إلى Google Drive مع سجل الحالة",
     "maintenance.runNow": "تشغيل نسخة الآن",
@@ -532,6 +559,16 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.mikrotikApiPassword": "Mikrotik API password",
     "nas.type": "Type",
     "nas.sessions": "Sessions",
+    "nas.secretReveal": "Show / hide secret",
+    "nas.radiusHelpTitle": "RADIUS troubleshooting (timeouts, no accept/reject)",
+    "nas.radiusHelpBody":
+      "If MikroTik shows only Timeouts (0 Accepts / 0 Rejects), packets are not reaching FreeRADIUS or no reply is returned.\n" +
+      "• Ensure the freeradius container is running: docker compose ps\n" +
+      "• Open the VPS firewall for UDP 1812 and 1813 (and 3799 for CoA if needed).\n" +
+      "• The MikroTik RADIUS \"Address\" must be the host IP where Docker listens (same as your admin URL host).\n" +
+      "• The router Secret must match the secret stored here for this NAS IP (card IP = nasname in the FreeRADIUS `nas` table).\n" +
+      "• Increase MikroTik Timeout (e.g. 3000–5000 ms) on slow links.\n" +
+      "• \"Offline\" in this app usually reflects ping/API health, not RADIUS auth — verify the items above.",
     "nas.status": "Status",
     "nas.updated": "NAS updated",
     "nas.created": "NAS added",
@@ -665,6 +702,23 @@ export const translations: Record<Locale, Record<string, string>> = {
     "logs.clear_all": "Clear all",
     "logs.confirm_clear_all": "Are you sure you want to delete all server logs? This cannot be undone.",
     "logs.confirm_clear_old": "Delete log entries older than 7 days. Continue?",
+    "settings.title": "Settings",
+    "settings.saved": "Settings saved",
+    "settings.appearance": "Appearance",
+    "settings.theme": "Current theme",
+    "settings.toggleTheme": "Toggle theme",
+    "settings.serverLogs": "Server logs",
+    "settings.logRetentionDays": "Server log retention (days)",
+    "settings.logRetentionHint":
+      "Logs are pruned automatically about every hour based on this value (lower = less database size).",
+    "settings.criticalAlerts": "Critical error WhatsApp alerts",
+    "settings.enableCriticalAlerts": "Send WhatsApp when critical errors need intervention",
+    "settings.alertPhone": "WhatsApp number for alerts",
+    "settings.alertPhoneHint":
+      "International format without +. If “use session owner” is on, the WAHA-linked owner number is preferred when available.",
+    "settings.useSessionOwner": "Prefer the phone tied to the linked WhatsApp session (if any)",
+    "settings.sendTestAlert": "Send test alert",
+    "settings.testAlertSent": "Test alert sent — check WhatsApp.",
     "maintenance.title": "Maintenance and Backups",
     "maintenance.subtitle": "Daily local backups + automatic Google Drive upload with status log",
     "maintenance.runNow": "Run backup now",
