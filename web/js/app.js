@@ -33,6 +33,31 @@ function formatBytes(n) {
   return `${x.toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
 }
 
+/** عرض حصة الباقة بالجيجابايت (0 = غير محدود). */
+function formatQuotaGb(bytes) {
+  const raw = String(bytes ?? "0").trim();
+  if (!raw || raw === "0") return "غير محدود";
+  try {
+    const b = BigInt(raw);
+    if (b <= 0n) return "غير محدود";
+    const gb = Number(b) / 1024 ** 3;
+    if (!Number.isFinite(gb)) return "—";
+    return `${gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)} GB`;
+  } catch {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return "غير محدود";
+    const gb = n / 1024 ** 3;
+    return `${gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)} GB`;
+  }
+}
+
+/** إدخال المستخدم بالـ GB → سلسلة بايت للـ API. */
+function quotaGbInputToBytesString(gbStr) {
+  const n = parseFloat(String(gbStr).replace(",", "."));
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  return String(Math.round(n * 1024 ** 3));
+}
+
 /** @param {unknown} d */
 function fmtDate(d) {
   if (d == null) return "—";
@@ -429,7 +454,7 @@ async function renderPackages(el) {
             <th>الاسم</th>
             <th>السعر</th>
             <th>فترة الفوترة (يوم)</th>
-            <th>حد الاستخدام</th>
+            <th>الحصة (GB)</th>
           </tr>
         </thead>
         <tbody>
@@ -439,7 +464,7 @@ async function renderPackages(el) {
             <td><strong>${esc(p.name)}</strong></td>
             <td>${esc(String(p.price))} ${esc(p.currency || "")}</td>
             <td>${esc(String(p.billing_period_days ?? "—"))}</td>
-            <td class="mono">${formatBytes(p.quota_total_bytes || 0)}</td>
+            <td class="mono">${formatQuotaGb(p.quota_total_bytes || 0)}</td>
           </tr>`,
             )
             .join("") || `<tr><td colspan="4"><div class="empty-state">لا توجد باقات</div></td></tr>`}
@@ -464,8 +489,8 @@ async function renderPackages(el) {
             <input name="currency" value="USD" />
             <label>أيام الفوترة</label>
             <input name="billing_period_days" type="number" value="30" min="1" />
-            <label>حد البيانات (بايت، 0 = غير محدود تقريباً)</label>
-            <input name="quota_total_bytes" value="0" />
+            <label>الحصة بالجيجابايت (0 = غير محدود)</label>
+            <input name="quota_gb" type="number" step="0.01" min="0" value="0" />
             <div class="modal-actions">
               <button type="button" class="btn btn-ghost" id="pkg-cancel">إلغاء</button>
               <button type="submit" class="btn btn-primary">إنشاء</button>
@@ -490,7 +515,7 @@ async function renderPackages(el) {
             price: Number(fd.get("price") || 0),
             currency: String(fd.get("currency") || "USD"),
             billing_period_days: Number(fd.get("billing_period_days") || 30),
-            quota_total_bytes: String(fd.get("quota_total_bytes") || "0"),
+            quota_total_bytes: quotaGbInputToBytesString(String(fd.get("quota_gb") ?? "0")),
           },
         });
         root.innerHTML = "";
