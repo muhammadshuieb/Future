@@ -35,6 +35,9 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -83,8 +86,12 @@ services:
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@local.test}
       SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-admin}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-muhammadshuieb}
+      RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
+      RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
+      SQL_MIGRATIONS_DIR: /app/sql/migrations
     volumes:
       - backup_data:/app/backups
+      - ./sql:/app/sql:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -122,6 +129,7 @@ services:
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
     volumes:
       - backup_data:/app/backups
+      - ./sql:/app/sql:ro
     depends_on:
       mysql:
         condition: service_healthy

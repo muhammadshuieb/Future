@@ -31,6 +31,9 @@ import onlineUsersRoutes from "./routes/online-users.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
 import observabilityRoutes from "./routes/observability.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
+import { applyAllMigrations } from "./services/migrations.service.js";
+import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
+import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
 
 const app = express();
 app.use(helmet());
@@ -102,6 +105,25 @@ subRedis.on("message", (_channel: string, message: string) => {
 
 async function start() {
   await waitForDbReady();
+  try {
+    const report = await applyAllMigrations();
+    console.log(
+      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped}`
+    );
+  } catch (error) {
+    console.error("[bootstrap] migrations failed", error);
+  }
+  try {
+    const result = await ensureRadiusDbUser();
+    console.log(`[bootstrap] radius db user: ${result.status}`);
+  } catch (error) {
+    console.error("[bootstrap] radius db user failed", error);
+  }
+  try {
+    await normalizeWhatsAppSettingsFromEnv();
+  } catch (error) {
+    console.error("[bootstrap] whatsapp normalize failed", error);
+  }
   try {
     const seeded = await ensureDefaultAdminUser({ overwritePassword: false });
     console.log(`[bootstrap] default admin ${seeded.status}: ${seeded.email}`);

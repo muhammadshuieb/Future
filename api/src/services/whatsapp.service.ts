@@ -554,6 +554,34 @@ async function insertMessageLog(input: {
   });
 }
 
+/**
+ * Remove stale WAHA credentials stored in the DB when the deployment provides
+ * them via environment variables. Without this, a value persisted from a
+ * previous `.env` would shadow the freshly set variables for code paths that
+ * read `whatsapp_settings` directly (observability, audit, etc.).
+ */
+export async function normalizeWhatsAppSettingsFromEnv(): Promise<void> {
+  try {
+    await ensureSchema();
+  } catch (error) {
+    console.warn("[whatsapp] normalize schema skipped", (error as Error).message);
+    return;
+  }
+  const envKey = process.env.WAHA_API_KEY?.trim();
+  const envUrl = process.env.WAHA_INTERNAL_URL?.trim();
+  const envSession = process.env.WAHA_SESSION_NAME?.trim();
+  const updates: string[] = [];
+  if (envKey) updates.push("api_key = NULL");
+  if (envUrl) updates.push("waha_url = NULL");
+  if (envSession) updates.push(`session_name = ${pool.escape(envSession)}`);
+  if (updates.length === 0) return;
+  try {
+    await pool.query(`UPDATE whatsapp_settings SET ${updates.join(", ")}`);
+  } catch (error) {
+    console.warn("[whatsapp] normalize settings skipped", (error as Error).message);
+  }
+}
+
 export async function getWhatsAppStatus(tenantId: string): Promise<WhatsAppStatus> {
   const settings = await getSettingsRow(tenantId);
   const configured = Boolean(settings.waha_url && settings.session_name);
