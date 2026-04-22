@@ -5,7 +5,7 @@ import { pool } from "../db/pool.js";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
-import { decryptSecret, encryptSecret } from "../services/crypto.service.js";
+import { decryptSecret, encryptSecret, tryDecryptSecret } from "../services/crypto.service.js";
 import { CoaService } from "../services/coa.service.js";
 import type { RowDataPacket } from "mysql2";
 
@@ -293,6 +293,13 @@ router.patch(
       } catch {
         currentSecret = "";
       }
+      if (!currentSecret && (await hasTable(pool, "nas"))) {
+        const [plainNas] = await pool.query<RowDataPacket[]>(
+          `SELECT secret FROM nas WHERE nasname = ? LIMIT 1`,
+          [b.ip ?? currentIp]
+        );
+        if (plainNas[0]?.secret) currentSecret = String(plainNas[0].secret);
+      }
       const syncedLegacyId = await upsertLegacyNas({
         legacyId: b.legacy_nas_id ?? (existing[0].legacy_nas_id != null ? Number(existing[0].legacy_nas_id) : null),
         ip: b.ip ?? currentIp,
@@ -318,6 +325,42 @@ router.patch(
   }
 );
 
+router.delete(
+  "/:id",
+  requireRole("admin", "manager"),
+  denyViewerWrites,
+  denyAccountant,
+  async (req: Request, res: Response) => {
+    const tenant = req.auth!.tenantId;
+    const [existing] = await pool.query<RowDataPacket[]>(
+      `SELECT id, ip, legacy_nas_id FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, tenant]
+    );
+    if (!existing[0]) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const ip = String(existing[0].ip ?? "");
+    const legacyId = existing[0].legacy_nas_id != null ? Number(existing[0].legacy_nas_id) : null;
+    try {
+      await pool.execute(`DELETE FROM nas_servers WHERE id = ? AND tenant_id = ?`, [req.params.id, tenant]);
+      if (await hasTable(pool, "nas")) {
+        if (legacyId && Number.isFinite(legacyId)) {
+          await pool.execute(`DELETE FROM nas WHERE id = ?`, [legacyId]);
+        }
+        await pool.execute(`DELETE FROM nas WHERE nasname = ?`, [ip]);
+      }
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("nas DELETE", e);
+      res.status(500).json({
+        error: "db_error",
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+);
+
 router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT ip FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
@@ -335,7 +378,7 @@ router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, 
 /** Plaintext shared secret — admin/manager only (never expose to viewer/accountant). */
 router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req: Request, res: Response) => {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT secret_encrypted
+    `SELECT secret_encrypted, ip
      FROM nas_servers
      WHERE id = ? AND tenant_id = ?
      LIMIT 1`,
@@ -346,12 +389,25 @@ router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async
     res.status(404).json({ error: "not_found" });
     return;
   }
-  try {
-    const secret = decryptSecret(Buffer.from(row.secret_encrypted as Uint8Array));
-    res.json({ secret });
-  } catch {
-    res.status(500).json({ error: "secret_decrypt_failed" });
+  const fromEnc = tryDecryptSecret(Buffer.from(row.secret_encrypted as Uint8Array));
+  if (fromEnc !== null) {
+    res.json({ secret: fromEnc, source: "encrypted" as const });
+    return;
   }
+  if (await hasTable(pool, "nas")) {
+    const [plain] = await pool.query<RowDataPacket[]>(
+      `SELECT secret FROM nas WHERE nasname = ? LIMIT 1`,
+      [String(row.ip ?? "")]
+    );
+    if (plain[0]?.secret) {
+      res.json({ secret: String(plain[0].secret), source: "legacy_plain" as const });
+      return;
+    }
+  }
+  res.status(500).json({
+    error: "secret_decrypt_failed",
+    detail: "Re-save the NAS secret in the panel (AES key may have changed) or fix nas.secret in MySQL.",
+  });
 });
 
 export default router;

@@ -4,7 +4,7 @@ import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { config } from "../config.js";
 import { hasTable } from "../db/schemaGuards.js";
-import { decryptSecret } from "./crypto.service.js";
+import { tryDecryptSecret } from "./crypto.service.js";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -37,7 +37,10 @@ export class CoaService {
     );
     const buf = rows[0]?.secret_encrypted;
     if (!buf) return null;
-    return decryptSecret(Buffer.from(buf));
+    const plain = tryDecryptSecret(Buffer.from(buf));
+    if (plain !== null) return plain;
+    // Encrypted with an old AES_SECRET_KEY or corrupt — FreeRADIUS still uses plain `nas.secret`.
+    return this.getSecretForNasIp(nasIp);
   }
 
   /**

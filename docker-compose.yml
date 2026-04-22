@@ -18,6 +18,8 @@ services:
       timeout: 5s
       retries: 10
 
+  # RADIUS auth/accounting must be published: 1812/1813 UDP. If Portainer shows only 3799,
+  # rebuild from this compose file — otherwise MikroTik will only "timeout".
   freeradius:
     build:
       context: .
@@ -49,6 +51,7 @@ services:
       timeout: 3s
       retries: 5
 
+  # WAHA listens on 3000 inside the container; host 3001 avoids clashing with the API (3000).
   waha:
     image: devlikeapro/waha:latest
     ports:
@@ -136,6 +139,7 @@ services:
       redis:
         condition: service_healthy
 
+  # Admin UI: nginx serves on 80 in-container; browse http://HOST:8080
   web:
     build:
       context: ./frontend

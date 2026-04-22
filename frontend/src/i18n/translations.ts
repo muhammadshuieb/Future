@@ -142,12 +142,17 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.radiusHelpTitle": "استكشاف أخطاء RADIUS (انتهاء الوقت / لا قبول ولا رفض)",
     "nas.radiusHelpBody":
       "إذا كان MikroTik يعرض Timeouts فقط (بدون Accepts أو Rejects) فالطلبات لا تصل إلى FreeRADIUS أو لا يُرجع رد.\n" +
+      "• في Docker يجب أن تظهر للحاوية freeradius المنافذ 1812 و1813 و3799 (UDP). إن رأيت فقط 3799 فأعد deploy من docker-compose الرسمي.\n" +
+      "• الواجهة على المنفذ 8080 وWAHA على 3001 أمر طبيعي (داخل الحاويات 80 و3000) — لا علاقة لها بمنافذ RADIUS.\n" +
       "• تأكد أن حاوية freeradius تعمل: docker compose ps\n" +
       "• افتح جدار الحماية على VPS لـ UDP 1812 و 1813 (و 3799 لـ CoA إن لزم).\n" +
       "• في MikroTik حقل Address يجب أن يكون IP السيرفر الذي يستضيف Docker (مثلاً نفس IP لوحة التحكم).\n" +
       "• Secret في الراوتر يجب أن يطابق السر المحفوظ هنا لنفس IP الـNAS (عمود IP في البطاقة = nasname في قاعدة FreeRADIUS).\n" +
+      "• إن غيّرت AES_SECRET_KEY في .env أعد إدخال سر الـNAS من التعديل ليعاد تشفيره، ويجب أن يكون نفس المفتاح لـ api و worker.\n" +
       "• زد مهلة Timeout في MikroTik (مثلاً 3000–5000 ms) إن كان الاتصال عبر إنترنت بطيء.\n" +
       "• حالة «أوفلاين» في لوحة المستقبل تعني غالباً فشل ping/API وليست بالضرورة فشل RADIUS — راجع النقاط أعلاه.",
+    "nas.delete": "حذف NAS",
+    "nas.deleteConfirm": "حذف هذا الـ NAS نهائياً من النظام وجدول FreeRADIUS؟ لا يمكن التراجع.",
     "nas.status": "الاتصال",
     "nas.updated": "تم تحديث NAS",
     "nas.created": "تم إضافة NAS",
@@ -563,12 +568,17 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.radiusHelpTitle": "RADIUS troubleshooting (timeouts, no accept/reject)",
     "nas.radiusHelpBody":
       "If MikroTik shows only Timeouts (0 Accepts / 0 Rejects), packets are not reaching FreeRADIUS or no reply is returned.\n" +
+      "• The freeradius service must publish UDP 1812, 1813, and 3799. If Portainer shows only 3799, redeploy from this project's docker-compose.\n" +
+      "• Web UI on host 8080 and WAHA on 3001 is normal (containers use 80 and 3000) — unrelated to RADIUS ports.\n" +
       "• Ensure the freeradius container is running: docker compose ps\n" +
       "• Open the VPS firewall for UDP 1812 and 1813 (and 3799 for CoA if needed).\n" +
       "• The MikroTik RADIUS \"Address\" must be the host IP where Docker listens (same as your admin URL host).\n" +
       "• The router Secret must match the secret stored here for this NAS IP (card IP = nasname in the FreeRADIUS `nas` table).\n" +
+      "• If you changed AES_SECRET_KEY in `.env`, re-save the NAS secret in the UI (same key must be set for both `api` and `worker`).\n" +
       "• Increase MikroTik Timeout (e.g. 3000–5000 ms) on slow links.\n" +
       "• \"Offline\" in this app usually reflects ping/API health, not RADIUS auth — verify the items above.",
+    "nas.delete": "Delete NAS",
+    "nas.deleteConfirm": "Permanently remove this NAS from the app and FreeRADIUS nas table? This cannot be undone.",
     "nas.status": "Status",
     "nas.updated": "NAS updated",
     "nas.created": "NAS added",

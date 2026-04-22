@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eye, EyeOff, Pencil, Plus, RefreshCw } from "lucide-react";
+import { Eye, EyeOff, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -54,6 +54,32 @@ export function NasPage() {
       setLoading(false);
     }
   }, [t]);
+
+  async function onDeleteNas(n: NasRow) {
+    if (!window.confirm(t("nas.deleteConfirm"))) return;
+    setLoadError(null);
+    try {
+      const r = await apiFetch(`/api/nas/${String(n.id)}`, { method: "DELETE" });
+      if (r.ok) {
+        setSecretShown((prev) => {
+          const next = { ...prev };
+          delete next[String(n.id)];
+          return next;
+        });
+        setSecretValues((prev) => {
+          const next = { ...prev };
+          delete next[String(n.id)];
+          return next;
+        });
+        await load();
+      } else {
+        const raw = await readApiError(r);
+        setLoadError(formatStaffApiError(r.status, raw, t));
+      }
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function toggleRevealSecret(nasId: string) {
     if (secretShown[nasId]) {
@@ -216,14 +242,25 @@ export function NasPage() {
                   {String(n.online_status ?? "unknown")}
                 </span>
                 {canManage ? (
-                  <button
-                    type="button"
-                    onClick={() => openEdit(n)}
-                    className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
-                    aria-label={t("common.edit")}
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </button>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(n)}
+                      className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
+                      aria-label={t("common.edit")}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteNas(n)}
+                      className="rounded-lg p-2 text-red-500 hover:bg-red-500/10"
+                      aria-label={t("nas.delete")}
+                      title={t("nas.delete")}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 ) : null}
               </div>
             </div>

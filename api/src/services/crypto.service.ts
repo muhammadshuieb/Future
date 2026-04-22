@@ -29,3 +29,13 @@ export function decryptSecret(buf: Buffer): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 }
+
+/** Same as decryptSecret but returns null if the blob is corrupt or AES_SECRET_KEY no longer matches. */
+export function tryDecryptSecret(buf: Buffer): string | null {
+  try {
+    if (!buf || buf.length < IV_LEN + TAG_LEN + 1) return null;
+    return decryptSecret(buf);
+  } catch {
+    return null;
+  }
+}
