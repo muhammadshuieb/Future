@@ -30,6 +30,7 @@ import whatsappRoutes from "./routes/whatsapp.routes.js";
 import onlineUsersRoutes from "./routes/online-users.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
 import observabilityRoutes from "./routes/observability.routes.js";
+import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 
 const app = express();
 app.use(helmet());
@@ -101,6 +102,12 @@ subRedis.on("message", (_channel: string, message: string) => {
 
 async function start() {
   await waitForDbReady();
+  try {
+    const seeded = await ensureDefaultAdminUser({ overwritePassword: false });
+    console.log(`[bootstrap] default admin ${seeded.status}: ${seeded.email}`);
+  } catch (error) {
+    console.error("[bootstrap] default admin seed failed", error);
+  }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {
     console.log(`API + WS listening on ${host}:${config.port}`);

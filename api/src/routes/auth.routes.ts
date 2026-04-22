@@ -13,7 +13,7 @@ import type { RowDataPacket } from "mysql2";
 const router = Router();
 
 const loginBody = z.object({
-  email: z.string().email(),
+  email: z.string().trim().min(1),
   password: z.string().min(1),
 });
 
@@ -29,9 +29,15 @@ router.post("/login", async (req, res) => {
   if (staffCols.has("name")) selectCols.push("name");
   if (staffCols.has("permissions_json")) selectCols.push("permissions_json");
   if (staffCols.has("wallet_balance")) selectCols.push("wallet_balance");
+  const values: Array<string | number | boolean | null> = [email];
+  let whereClause = "email = ?";
+  if (staffCols.has("name")) {
+    whereClause = "(email = ? OR name = ?)";
+    values.push(email);
+  }
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT ${selectCols.join(", ")} FROM staff_users WHERE email = ? LIMIT 1`,
-    [email]
+    `SELECT ${selectCols.join(", ")} FROM staff_users WHERE ${whereClause} LIMIT 1`,
+    values
   );
   const row = rows[0];
   if (!row?.active) {
