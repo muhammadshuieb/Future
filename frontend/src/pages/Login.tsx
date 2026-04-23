@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Globe, LogIn } from "lucide-react";
+import { LogIn } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
 import { Button } from "../components/ui/Button";
@@ -50,16 +50,8 @@ export function LoginPage() {
         transition={{ duration: 0.35, ease: "easeOut" }}
         className="w-full max-w-md"
       >
-        <div className="mb-5 flex items-center justify-between">
+        <div className="mb-5">
           <LogoLockup size="sm" />
-          <button
-            type="button"
-            onClick={() => setLocale(locale === "ar" ? "en" : "ar")}
-            className="flex items-center gap-1.5 rounded-full bg-[hsl(var(--card))]/70 px-3 py-1.5 text-xs font-medium backdrop-blur hover:bg-[hsl(var(--card))]"
-          >
-            <Globe className="h-3.5 w-3.5 text-violet-500" />
-            {t("nav.lang")}
-          </button>
         </div>
 
         <Card className="shadow-glow-lg">
@@ -92,6 +84,19 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
             />
+            <div className="space-y-1.5">
+              <span className="block text-xs font-medium text-[hsl(var(--foreground))]/80">
+                {t("login.langLabel")}
+              </span>
+              <select
+                className="w-full rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]/60 px-3 py-2.5 text-sm outline-none transition focus:border-[hsl(var(--primary))]/60 focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+                value={locale}
+                onChange={(e) => setLocale(e.target.value as "ar" | "en")}
+              >
+                <option value="ar">العربية</option>
+                <option value="en">English</option>
+              </select>
+            </div>
             {err ? (
               <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
                 {err}

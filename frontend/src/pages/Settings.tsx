@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bell, Save, Send, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bell, Radio, Save, Send, ShieldCheck } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { useTheme } from "../context/ThemeContext";
 import { Button } from "../components/ui/Button";
@@ -12,6 +12,12 @@ type SystemSettings = {
   critical_alert_phone: string;
   critical_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  user_idle_timeout_minutes: number;
+  mikrotik_interim_update_minutes: number;
+  disconnect_on_activation: boolean;
+  disconnect_on_update: boolean;
+  subscription_license_note: string;
+  accountant_contact_phone: string;
 };
 
 export function SettingsPage() {
@@ -26,6 +32,12 @@ export function SettingsPage() {
     critical_alert_phone: "",
     critical_alert_use_session_owner: true,
     server_log_retention_days: 14,
+    user_idle_timeout_minutes: 4,
+    mikrotik_interim_update_minutes: 1,
+    disconnect_on_activation: true,
+    disconnect_on_update: true,
+    subscription_license_note: "",
+    accountant_contact_phone: "",
   });
 
   const load = useCallback(async () => {
@@ -38,8 +50,8 @@ export function SettingsPage() {
         setErr(formatStaffApiError(res.status, raw, t));
         return;
       }
-      const j = (await res.json()) as { settings: SystemSettings };
-      setSettings(j.settings);
+      const j = (await res.json()) as { settings: Partial<SystemSettings> };
+      setSettings((prev) => ({ ...prev, ...j.settings }));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -65,8 +77,8 @@ export function SettingsPage() {
         setErr(formatStaffApiError(res.status, raw, t));
         return;
       }
-      const j = (await res.json()) as { settings: SystemSettings };
-      setSettings(j.settings);
+      const j = (await res.json()) as { settings: Partial<SystemSettings> };
+      setSettings((prev) => ({ ...prev, ...j.settings }));
       setMsg(t("settings.saved"));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -140,6 +152,87 @@ export function SettingsPage() {
           }
           hint={t("settings.logRetentionHint")}
         />
+      </Card>
+
+      <Card className="space-y-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <Radio className="h-4 w-4 text-cyan-500" />
+          {t("settings.radiusPolicy")}
+        </div>
+        <p className="whitespace-pre-wrap text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">
+          {t("settings.radiusPolicyIntro")}
+        </p>
+        <TextField
+          label={t("settings.userIdleTimeout")}
+          type="number"
+          min={2}
+          max={10080}
+          value={String(settings.user_idle_timeout_minutes)}
+          onChange={(e) =>
+            setSettings((p) => ({
+              ...p,
+              user_idle_timeout_minutes: Math.max(2, Math.min(10080, Number(e.target.value) || 4)),
+            }))
+          }
+          hint={t("settings.userIdleTimeoutHint")}
+        />
+        <TextField
+          label={t("settings.mikrotikInterim")}
+          type="number"
+          min={1}
+          max={60}
+          value={String(settings.mikrotik_interim_update_minutes)}
+          onChange={(e) =>
+            setSettings((p) => ({
+              ...p,
+              mikrotik_interim_update_minutes: Math.max(1, Math.min(60, Number(e.target.value) || 1)),
+            }))
+          }
+          hint={t("settings.mikrotikInterimHint")}
+        />
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.disconnect_on_activation}
+            onChange={(e) => setSettings((p) => ({ ...p, disconnect_on_activation: e.target.checked }))}
+          />
+          {t("settings.disconnectOnActivation")}
+        </label>
+        <p className="text-[11px] opacity-60">{t("settings.disconnectOnActivationHint")}</p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.disconnect_on_update}
+            onChange={(e) => setSettings((p) => ({ ...p, disconnect_on_update: e.target.checked }))}
+          />
+          {t("settings.disconnectOnUpdate")}
+        </label>
+        <p className="text-[11px] opacity-60">{t("settings.disconnectOnUpdateHint")}</p>
+        <TextField
+          label={t("settings.licenseNote")}
+          value={settings.subscription_license_note}
+          onChange={(e) =>
+            setSettings((p) => ({ ...p, subscription_license_note: e.target.value }))
+          }
+          hint={t("settings.licenseNoteHint")}
+        />
+        <TextField
+          label={t("settings.accountantPhone")}
+          value={settings.accountant_contact_phone}
+          onChange={(e) =>
+            setSettings((p) => ({ ...p, accountant_contact_phone: e.target.value }))
+          }
+          hint={t("settings.accountantPhoneHint")}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={save} disabled={saving || loading}>
+            <Save className="h-4 w-4" />
+            {saving ? t("common.loading") : t("common.save")}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void load()} disabled={loading}>
+            {t("common.refresh")}
+          </Button>
+        </div>
       </Card>
 
       <Card className="space-y-4">

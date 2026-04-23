@@ -27,6 +27,8 @@ import { WhatsAppLogsPage } from "./pages/WhatsAppLogs";
 import { OnlineUsersPage } from "./pages/OnlineUsers";
 import { ObservabilityPage } from "./pages/Observability";
 import { ServerLogsPage } from "./pages/ServerLogs";
+import { SubscriberPublicPortalPage } from "./pages/SubscriberPublicPortal";
+import { CardBatchPage } from "./pages/CardBatch";
 
 function ProtectedAdmin({ children }: { children: React.ReactElement }) {
   const { user } = useAuth();
@@ -38,6 +40,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/portal" element={<SubscriberPublicPortalPage />} />
       <Route path="/user/login" element={<UserPortalLogin />} />
       <Route path="/user/dashboard" element={<UserPortalDashboard />} />
       <Route
@@ -61,6 +64,7 @@ function AppRoutes() {
         <Route path="online-users" element={<OnlineUsersPage />} />
         <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />
         <Route path="inventory/categories" element={<ExpenseCategoriesPage />} />
+        <Route path="inventory/cards" element={<CardBatchPage />} />
         <Route path="inventory/expenses" element={<ExpensesPage />} />
         <Route path="staff" element={<StaffUsersPage />} />
         <Route path="staff/roles-permissions" element={<RolesPermissionsPage />} />

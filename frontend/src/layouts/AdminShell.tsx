@@ -25,12 +25,14 @@ import {
   Sun,
   UserCircle,
   Languages,
+  Menu,
   Wifi,
   MapPin,
   ReceiptText,
   Gauge,
   FolderKanban,
   Tag,
+  CreditCard,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -147,6 +149,7 @@ export function AdminShell() {
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
   const [inventoryOpen, setInventoryOpen] = useState(isInventoryRoute);
   const [whatsAppOpen, setWhatsAppOpen] = useState(isWhatsAppRoute);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     if (isSubscribersRoute) setSubscribersOpen(true);
@@ -160,6 +163,10 @@ export function AdminShell() {
   useEffect(() => {
     if (isInventoryRoute) setInventoryOpen(true);
   }, [isInventoryRoute]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
 
   const nav: NavItem[] = [
     { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, tone: "indigo" },
@@ -187,6 +194,7 @@ export function AdminShell() {
   ];
   const inventoryNav: NavItem[] = [
     { to: "/inventory/categories", labelKey: "nav.expenseCategories", icon: Tag, tone: "yellow" },
+    { to: "/inventory/cards", labelKey: "nav.cardBatch", icon: CreditCard, tone: "fuchsia" },
     { to: "/inventory/expenses", labelKey: "nav.expenses", icon: Boxes, tone: "orange" },
   ];
   const subscribersNav: NavItem[] = [
@@ -198,9 +206,23 @@ export function AdminShell() {
   ];
 
   return (
-    <div className="flex min-h-screen text-[hsl(var(--foreground))]" dir={isRtl ? "rtl" : "ltr"}>
+    <div className="flex min-h-screen overflow-x-hidden text-[hsl(var(--foreground))]" dir={isRtl ? "rtl" : "ltr"}>
+      {mobileNavOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          aria-label="Close menu"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
       {/* Sidebar */}
-      <aside className="glass sticky top-0 flex h-screen w-72 flex-col border-0 border-e border-[hsl(var(--border))]/70 rounded-none">
+      <aside
+        className={cn(
+          "glass fixed inset-y-0 z-50 h-screen w-[min(100%,18rem)] flex-col border-0 border-[hsl(var(--border))]/70 border-e rounded-none md:sticky md:top-0 md:z-0 md:flex md:w-72",
+          isRtl ? "end-0" : "start-0",
+          mobileNavOpen ? "flex" : "hidden md:flex"
+        )}
+      >
         <div className="flex items-center gap-3 px-5 pb-5 pt-6">
           <LogoMark size="md" />
           <div className="min-w-0">
@@ -355,9 +377,17 @@ export function AdminShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Header */}
-        <header className="glass sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 rounded-none border-0 border-b border-[hsl(var(--border))]/70 px-6 py-3">
-          <div className="flex items-center gap-3 text-sm">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-[hsl(var(--primary))]/20 to-[hsl(var(--accent))]/20 text-[hsl(var(--primary))]">
+        <header className="glass sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 rounded-none border-0 border-b border-[hsl(var(--border))]/70 px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2 text-sm sm:gap-3">
+            <button
+              type="button"
+              className="rounded-xl p-2 transition hover:bg-[hsl(var(--muted))]/60 md:hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label={t("header.openMenu")}
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[hsl(var(--primary))]/20 to-[hsl(var(--accent))]/20 text-[hsl(var(--primary))]">
               <UserCircle className="h-5 w-5" />
             </div>
             <div>
@@ -403,7 +433,7 @@ export function AdminShell() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto p-6 md:p-8">
+        <main className="flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 md:p-8">
           <Outlet />
         </main>
       </div>

@@ -7,7 +7,6 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
-import { enqueueCoaDisconnect, waitForJobResult } from "../services/task-queue.service.js";
 import { CoaService, type DisconnectResult } from "../services/coa.service.js";
 
 const router = Router();
@@ -49,21 +48,20 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
   const nasIp = String(row.nasipaddress ?? "");
   const acctSessionId = row.acctsessionid ? String(row.acctsessionid) : undefined;
 
-  const job = await enqueueCoaDisconnect({
-    tenantId,
-    username,
-    nasIp,
-    acctSessionId,
-  });
-
-  let result = await waitForJobResult<DisconnectResult>(job, 8000);
-  if (!result) {
+  // Direct CoA (UDP) is more reliable than queuing: worker/Redis may be unavailable in production.
+  let result: DisconnectResult;
+  try {
     result = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId);
-  } else if (!result.ok) {
-    const direct = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId);
-    result = direct;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      status: "failed",
+      result: { host: nasIp, port: 3799, ok: false, message: `CoA error: ${message}` },
+    };
   }
-
+  if (!result.ok && acctSessionId) {
+    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, undefined);
+  }
   if (!result.ok) {
     return { status: "failed", result };
   }

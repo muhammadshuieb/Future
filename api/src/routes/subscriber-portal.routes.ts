@@ -8,11 +8,149 @@ import { requireSubscriberAuth } from "../middleware/subscriber-auth.js";
 import type { SubscriberJwtPayload } from "../middleware/subscriber-auth.js";
 import { encryptSecret } from "../services/crypto.service.js";
 import { RadiusService } from "../services/radius.service.js";
+import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import type { RowDataPacket } from "mysql2";
 
 const router = Router();
 const radius = new RadiusService(pool);
+
+function normalizePhoneDigits(raw: string): string {
+  return String(raw ?? "").replace(/\D/g, "");
+}
+
+function toSafeBigInt(v: unknown): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return BigInt(Math.max(0, Math.trunc(v)));
+  if (typeof v === "string" && v.trim()) {
+    try {
+      return BigInt(v.trim());
+    } catch {
+      return 0n;
+    }
+  }
+  return 0n;
+}
+
+router.get("/public-config", async (_req, res) => {
+  try {
+    const s = await getSystemSettings(config.defaultTenantId);
+    res.json({
+      accountant_phone: s.accountant_contact_phone,
+      license_note: s.subscription_license_note,
+    });
+  } catch (e) {
+    console.error("public-config", e);
+    res.json({ accountant_phone: "", license_note: "" });
+  }
+});
+
+const publicLookupBody = z.object({
+  phone: z.string().min(4).max(32),
+});
+
+router.post("/public-lookup", async (req, res) => {
+  const parsed = publicLookupBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  const tenantId = config.defaultTenantId;
+  const digits = normalizePhoneDigits(parsed.data.phone);
+  if (digits.length < 6) {
+    res.status(400).json({ error: "phone_too_short" });
+    return;
+  }
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT s.id, s.username, s.status, s.start_date, s.expiration_date, s.used_bytes,
+              p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes
+       FROM subscribers s
+       LEFT JOIN packages p ON p.id = s.package_id
+       WHERE s.tenant_id = ?
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(s.phone,''),' ',''),'-',''),'+',''),'(','') = ?
+       LIMIT 2`,
+      [tenantId, digits]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    if (rows.length > 1) {
+      res.status(409).json({ error: "ambiguous_phone" });
+      return;
+    }
+    const row = rows[0];
+    const username = String(row.username ?? "");
+    const quota = toSafeBigInt(row.quota_total_bytes);
+    const used = toSafeBigInt(row.used_bytes);
+    const remaining = quota > 0n ? (used >= quota ? 0n : quota - used) : null;
+
+    let daily = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
+    let monthly = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
+    let yearly = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
+    if (await hasTable(pool, "radacct")) {
+      const sumBytes = (field: "acctinputoctets" | "acctoutputoctets") => `SUM(COALESCE(${field},0))`;
+      const [dRes, mRes, yRes] = await Promise.all([
+        pool.query<RowDataPacket[]>(
+          `SELECT ${sumBytes("acctinputoctets")} AS d, ${sumBytes("acctoutputoctets")} AS u
+           FROM radacct WHERE username = ? AND DATE(acctstarttime) = CURDATE()`,
+          [username]
+        ),
+        pool.query<RowDataPacket[]>(
+          `SELECT ${sumBytes("acctinputoctets")} AS d, ${sumBytes("acctoutputoctets")} AS u
+           FROM radacct
+           WHERE username = ?
+             AND YEAR(acctstarttime) = YEAR(CURDATE())
+             AND MONTH(acctstarttime) = MONTH(CURDATE())`,
+          [username]
+        ),
+        pool.query<RowDataPacket[]>(
+          `SELECT ${sumBytes("acctinputoctets")} AS d, ${sumBytes("acctoutputoctets")} AS u
+           FROM radacct WHERE username = ? AND YEAR(acctstarttime) = YEAR(CURDATE())`,
+          [username]
+        ),
+      ]);
+      const pack = (r: RowDataPacket | undefined) => {
+        const down = toSafeBigInt(r?.d);
+        const up = toSafeBigInt(r?.u);
+        const total = down + up;
+        return {
+          download_bytes: down.toString(),
+          upload_bytes: up.toString(),
+          total_bytes: total.toString(),
+        };
+      };
+      const dRows = dRes[0] as RowDataPacket[];
+      const mRows = mRes[0] as RowDataPacket[];
+      const yRows = yRes[0] as RowDataPacket[];
+      daily = pack(dRows[0]);
+      monthly = pack(mRows[0]);
+      yearly = pack(yRows[0]);
+    }
+    const settings = await getSystemSettings(tenantId);
+    res.json({
+      subscriber: {
+        username,
+        status: String(row.status ?? ""),
+        start_date: row.start_date,
+        expiration_date: row.expiration_date,
+        package_name: String(row.package_name ?? "—"),
+        speed: String(row.mikrotik_rate_limit ?? "—"),
+        quota_total_bytes: quota.toString(),
+        used_bytes: used.toString(),
+        remaining_bytes: remaining != null ? remaining.toString() : null,
+        is_limited_quota: quota > 0n,
+      },
+      usage: { daily, monthly, yearly },
+      accountant_phone: settings.accountant_contact_phone,
+      license_note: settings.subscription_license_note,
+    });
+  } catch (e) {
+    console.error("public-lookup", e);
+    res.status(500).json({ error: "public_lookup_failed" });
+  }
+});
 
 const loginBody = z.object({
   username: z.string().min(1).max(64),

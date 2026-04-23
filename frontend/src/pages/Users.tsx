@@ -29,6 +29,7 @@ type SubscriberRow = {
   pool?: string | null;
   notes?: string | null;
   used_bytes?: string | number | null;
+  quota_total_bytes?: string | number | null;
   creator_name?: string | null;
   creator_email?: string | null;
   first_name?: string | null;
@@ -92,12 +93,49 @@ function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
       typeof value.used_bytes === "number" || typeof value.used_bytes === "string"
         ? value.used_bytes
         : null,
+    quota_total_bytes:
+      typeof value.quota_total_bytes === "number" || typeof value.quota_total_bytes === "string"
+        ? value.quota_total_bytes
+        : null,
   };
 }
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   return value.slice(0, 16).replace("T", " ");
+}
+
+function toSafeBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return BigInt(Math.max(0, Math.trunc(value)));
+  if (typeof value === "string" && value.trim()) {
+    try {
+      return BigInt(value.trim());
+    } catch {
+      return 0n;
+    }
+  }
+  return 0n;
+}
+
+function formatBytesCompact(value: bigint): string {
+  if (value <= 0n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let x = Number(value);
+  let i = 0;
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024;
+    i++;
+  }
+  return `${x.toFixed(i === 0 ? 0 : x >= 10 ? 1 : 2)} ${units[i]}`;
+}
+
+function formatRemainingQuota(row: SubscriberRow, unlimitedLabel: string): string {
+  const quota = toSafeBigInt(row.quota_total_bytes);
+  if (quota <= 0n) return unlimitedLabel;
+  const used = toSafeBigInt(row.used_bytes);
+  const remaining = used >= quota ? 0n : quota - used;
+  return formatBytesCompact(remaining);
 }
 
 function formatNasLabel(row: SubscriberRow): string {
@@ -126,7 +164,8 @@ function getRowState(row: SubscriberRow): "online" | "limited" | "expired" | "di
 
 function getRowClass(row: SubscriberRow): string {
   const state = getRowState(row);
-  if (state === "online") return "bg-blue-500/20 hover:bg-blue-500/25";
+  if (state === "online")
+    return "bg-emerald-500/15 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20";
   if (state === "limited") return "bg-cyan-500/15 hover:bg-cyan-500/20";
   if (state === "expired") return "bg-amber-500/20 hover:bg-amber-500/25";
   if (state === "disabled") return "bg-red-500/20 hover:bg-red-500/25";
@@ -668,6 +707,7 @@ export function UsersPage() {
                 <th className={cn("px-4 py-3", isRtl ? "text-right" : "text-left")}>{t("users.password")}</th>
                 {header(t("users.status"), "status", isRtl ? "text-right" : "text-left")}
                 {header(t("users.package"), "package_name", isRtl ? "text-right" : "text-left")}
+                <th className={cn("px-4 py-3", isRtl ? "text-right" : "text-left")}>{t("users.remainingQuota")}</th>
                 {header(t("users.nasNetwork"), "nas_network", isRtl ? "text-right" : "text-left")}
                 {header(t("users.region"), "region_name", isRtl ? "text-right" : "text-left")}
                 {header(t("users.createdBy"), "created_by", isRtl ? "text-right" : "text-left")}
@@ -689,9 +729,16 @@ export function UsersPage() {
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <Link className="font-medium text-[hsl(var(--primary))] hover:underline" to={`/users/${s.id}`}>
-                      {String(s.username)}
-                    </Link>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Link className="font-medium text-[hsl(var(--primary))] hover:underline" to={`/users/${s.id}`}>
+                        {String(s.username)}
+                      </Link>
+                      {Number(s.is_online ?? 0) > 0 ? (
+                        <span className="inline-flex items-center rounded-full bg-emerald-500/25 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                          {t("users.onlineNow")}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-3 opacity-90">
                     {[s.first_name, s.last_name].filter(Boolean).join(" ").trim() || String(s.nickname ?? "—")}
@@ -739,6 +786,9 @@ export function UsersPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td>
+                  <td className="px-4 py-3 font-mono text-xs opacity-90">
+                    {formatRemainingQuota(s, t("packages.unlimited"))}
+                  </td>
                   <td className="px-4 py-3 opacity-90">{formatNasLabel(s)}</td>
                   <td className="px-4 py-3 opacity-90">{String(s.region_name ?? "—")}</td>
                   <td className="px-4 py-3 opacity-90">{String(s.creator_name ?? s.creator_email ?? "—")}</td>
