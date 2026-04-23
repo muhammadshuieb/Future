@@ -114,15 +114,15 @@ router.patch(
           res.status(400).json({ error: "invalid_parent", detail: "cycle" });
           return;
         }
-        const [r] = await pool.query<RowDataPacket[]>(
+        const [parentRows] = await pool.query<RowDataPacket[]>(
           `SELECT parent_id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
           [walk, tenant]
         );
-        walk = r[0]?.parent_id ? String(r[0].parent_id) : null;
+        walk = parentRows[0]?.parent_id ? String(parentRows[0].parent_id) : null;
       }
     }
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: Array<string | number | null> = [];
     if (b.name !== undefined) {
       sets.push("name = ?");
       vals.push(b.name.trim());

@@ -255,8 +255,18 @@ router.get("/movements", async (req, res) => {
 
 router.get("/report/monthly", async (req, res) => {
   const month = typeof req.query.month === "string" ? req.query.month : new Date().toISOString().slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    res.status(400).json({ error: "invalid_month" });
+    return;
+  }
   const monthStart = `${month}-01`;
-  const monthEnd = `${month}-31`;
+  const startDate = new Date(`${monthStart}T00:00:00.000Z`);
+  if (Number.isNaN(startDate.getTime())) {
+    res.status(400).json({ error: "invalid_month" });
+    return;
+  }
+  const nextMonth = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 1));
+  const nextMonthStart = nextMonth.toISOString().slice(0, 10);
   const tenantId = req.auth!.tenantId;
   const [expenseRows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -264,20 +274,20 @@ router.get("/report/monthly", async (req, res) => {
        ROUND(SUM(CASE WHEN m.delta_qty > 0 THEN m.delta_qty * COALESCE(p.unit_cost, 0) ELSE 0 END), 2) AS stock_added_cost
      FROM inventory_movements m
      LEFT JOIN inventory_products p ON p.id = m.product_id AND p.tenant_id = m.tenant_id
-     WHERE m.tenant_id = ? AND m.created_at >= ? AND m.created_at <= ?`,
-    [tenantId, monthStart, monthEnd]
+     WHERE m.tenant_id = ? AND m.created_at >= ? AND m.created_at < ?`,
+    [tenantId, monthStart, nextMonthStart]
   );
   const [paymentRows] = await pool.query<RowDataPacket[]>(
     `SELECT ROUND(COALESCE(SUM(amount), 0), 2) AS payments_total
      FROM payments
-     WHERE tenant_id = ? AND paid_at >= ? AND paid_at <= ?`,
-    [tenantId, monthStart, monthEnd]
+     WHERE tenant_id = ? AND paid_at >= ? AND paid_at < ?`,
+    [tenantId, monthStart, nextMonthStart]
   );
   const [invoiceRows] = await pool.query<RowDataPacket[]>(
     `SELECT ROUND(COALESCE(SUM(amount), 0), 2) AS invoices_total
      FROM invoices
-     WHERE tenant_id = ? AND issue_date >= ? AND issue_date <= ?`,
-    [tenantId, monthStart, monthEnd]
+     WHERE tenant_id = ? AND issue_date >= ? AND issue_date < ?`,
+    [tenantId, monthStart, nextMonthStart]
   );
   res.json({
     month,

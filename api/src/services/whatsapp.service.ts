@@ -403,11 +403,21 @@ async function ensureSessionReady(settings: WhatsAppSettingsRow): Promise<void> 
       body: JSON.stringify({ name: session }),
     });
   }
-  await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(session)}/start`, {
+
+  // Avoid spamming WAHA with /start when session is already running.
+  const runtime = await getSessionRuntimeStatus(settings);
+  if (runtime.connected) return;
+
+  const startResp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(session)}/start`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: "{}",
   });
+  // WAHA returns 422 "already started" when start is idempotent.
+  if (!startResp.ok && startResp.status !== 422) {
+    const body = await startResp.text().catch(() => "");
+    throw new Error(`waha_start_failed: ${startResp.status} ${body.slice(0, 300)}`);
+  }
 }
 
 async function tryFetchQr(
