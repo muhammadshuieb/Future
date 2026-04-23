@@ -95,7 +95,7 @@ export function UserPortalLogin() {
       method: "POST",
       body: JSON.stringify(
         loginMode === "phone"
-          ? { phone, password }
+          ? { phone }
           : { username, password }
       ),
     });
@@ -177,13 +177,15 @@ export function UserPortalLogin() {
                 autoComplete="username"
               />
             )}
-            <TextField
-              label={t("userPortalLogin.pass")}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
+            {loginMode === "username" ? (
+              <TextField
+                label={t("userPortalLogin.pass")}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            ) : null}
             <label className="text-xs text-[hsl(var(--muted-foreground))]">
               {t("userPortalLogin.langLabel")}
             </label>

@@ -213,7 +213,7 @@ router.post("/public-lookup", async (req, res) => {
 const loginBody = z.object({
   username: z.string().min(1).max(64).optional(),
   phone: z.string().min(4).max(32).optional(),
-  password: z.string().min(1),
+  password: z.string().min(1).optional(),
 });
 
 router.post("/login", async (req, res) => {
@@ -223,7 +223,7 @@ router.post("/login", async (req, res) => {
     return;
   }
   const tenantId = config.defaultTenantId;
-  const { password } = parsed.data;
+  const password = String(parsed.data.password ?? "");
   const usernameInput = String(parsed.data.username ?? "").trim();
   const phoneDigits = normalizePhoneDigits(parsed.data.phone ?? "");
   if (!usernameInput && !phoneDigits) {
@@ -257,14 +257,21 @@ router.post("/login", async (req, res) => {
     return;
   }
   const username = String(subs[0].username ?? "");
-  const [pwRows] = await pool.query<RowDataPacket[]>(
-    `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
-    [username]
-  );
-  const stored = pwRows[0]?.value != null ? String(pwRows[0].value) : null;
-  if (!stored || stored !== password) {
-    res.status(401).json({ error: "invalid_credentials" });
-    return;
+  // Phone mode keeps legacy behavior: login by phone only (no password).
+  if (!phoneDigits) {
+    if (!password) {
+      res.status(401).json({ error: "invalid_credentials" });
+      return;
+    }
+    const [pwRows] = await pool.query<RowDataPacket[]>(
+      `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
+      [username]
+    );
+    const stored = pwRows[0]?.value != null ? String(pwRows[0].value) : null;
+    if (!stored || stored !== password) {
+      res.status(401).json({ error: "invalid_credentials" });
+      return;
+    }
   }
   const payload: SubscriberJwtPayload = {
     kind: "subscriber",
