@@ -28,8 +28,8 @@ type SubscriberRow = {
   mac_address?: string | null;
   pool?: string | null;
   notes?: string | null;
-  used_bytes?: string | number | null;
-  quota_total_bytes?: string | number | null;
+  used_bytes?: string | number | bigint | null;
+  quota_total_bytes?: string | number | bigint | null;
   creator_name?: string | null;
   creator_email?: string | null;
   first_name?: string | null;
@@ -90,11 +90,13 @@ function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
           ? Number(value.is_online)
           : null,
     used_bytes:
-      typeof value.used_bytes === "number" || typeof value.used_bytes === "string"
+      typeof value.used_bytes === "number" || typeof value.used_bytes === "string" || typeof value.used_bytes === "bigint"
         ? value.used_bytes
         : null,
     quota_total_bytes:
-      typeof value.quota_total_bytes === "number" || typeof value.quota_total_bytes === "string"
+      typeof value.quota_total_bytes === "number" ||
+      typeof value.quota_total_bytes === "string" ||
+      typeof value.quota_total_bytes === "bigint"
         ? value.quota_total_bytes
         : null,
   };

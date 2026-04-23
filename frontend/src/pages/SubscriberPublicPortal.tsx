@@ -20,6 +20,8 @@ type PublicData = {
     expiration_date: unknown;
     package_name: string;
     speed: string;
+    quota_total_bytes: string;
+    used_bytes: string;
     remaining_bytes: string | null;
     is_limited_quota: boolean;
   };
@@ -162,6 +164,24 @@ export function SubscriberPublicPortalPage() {
               <BarChart3 className="h-5 w-5 text-teal-500" />
               {t("publicPortal.summary")}
             </h2>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-2">
+                <div className="text-[11px] opacity-70">{t("users.status")}</div>
+                <div className="mt-1 text-sm font-semibold">
+                  {String(data.subscriber.status ?? "").toUpperCase() === "ACTIVE" ? "Active" : String(data.subscriber.status || "—")}
+                </div>
+              </div>
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-2">
+                <div className="text-[11px] opacity-70">{t("publicPortal.endDate")}</div>
+                <div className="mt-1 text-sm font-semibold">{fmtDate(data.subscriber.expiration_date)}</div>
+              </div>
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-2">
+                <div className="text-[11px] opacity-70">{t("publicPortal.remaining")}</div>
+                <div className="mt-1 text-sm font-semibold">
+                  {data.subscriber.remaining_bytes != null ? formatBytes(data.subscriber.remaining_bytes) : t("packages.unlimited")}
+                </div>
+              </div>
+            </div>
             <dl className="space-y-2 text-sm">
               <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
                 <dt className="text-[hsl(var(--muted-foreground))]">{t("users.username")}</dt>
@@ -212,6 +232,25 @@ export function SubscriberPublicPortalPage() {
                 </div>
               ) : null}
             </dl>
+            {data.subscriber.is_limited_quota ? (
+              <div className="rounded-xl border border-[hsl(var(--border))] p-3">
+                <div className="mb-1 text-xs opacity-70">{t("userPortalDash.usage")}</div>
+                <div className="h-2 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+                  <div
+                    className="h-full rounded-full bg-teal-500"
+                    style={{
+                      width: (() => {
+                        const used = BigInt(data.subscriber.used_bytes || "0");
+                        const quota = BigInt(data.subscriber.quota_total_bytes || "0");
+                        if (quota <= 0n) return "0%";
+                        const pct = Number((used * 10000n) / quota) / 100;
+                        return `${Math.max(0, Math.min(100, pct))}%`;
+                      })(),
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
 
             <h3 className="mt-4 text-sm font-semibold opacity-80">{t("publicPortal.traffic")}</h3>
             <div className="grid gap-2 text-sm">
