@@ -114,10 +114,11 @@ router.patch(
           res.status(400).json({ error: "invalid_parent", detail: "cycle" });
           return;
         }
-        const [parentRows] = await pool.query<RowDataPacket[]>(
+        const parentQueryResult = await pool.query<RowDataPacket[]>(
           `SELECT parent_id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
           [walk, tenant]
         );
+        const parentRows: RowDataPacket[] = parentQueryResult[0];
         walk = parentRows[0]?.parent_id ? String(parentRows[0].parent_id) : null;
       }
     }
