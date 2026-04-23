@@ -23,7 +23,7 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
   if (!id) return { status: "not_found" };
 
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT username, nasipaddress, acctsessionid
+    `SELECT username, nasipaddress, acctsessionid, framedipaddress
      FROM radacct
      WHERE radacctid = ? AND acctstoptime IS NULL
      LIMIT 1`,
@@ -47,11 +47,12 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
 
   const nasIp = String(row.nasipaddress ?? "");
   const acctSessionId = row.acctsessionid ? String(row.acctsessionid) : undefined;
+  const framedIp = row.framedipaddress ? String(row.framedipaddress) : undefined;
 
   // Direct CoA (UDP) is more reliable than queuing: worker/Redis may be unavailable in production.
   let result: DisconnectResult;
   try {
-    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId);
+    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, acctSessionId, framedIp);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return {
@@ -60,7 +61,7 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
     };
   }
   if (!result.ok && acctSessionId) {
-    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, undefined);
+    result = await coa.disconnectUserForTenant(username, nasIp, tenantId, undefined, framedIp);
   }
   if (!result.ok) {
     return { status: "failed", result };

@@ -154,15 +154,23 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const hasStaffTbl = await hasTable(pool, "staff_users");
     const hasInvoicesTbl = await hasTable(pool, "invoices");
     const hasQuotaStateTbl = await hasTable(pool, "user_quota_state");
+    const hasUsageLiveTbl = await hasTable(pool, "user_usage_live");
     const hasRadacctTbl = await hasTable(pool, "radacct");
     const hasRegionsTbl = await hasTable(pool, "subscriber_regions");
     const pkgCols = hasPkgTbl ? await getTableColumns(pool, "packages") : new Set<string>();
     const nasCols = hasNasTbl ? await getTableColumns(pool, "nas_servers") : new Set<string>();
     const staffCols = hasStaffTbl ? await getTableColumns(pool, "staff_users") : new Set<string>();
+    const usageLiveCols = hasUsageLiveTbl ? await getTableColumns(pool, "user_usage_live") : new Set<string>();
     const joinPkg = hasPkgTbl && subCols.has("package_id") && pkgCols.has("id");
     const joinNas = hasNasTbl && subCols.has("nas_server_id") && nasCols.has("id");
     const joinCreator = hasStaffTbl && subCols.has("created_by") && staffCols.has("id");
     const joinReg = hasRegionsTbl && subCols.has("region_id");
+    const joinUsageLive =
+      hasUsageLiveTbl &&
+      subCols.has("username") &&
+      usageLiveCols.has("tenant_id") &&
+      usageLiveCols.has("username") &&
+      usageLiveCols.has("total_bytes");
     const safeSubCols = pickExistingColumns(subCols, [
       "id",
       "tenant_id",
@@ -184,9 +192,15 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       "ip_address",
       "mac_address",
       "pool",
-      "used_bytes",
     ]);
     const selectParts = safeSubCols.map((name) => `s.${name}`);
+    if (subCols.has("used_bytes")) {
+      if (joinUsageLive) {
+        selectParts.push(`COALESCE(uul.total_bytes, s.used_bytes) AS used_bytes`);
+      } else {
+        selectParts.push(`s.used_bytes AS used_bytes`);
+      }
+    }
     if (joinPkg && pkgCols.has("name")) selectParts.push(`p.name AS package_name`);
     if (joinPkg && pkgCols.has("quota_total_bytes")) selectParts.push(`p.quota_total_bytes AS quota_total_bytes`);
     if (hasInvoicesTbl) selectParts.push(`COALESCE(ov.overdue_count, 0) AS overdue_invoices_count`);
@@ -223,6 +237,13 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     if (joinReg) {
       joins.push(
         `LEFT JOIN subscriber_regions reg ON reg.id = s.region_id AND reg.tenant_id = s.tenant_id`
+      );
+    }
+    if (joinUsageLive) {
+      joins.push(
+        `LEFT JOIN user_usage_live uul
+         ON uul.tenant_id = s.tenant_id
+        AND uul.username = s.username`
       );
     }
     if (hasInvoicesTbl) {

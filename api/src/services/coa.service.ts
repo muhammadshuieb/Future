@@ -46,9 +46,16 @@ export class CoaService {
   /**
    * Disconnect-Request with explicit RADIUS secret (no DB lookup).
    */
-  disconnectUser(username: string, nasIp: string, secret: string, acctSessionId?: string): Promise<DisconnectResult> {
+  disconnectUser(
+    username: string,
+    nasIp: string,
+    secret: string,
+    acctSessionId?: string,
+    framedIp?: string
+  ): Promise<DisconnectResult> {
     const attrs: [string, string][] = [["User-Name", username]];
     if (acctSessionId) attrs.push(["Acct-Session-Id", acctSessionId]);
+    if (framedIp) attrs.push(["Framed-IP-Address", framedIp]);
 
     const packet = {
       code: "Disconnect-Request",
@@ -76,7 +83,8 @@ export class CoaService {
     username: string,
     nasIp: string,
     tenantId: string,
-    acctSessionId?: string
+    acctSessionId?: string,
+    framedIp?: string
   ): Promise<DisconnectResult> {
     let secret: string | null = null;
     try {
@@ -100,13 +108,13 @@ export class CoaService {
         message: `No RADIUS secret for NAS ${nasIp}`,
       };
     }
-    return this.disconnectUser(username, nasIp, secret, acctSessionId);
+    return this.disconnectUser(username, nasIp, secret, acctSessionId, framedIp);
   }
 
   async disconnectAllSessions(username: string, tenantId: string): Promise<DisconnectResult[]> {
     if (!(await hasTable(this.pool, "radacct"))) return [];
     const [sessions] = await this.pool.query<RowDataPacket[]>(
-      `SELECT nasipaddress, acctsessionid FROM radacct
+      `SELECT nasipaddress, acctsessionid, framedipaddress FROM radacct
        WHERE username = ? AND acctstoptime IS NULL`,
       [username]
     );
@@ -114,7 +122,8 @@ export class CoaService {
     for (const s of sessions) {
       const nas = s.nasipaddress as string;
       const sid = s.acctsessionid as string;
-      results.push(await this.disconnectUserForTenant(username, nas, tenantId, sid));
+      const framedIp = s.framedipaddress as string | undefined;
+      results.push(await this.disconnectUserForTenant(username, nas, tenantId, sid, framedIp));
     }
     return results;
   }
