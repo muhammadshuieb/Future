@@ -362,6 +362,28 @@ export function UserProfilePage() {
     navigate("/users");
   }
 
+  const usageChartData = useMemo(() => {
+    if (!traffic) return [];
+    return traffic.daily
+      .slice()
+      .reverse()
+      .map((d) => ({
+        period: d.period,
+        totalGb: Number(d.total_bytes) / 1024 ** 3,
+      }));
+  }, [traffic]);
+
+  const monthlyChartData = useMemo(() => {
+    if (!traffic) return [];
+    return traffic.monthly
+      .slice()
+      .reverse()
+      .map((d) => ({
+        period: d.period,
+        totalGb: Number(d.total_bytes) / 1024 ** 3,
+      }));
+  }, [traffic]);
+
   if (loading || !row) {
     return (
       <p className="text-sm opacity-70" dir={isRtl ? "rtl" : "ltr"}>
@@ -399,28 +421,6 @@ export function UserProfilePage() {
     if (!value) return "—";
     return value.slice(0, 19).replace("T", " ");
   }
-
-  const usageChartData = useMemo(() => {
-    if (!traffic) return [];
-    return traffic.daily
-      .slice()
-      .reverse()
-      .map((d) => ({
-        period: d.period,
-        totalGb: Number(d.total_bytes) / 1024 ** 3,
-      }));
-  }, [traffic]);
-
-  const monthlyChartData = useMemo(() => {
-    if (!traffic) return [];
-    return traffic.monthly
-      .slice()
-      .reverse()
-      .map((d) => ({
-        period: d.period,
-        totalGb: Number(d.total_bytes) / 1024 ** 3,
-      }));
-  }, [traffic]);
 
   function exportCsv() {
     if (!traffic) return;
