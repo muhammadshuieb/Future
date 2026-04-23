@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { Fingerprint, LogIn, Network, UserCircle, Wifi } from "lucide-react";
+import { Fingerprint, LogIn, LogOut, Network, UserCircle, Wifi } from "lucide-react";
 import { userApiFetch, setUserToken } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -219,6 +219,10 @@ export function UserPortalDashboard() {
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
   const nav = useNavigate();
+  function onLogout() {
+    setUserToken(null);
+    nav("/user/login", { replace: true });
+  }
 
   useEffect(() => {
     void (async () => {
@@ -320,10 +324,16 @@ export function UserPortalDashboard() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-gradient-to-b from-cyan-950/20 to-[hsl(var(--background))] px-4 py-6" dir={isRtl ? "rtl" : "ltr"}>
       <div className="mx-auto max-w-lg space-y-4">
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
-          <UserCircle className="h-7 w-7 text-cyan-500" />
-          {t("userPortalDash.title")}
-        </h1>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="flex items-center gap-2 text-2xl font-bold">
+            <UserCircle className="h-7 w-7 text-cyan-500" />
+            {t("userPortalDash.title")}
+          </h1>
+          <Button type="button" variant="outline" onClick={onLogout}>
+            <LogOut className="me-2 h-4 w-4" />
+            {t("header.logout")}
+          </Button>
+        </div>
         <Card className="p-2">
           <div className="grid grid-cols-2 gap-2">
             <Button
