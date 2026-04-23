@@ -105,6 +105,7 @@ export function UserProfilePage() {
   const canManage = canManageOperations(user?.role);
   const canPayInvoice = user?.role === "admin" || user?.role === "manager" || user?.role === "accountant";
   const canCreateInvoice = canPayInvoice;
+  const [regions, setRegions] = useState<RegionOpt[]>([]);
 
   const regionSelectOptions = useMemo(() => {
     const byParent = new Map<string | null, RegionOpt[]>();
@@ -154,7 +155,6 @@ export function UserProfilePage() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [regionId, setRegionId] = useState("");
-  const [regions, setRegions] = useState<RegionOpt[]>([]);
 
   const loadTraffic = useCallback(
     async (opts?: { from?: string; to?: string }) => {
