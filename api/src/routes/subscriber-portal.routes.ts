@@ -64,9 +64,12 @@ router.post("/public-lookup", async (req, res) => {
   try {
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT s.id, s.username, s.status, s.start_date, s.expiration_date, s.used_bytes,
+              s.first_name, s.last_name, s.nickname, s.phone,
+              r.name AS region_name,
               p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes
        FROM subscribers s
        LEFT JOIN packages p ON p.id = s.package_id
+       LEFT JOIN subscriber_regions r ON r.id = s.region_id
        WHERE s.tenant_id = ?
          AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(s.phone,''),' ',''),'-',''),'+',''),'(','') = ?
        LIMIT 2`,
@@ -89,9 +92,14 @@ router.post("/public-lookup", async (req, res) => {
     let daily = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
     let monthly = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
     let yearly = { total_bytes: "0", download_bytes: "0", upload_bytes: "0" };
+    let reports: {
+      daily: { period: string; sessions_count: number; total_bytes: string }[];
+      monthly: { period: string; sessions_count: number; total_bytes: string }[];
+      yearly: { period: string; sessions_count: number; total_bytes: string }[];
+    } = { daily: [], monthly: [], yearly: [] };
     if (await hasTable(pool, "radacct")) {
       const sumBytes = (field: "acctinputoctets" | "acctoutputoctets") => `SUM(COALESCE(${field},0))`;
-      const [dRes, mRes, yRes] = await Promise.all([
+      const [dRes, mRes, yRes, drRes, mrRes, yrRes] = await Promise.all([
         pool.query<RowDataPacket[]>(
           `SELECT ${sumBytes("acctinputoctets")} AS d, ${sumBytes("acctoutputoctets")} AS u
            FROM radacct WHERE username = ? AND DATE(acctstarttime) = CURDATE()`,
@@ -108,6 +116,39 @@ router.post("/public-lookup", async (req, res) => {
         pool.query<RowDataPacket[]>(
           `SELECT ${sumBytes("acctinputoctets")} AS d, ${sumBytes("acctoutputoctets")} AS u
            FROM radacct WHERE username = ? AND YEAR(acctstarttime) = YEAR(CURDATE())`,
+          [username]
+        ),
+        pool.query<RowDataPacket[]>(
+          `SELECT DATE(acctstarttime) AS period,
+                  COUNT(*) AS sessions_count,
+                  SUM(COALESCE(acctinputoctets,0)+COALESCE(acctoutputoctets,0)) AS total_bytes
+           FROM radacct
+           WHERE username = ?
+           GROUP BY DATE(acctstarttime)
+           ORDER BY period DESC
+           LIMIT 30`,
+          [username]
+        ),
+        pool.query<RowDataPacket[]>(
+          `SELECT DATE_FORMAT(acctstarttime, '%Y-%m') AS period,
+                  COUNT(*) AS sessions_count,
+                  SUM(COALESCE(acctinputoctets,0)+COALESCE(acctoutputoctets,0)) AS total_bytes
+           FROM radacct
+           WHERE username = ?
+           GROUP BY DATE_FORMAT(acctstarttime, '%Y-%m')
+           ORDER BY period DESC
+           LIMIT 12`,
+          [username]
+        ),
+        pool.query<RowDataPacket[]>(
+          `SELECT DATE_FORMAT(acctstarttime, '%Y') AS period,
+                  COUNT(*) AS sessions_count,
+                  SUM(COALESCE(acctinputoctets,0)+COALESCE(acctoutputoctets,0)) AS total_bytes
+           FROM radacct
+           WHERE username = ?
+           GROUP BY DATE_FORMAT(acctstarttime, '%Y')
+           ORDER BY period DESC
+           LIMIT 5`,
           [username]
         ),
       ]);
@@ -127,11 +168,27 @@ router.post("/public-lookup", async (req, res) => {
       daily = pack(dRows[0]);
       monthly = pack(mRows[0]);
       yearly = pack(yRows[0]);
+      const mapRows = (rowsIn: RowDataPacket[]) =>
+        rowsIn.map((r) => ({
+          period: String(r.period ?? ""),
+          sessions_count: Number(r.sessions_count ?? 0),
+          total_bytes: toSafeBigInt(r.total_bytes).toString(),
+        }));
+      reports = {
+        daily: mapRows((drRes[0] as RowDataPacket[]) ?? []),
+        monthly: mapRows((mrRes[0] as RowDataPacket[]) ?? []),
+        yearly: mapRows((yrRes[0] as RowDataPacket[]) ?? []),
+      };
     }
     const settings = await getSystemSettings(tenantId);
     res.json({
       subscriber: {
         username,
+        first_name: String(row.first_name ?? ""),
+        last_name: String(row.last_name ?? ""),
+        nickname: String(row.nickname ?? ""),
+        phone: String(row.phone ?? ""),
+        region_name: String(row.region_name ?? ""),
         status: String(row.status ?? ""),
         start_date: row.start_date,
         expiration_date: row.expiration_date,
@@ -143,6 +200,7 @@ router.post("/public-lookup", async (req, res) => {
         is_limited_quota: quota > 0n,
       },
       usage: { daily, monthly, yearly },
+      usage_reports: reports,
       accountant_phone: settings.accountant_contact_phone,
       license_note: settings.subscription_license_note,
     });

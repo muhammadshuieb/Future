@@ -10,6 +10,11 @@ import { TextField } from "../components/ui/TextField";
 type PublicData = {
   subscriber: {
     username: string;
+    first_name: string;
+    last_name: string;
+    nickname: string;
+    phone: string;
+    region_name: string;
     status: string;
     start_date: unknown;
     expiration_date: unknown;
@@ -22,6 +27,11 @@ type PublicData = {
     daily: { total_bytes: string; download_bytes: string; upload_bytes: string };
     monthly: { total_bytes: string; download_bytes: string; upload_bytes: string };
     yearly: { total_bytes: string; download_bytes: string; upload_bytes: string };
+  };
+  usage_reports: {
+    daily: { period: string; sessions_count: number; total_bytes: string }[];
+    monthly: { period: string; sessions_count: number; total_bytes: string }[];
+    yearly: { period: string; sessions_count: number; total_bytes: string }[];
   };
   accountant_phone: string;
   license_note: string;
@@ -154,6 +164,28 @@ export function SubscriberPublicPortalPage() {
             </h2>
             <dl className="space-y-2 text-sm">
               <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="text-[hsl(var(--muted-foreground))]">{t("users.username")}</dt>
+                <dd className="font-medium">{data.subscriber.username || "—"}</dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="text-[hsl(var(--muted-foreground))]">{t("users.fullName")}</dt>
+                <dd className="font-medium">
+                  {[data.subscriber.first_name, data.subscriber.last_name].filter(Boolean).join(" ").trim() || "—"}
+                </dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="text-[hsl(var(--muted-foreground))]">{t("users.nickname")}</dt>
+                <dd className="font-medium">{data.subscriber.nickname || "—"}</dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="text-[hsl(var(--muted-foreground))]">{t("users.phone")}</dt>
+                <dd className="font-medium">{data.subscriber.phone || "—"}</dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="text-[hsl(var(--muted-foreground))]">{t("users.region")}</dt>
+                <dd className="font-medium">{data.subscriber.region_name || "—"}</dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
                 <dt className="text-[hsl(var(--muted-foreground))]">{t("publicPortal.startDate")}</dt>
                 <dd className="font-medium">{fmtDate(data.subscriber.start_date)}</dd>
               </div>
@@ -201,6 +233,43 @@ export function SubscriberPublicPortalPage() {
                   <span className="font-mono text-xs font-medium">
                     {formatBytes(data.usage[key].total_bytes)}
                   </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold opacity-80">{t("profile.sessionsDetails")}</h3>
+              {(
+                [
+                  ["daily", t("publicPortal.daily")],
+                  ["monthly", t("publicPortal.monthly")],
+                  ["yearly", t("publicPortal.yearly")],
+                ] as const
+              ).map(([key, label]) => (
+                <div key={key} className="overflow-hidden rounded-xl border border-[hsl(var(--border))]">
+                  <div className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/40 px-3 py-2 text-xs font-semibold">
+                    {label}
+                  </div>
+                  <div className="max-h-48 overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[hsl(var(--muted))]/30">
+                        <tr>
+                          <th className="px-2 py-2 text-start">{t("profile.period")}</th>
+                          <th className="px-2 py-2 text-start">{t("publicPortal.summary")}</th>
+                          <th className="px-2 py-2 text-start">{t("profile.totalUsage")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(data.usage_reports[key] ?? []).map((r) => (
+                          <tr key={`${key}-${r.period}`} className="border-t border-[hsl(var(--border))]/50">
+                            <td className="px-2 py-2 font-mono">{r.period}</td>
+                            <td className="px-2 py-2 font-mono">{r.sessions_count}</td>
+                            <td className="px-2 py-2 font-mono">{formatBytes(r.total_bytes)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               ))}
             </div>

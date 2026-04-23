@@ -177,7 +177,6 @@ export function UserPortalDashboard() {
   const [trafficFrom, setTrafficFrom] = useState("");
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
-  const [showTrafficDetails, setShowTrafficDetails] = useState(false);
   const nav = useNavigate();
 
   useEffect(() => {
@@ -234,12 +233,11 @@ export function UserPortalDashboard() {
     [trafficFrom, trafficTo]
   );
 
-  async function onShowUsageDetails() {
-    setShowTrafficDetails(true);
-    if (!traffic && !trafficLoading) {
-      await loadTraffic({ from: trafficFrom, to: trafficTo });
+  useEffect(() => {
+    if (activeTab === "traffic" && !traffic && !trafficLoading) {
+      void loadTraffic({ from: trafficFrom, to: trafficTo });
     }
-  }
+  }, [activeTab, traffic, trafficLoading, loadTraffic, trafficFrom, trafficTo]);
 
   function fmtDuration(seconds: number): string {
     const s = Math.max(0, Math.floor(seconds || 0));
@@ -406,13 +404,7 @@ export function UserPortalDashboard() {
                 </Button>
               </div>
             </div>
-            {!showTrafficDetails ? (
-              <div className="py-8 text-center">
-                <Button type="button" onClick={() => void onShowUsageDetails()}>
-                  {t("profile.sessionsDetails")}
-                </Button>
-              </div>
-            ) : !traffic ? (
+            {!traffic ? (
               <p className="text-sm opacity-70">{t("profile.trafficEmpty")}</p>
             ) : (
               <>

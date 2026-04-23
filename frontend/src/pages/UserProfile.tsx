@@ -144,7 +144,6 @@ export function UserProfilePage() {
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "traffic">("details");
-  const [showTrafficDetails, setShowTrafficDetails] = useState(false);
 
   const [packageId, setPackageId] = useState("");
   const [nasId, setNasId] = useState("");
@@ -363,12 +362,11 @@ export function UserProfilePage() {
     navigate("/users");
   }
 
-  async function onShowUsageDetails() {
-    setShowTrafficDetails(true);
-    if (!traffic && !trafficLoading) {
-      await loadTraffic({ from: trafficFrom, to: trafficTo });
+  useEffect(() => {
+    if (activeTab === "traffic" && !traffic && !trafficLoading) {
+      void loadTraffic({ from: trafficFrom, to: trafficTo });
     }
-  }
+  }, [activeTab, traffic, trafficLoading, loadTraffic, trafficFrom, trafficTo]);
 
   const usageChartData = useMemo(() => {
     if (!traffic) return [];
@@ -804,13 +802,7 @@ export function UserProfilePage() {
             </Button>
           </div>
         </div>
-        {!showTrafficDetails ? (
-          <div className="py-8 text-center">
-            <Button type="button" onClick={() => void onShowUsageDetails()}>
-              {t("profile.sessionsDetails")}
-            </Button>
-          </div>
-        ) : !traffic ? (
+        {!traffic ? (
           <p className="text-sm opacity-70">{t("profile.trafficEmpty")}</p>
         ) : (
           <>
