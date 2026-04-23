@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const radius: any = require("radius");
 
 export type DisconnectResult = { host: string; port: number; ok: boolean; message: string };
+type NasServerCoaConfig = { nasIp: string; coaHost: string; coaPort: number; secret: string | null };
 
 /**
  * UDP Change of Authorization (RFC 5176) — Disconnect-Request on port 3799.
@@ -30,17 +31,31 @@ export class CoaService {
     return null;
   }
 
-  private async getSecretFromNasServer(nasIp: string, tenantId: string): Promise<string | null> {
+  private async getNasServerCoaConfig(nasIp: string, tenantId: string): Promise<NasServerCoaConfig | null> {
+    if (!(await hasTable(this.pool, "nas_servers"))) return null;
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT secret_encrypted FROM nas_servers WHERE tenant_id = ? AND ip = ? AND status = 'active' LIMIT 1`,
-      [tenantId, nasIp]
+      `SELECT ip, pptp_tunnel_ip, coa_port, secret_encrypted
+       FROM nas_servers
+       WHERE tenant_id = ?
+         AND status = 'active'
+         AND (ip = ? OR pptp_tunnel_ip = ?)
+       ORDER BY CASE WHEN ip = ? THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [tenantId, nasIp, nasIp, nasIp]
     );
-    const buf = rows[0]?.secret_encrypted;
-    if (!buf) return null;
-    const plain = tryDecryptSecret(Buffer.from(buf));
-    if (plain !== null) return plain;
-    // Encrypted with an old AES_SECRET_KEY or corrupt — FreeRADIUS still uses plain `nas.secret`.
-    return this.getSecretForNasIp(nasIp);
+    const row = rows[0];
+    if (!row) return null;
+    const rowIp = String(row.ip ?? nasIp);
+    const tunnelIp = String(row.pptp_tunnel_ip ?? "").trim();
+    const coaHost = tunnelIp || rowIp || nasIp;
+    const coaPortRaw = Number(row.coa_port ?? 3799);
+    const coaPort = Number.isFinite(coaPortRaw) && coaPortRaw > 0 ? Math.floor(coaPortRaw) : 3799;
+    const buf = row.secret_encrypted as Buffer | Uint8Array | null | undefined;
+    let secret: string | null = null;
+    if (buf) {
+      secret = tryDecryptSecret(Buffer.from(buf));
+    }
+    return { nasIp: rowIp, coaHost, coaPort, secret };
   }
 
   /**
@@ -48,10 +63,11 @@ export class CoaService {
    */
   disconnectUser(
     username: string,
-    nasIp: string,
+    host: string,
     secret: string,
     acctSessionId?: string,
-    framedIp?: string
+    framedIp?: string,
+    port = 3799
   ): Promise<DisconnectResult> {
     const attrs: [string, string][] = [["User-Name", username]];
     if (acctSessionId) attrs.push(["Acct-Session-Id", acctSessionId]);
@@ -69,14 +85,14 @@ export class CoaService {
       encoded = radius.encode(packet);
     } catch (e) {
       return Promise.resolve({
-        host: nasIp,
-        port: 3799,
+        host,
+        port,
         ok: false,
         message: `Encode error: ${(e as Error).message}`,
       });
     }
 
-    return this.sendUdp(nasIp, 3799, encoded, secret);
+    return this.sendUdp(host, port, encoded, secret);
   }
 
   async disconnectUserForTenant(
@@ -86,29 +102,37 @@ export class CoaService {
     acctSessionId?: string,
     framedIp?: string
   ): Promise<DisconnectResult> {
+    let host = nasIp;
+    let port = 3799;
     let secret: string | null = null;
     try {
-      secret =
-        (await this.getSecretFromNasServer(nasIp, tenantId)) ??
-        (await this.getSecretForNasIp(nasIp));
+      const config = await this.getNasServerCoaConfig(nasIp, tenantId);
+      if (config) {
+        host = config.coaHost;
+        port = config.coaPort;
+        secret = config.secret;
+      }
+      if (!secret) {
+        secret = await this.getSecretForNasIp(config?.nasIp ?? nasIp);
+      }
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       return {
-        host: nasIp,
-        port: 3799,
+        host,
+        port,
         ok: false,
         message: `Secret resolution failed for ${nasIp}: ${err}`,
       };
     }
     if (!secret) {
       return {
-        host: nasIp,
-        port: 3799,
+        host,
+        port,
         ok: false,
         message: `No RADIUS secret for NAS ${nasIp}`,
       };
     }
-    return this.disconnectUser(username, nasIp, secret, acctSessionId, framedIp);
+    return this.disconnectUser(username, host, secret, acctSessionId, framedIp, port);
   }
 
   async disconnectAllSessions(username: string, tenantId: string): Promise<DisconnectResult[]> {
