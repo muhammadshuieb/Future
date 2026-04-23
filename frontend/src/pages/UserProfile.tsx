@@ -143,6 +143,8 @@ export function UserProfilePage() {
   const [trafficFrom, setTrafficFrom] = useState("");
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"details" | "traffic">("details");
+  const [showTrafficDetails, setShowTrafficDetails] = useState(false);
 
   const [packageId, setPackageId] = useState("");
   const [nasId, setNasId] = useState("");
@@ -237,7 +239,6 @@ export function UserProfilePage() {
       } else {
         setInvoices([]);
       }
-      await loadTraffic({ from: "", to: "" });
     } finally {
       setLoading(false);
     }
@@ -360,6 +361,13 @@ export function UserProfilePage() {
 
   function onClose() {
     navigate("/users");
+  }
+
+  async function onShowUsageDetails() {
+    setShowTrafficDetails(true);
+    if (!traffic && !trafficLoading) {
+      await loadTraffic({ from: trafficFrom, to: trafficTo });
+    }
   }
 
   const usageChartData = useMemo(() => {
@@ -565,100 +573,189 @@ export function UserProfilePage() {
         <p className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 px-4 py-2 text-sm">{msg}</p>
       ) : null}
 
-      <Card>
-        <form onSubmit={onSave} className="space-y-4">
-          <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} disabled={!canManage}>
-            <option value="">—</option>
-            {packages.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </SelectField>
-          <SelectField label={t("users.nas")} value={nasId} onChange={(e) => setNasId(e.target.value)} disabled={!canManage}>
-            <option value="">—</option>
-            {nasList.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name} ({n.ip})
-              </option>
-            ))}
-          </SelectField>
-          <TextField label={t("users.pool")} value={pool} onChange={(e) => setPool(e.target.value)} disabled={!canManage} />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label={t("users.ip")} value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} disabled={!canManage} />
-            <TextField label={t("users.mac")} value={macAddress} onChange={(e) => setMacAddress(e.target.value)} disabled={!canManage} />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label={t("users.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={!canManage} />
-            <TextField label={t("users.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={!canManage} />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label={t("users.nickname")} value={nickname} onChange={(e) => setNickname(e.target.value)} disabled={!canManage} />
-            <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
-          </div>
-          <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
-          <SelectField
-            label={`${t("users.region")} (${t("common.optional")})`}
-            value={regionId}
-            onChange={(e) => setRegionId(e.target.value)}
-            disabled={!canManage}
+      <Card className="p-2">
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={activeTab === "details" ? "default" : "outline"}
+            onClick={() => setActiveTab("details")}
           >
-            <option value="">—</option>
-            {regionSelectOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </SelectField>
-          {canManage ? (
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button type="submit" disabled={saving}>
-                {saving ? t("common.loading") : t("common.save")}
-              </Button>
-              <Button type="button" variant="outline" onClick={onClose}>
-                {t("common.cancel")}
-              </Button>
-              {active ? (
-                <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDisable()}>
-                  {t("profile.disable")}
+            {t("users.profile")}
+          </Button>
+          <Button
+            type="button"
+            variant={activeTab === "traffic" ? "default" : "outline"}
+            onClick={() => setActiveTab("traffic")}
+          >
+            {t("profile.trafficTitle")}
+          </Button>
+        </div>
+      </Card>
+
+      {activeTab === "details" ? (
+        <>
+          <Card>
+            <form onSubmit={onSave} className="space-y-4">
+              <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} disabled={!canManage}>
+                <option value="">—</option>
+                {packages.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </SelectField>
+              <SelectField label={t("users.nas")} value={nasId} onChange={(e) => setNasId(e.target.value)} disabled={!canManage}>
+                <option value="">—</option>
+                {nasList.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name} ({n.ip})
+                  </option>
+                ))}
+              </SelectField>
+              <TextField label={t("users.pool")} value={pool} onChange={(e) => setPool(e.target.value)} disabled={!canManage} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <TextField label={t("users.ip")} value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} disabled={!canManage} />
+                <TextField label={t("users.mac")} value={macAddress} onChange={(e) => setMacAddress(e.target.value)} disabled={!canManage} />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <TextField label={t("users.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={!canManage} />
+                <TextField label={t("users.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={!canManage} />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <TextField label={t("users.nickname")} value={nickname} onChange={(e) => setNickname(e.target.value)} disabled={!canManage} />
+                <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
+              </div>
+              <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
+              <SelectField
+                label={`${t("users.region")} (${t("common.optional")})`}
+                value={regionId}
+                onChange={(e) => setRegionId(e.target.value)}
+                disabled={!canManage}
+              >
+                <option value="">—</option>
+                {regionSelectOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </SelectField>
+              {canManage ? (
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <Button type="submit" disabled={saving}>
+                    {saving ? t("common.loading") : t("common.save")}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    {t("common.cancel")}
+                  </Button>
+                  {active ? (
+                    <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDisable()}>
+                      {t("profile.disable")}
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="outline" onClick={() => void onEnable()}>
+                      {t("profile.enable")}
+                    </Button>
+                  )}
+                  <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDelete()}>
+                    <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                    {t("common.delete")}
+                  </Button>
+                </div>
+              ) : null}
+            </form>
+          </Card>
+
+          <Card>
+            <h2 className="mb-3 text-sm font-semibold opacity-80">{t("nav.settings")}</h2>
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-xs opacity-60">ID</dt>
+                <dd className="font-mono text-xs break-all">{String(row.id)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs opacity-60">{t("users.createdBy")}</dt>
+                <dd className="text-xs">{String(row.creator_name ?? "—")}</dd>
+              </div>
+              <div>
+                <dt className="text-xs opacity-60">{t("users.expires")}</dt>
+                <dd className="font-mono text-xs">{String(row.expiration_date ?? "").slice(0, 19).replace("T", " ")}</dd>
+              </div>
+              <div>
+                <dt className="text-xs opacity-60">{t("users.createdAt")}</dt>
+                <dd className="font-mono text-xs">{String(row.created_at ?? "").slice(0, 19).replace("T", " ")}</dd>
+              </div>
+            </dl>
+          </Card>
+
+          <Card>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold opacity-80">{t("profile.invoices")}</h2>
+              {canCreateInvoice ? (
+                <Button type="button" variant="outline" onClick={() => setCreateInvoiceOpen((x) => !x)}>
+                  {t("profile.createInvoice")}
                 </Button>
-              ) : (
-                <Button type="button" variant="outline" onClick={() => void onEnable()}>
-                  {t("profile.enable")}
-                </Button>
-              )}
-              <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDelete()}>
-                <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
-                {t("common.delete")}
-              </Button>
+              ) : null}
             </div>
-          ) : null}
-        </form>
-      </Card>
+            {canCreateInvoice && createInvoiceOpen ? (
+              <div className="mb-3 grid gap-2 rounded-lg border border-[hsl(var(--border))] p-3 sm:grid-cols-3">
+                <TextField
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  label={t("profile.invoiceAmount")}
+                  value={invoiceAmount}
+                  onChange={(e) => setInvoiceAmount(e.target.value)}
+                />
+                <SelectField
+                  label={t("packages.currency")}
+                  value={invoiceCurrency}
+                  onChange={(e) => setInvoiceCurrency(e.target.value === "SYP" ? "SYP" : "USD")}
+                >
+                  <option value="USD">USD</option>
+                  <option value="SYP">SYP</option>
+                </SelectField>
+                <div className="flex items-end">
+                  <Button type="button" onClick={() => void onCreateInvoice()} disabled={creatingInvoice}>
+                    {creatingInvoice ? t("common.loading") : t("profile.createInvoice")}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {invoices.length === 0 ? (
+              <p className="text-sm opacity-70">{t("profile.noInvoices")}</p>
+            ) : (
+              <div className="space-y-2">
+                {invoices.map((invoice) => (
+                  <div
+                    key={invoice.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="font-medium">{String(invoice.invoice_no ?? invoice.id)}</div>
+                      <div className="opacity-70">
+                        {String(invoice.amount ?? "-")} {String(invoice.currency ?? "")} · {String(invoice.status ?? "-")}
+                      </div>
+                    </div>
+                    {canPayInvoice && invoice.status !== "paid" ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void onPayInvoice(invoice.id)}
+                        disabled={payingInvoiceId === invoice.id}
+                      >
+                        {payingInvoiceId === invoice.id ? t("common.loading") : t("profile.payInvoice")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      ) : null}
 
-      <Card>
-        <h2 className="mb-3 text-sm font-semibold opacity-80">{t("nav.settings")}</h2>
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-xs opacity-60">ID</dt>
-            <dd className="font-mono text-xs break-all">{String(row.id)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs opacity-60">{t("users.createdBy")}</dt>
-            <dd className="text-xs">{String(row.creator_name ?? "—")}</dd>
-          </div>
-          <div>
-            <dt className="text-xs opacity-60">{t("users.expires")}</dt>
-            <dd className="font-mono text-xs">{String(row.expiration_date ?? "").slice(0, 19).replace("T", " ")}</dd>
-          </div>
-          <div>
-            <dt className="text-xs opacity-60">{t("users.createdAt")}</dt>
-            <dd className="font-mono text-xs">{String(row.created_at ?? "").slice(0, 19).replace("T", " ")}</dd>
-          </div>
-        </dl>
-      </Card>
-
-      <Card className="space-y-4">
+      {activeTab === "traffic" ? (
+        <Card className="space-y-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold opacity-80">{t("profile.trafficTitle")}</h2>
           <div className="flex flex-wrap gap-2">
@@ -707,7 +804,13 @@ export function UserProfilePage() {
             </Button>
           </div>
         </div>
-        {!traffic ? (
+        {!showTrafficDetails ? (
+          <div className="py-8 text-center">
+            <Button type="button" onClick={() => void onShowUsageDetails()}>
+              {t("profile.sessionsDetails")}
+            </Button>
+          </div>
+        ) : !traffic ? (
           <p className="text-sm opacity-70">{t("profile.trafficEmpty")}</p>
         ) : (
           <>
@@ -876,71 +979,7 @@ export function UserProfilePage() {
           </>
         )}
       </Card>
-
-      <Card>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold opacity-80">{t("profile.invoices")}</h2>
-          {canCreateInvoice ? (
-            <Button type="button" variant="outline" onClick={() => setCreateInvoiceOpen((x) => !x)}>
-              {t("profile.createInvoice")}
-            </Button>
-          ) : null}
-        </div>
-        {canCreateInvoice && createInvoiceOpen ? (
-          <div className="mb-3 grid gap-2 rounded-lg border border-[hsl(var(--border))] p-3 sm:grid-cols-3">
-            <TextField
-              type="number"
-              min="0"
-              step="0.01"
-              label={t("profile.invoiceAmount")}
-              value={invoiceAmount}
-              onChange={(e) => setInvoiceAmount(e.target.value)}
-            />
-            <SelectField
-              label={t("packages.currency")}
-              value={invoiceCurrency}
-              onChange={(e) => setInvoiceCurrency(e.target.value === "SYP" ? "SYP" : "USD")}
-            >
-              <option value="USD">USD</option>
-              <option value="SYP">SYP</option>
-            </SelectField>
-            <div className="flex items-end">
-              <Button type="button" onClick={() => void onCreateInvoice()} disabled={creatingInvoice}>
-                {creatingInvoice ? t("common.loading") : t("profile.createInvoice")}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-        {invoices.length === 0 ? (
-          <p className="text-sm opacity-70">{t("profile.noInvoices")}</p>
-        ) : (
-          <div className="space-y-2">
-            {invoices.map((invoice) => (
-              <div
-                key={invoice.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm"
-              >
-                <div className="space-y-0.5">
-                  <div className="font-medium">{String(invoice.invoice_no ?? invoice.id)}</div>
-                  <div className="opacity-70">
-                    {String(invoice.amount ?? "-")} {String(invoice.currency ?? "")} · {String(invoice.status ?? "-")}
-                  </div>
-                </div>
-                {canPayInvoice && invoice.status !== "paid" ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void onPayInvoice(invoice.id)}
-                    disabled={payingInvoiceId === invoice.id}
-                  >
-                    {payingInvoiceId === invoice.id ? t("common.loading") : t("profile.payInvoice")}
-                  </Button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+      ) : null}
     </div>
   );
 }

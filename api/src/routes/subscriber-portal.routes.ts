@@ -197,10 +197,13 @@ router.get("/me", requireSubscriberAuth, async (req, res) => {
   const tenantId = req.subscriber!.tenantId;
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT s.id, s.username, s.status, s.expiration_date, s.start_date, s.used_bytes,
+            s.first_name, s.last_name, s.nickname, s.phone, s.region_id,
             p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes,
+            r.name AS region_name,
             u.total_bytes AS usage_live_bytes
      FROM subscribers s
      LEFT JOIN packages p ON p.id = s.package_id
+     LEFT JOIN subscriber_regions r ON r.id = s.region_id
      LEFT JOIN user_usage_live u ON u.tenant_id = s.tenant_id AND u.username = s.username
      WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
     [sid, tenantId]
@@ -231,6 +234,220 @@ router.get("/me", requireSubscriberAuth, async (req, res) => {
     usage_bytes: used.toString(),
     quota_bytes: quota.toString(),
     remaining_bytes: remaining != null ? remaining.toString() : null,
+  });
+});
+
+router.get("/me/traffic-report", requireSubscriberAuth, async (req, res) => {
+  const queryParsed = z
+    .object({
+      from: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+      to: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+    })
+    .safeParse(req.query);
+  if (!queryParsed.success) {
+    res.status(400).json({ error: "invalid_query" });
+    return;
+  }
+  const fromDate = queryParsed.data.from ?? null;
+  const toDate = queryParsed.data.to ?? null;
+  if (fromDate && toDate && fromDate > toDate) {
+    res.status(400).json({ error: "invalid_range" });
+    return;
+  }
+  const sid = req.subscriber!.sub;
+  const tenantId = req.subscriber!.tenantId;
+  const [subs] = await pool.query<RowDataPacket[]>(
+    `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [sid, tenantId]
+  );
+  if (!subs[0]) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const username = String(subs[0].username ?? "");
+  if (!(await hasTable(pool, "radacct"))) {
+    res.json({
+      username,
+      totals: {
+        daily_online_seconds: 0,
+        daily_download_bytes: "0",
+        daily_upload_bytes: "0",
+        daily_total_bytes: "0",
+        monthly_online_seconds: 0,
+        monthly_download_bytes: "0",
+        monthly_upload_bytes: "0",
+        monthly_total_bytes: "0",
+      },
+      daily: [],
+      monthly: [],
+      yearly: [],
+      sessions: [],
+    });
+    return;
+  }
+  const sessionSecondsExpr = `GREATEST(
+    COALESCE(acctsessiontime, 0),
+    COALESCE(TIMESTAMPDIFF(SECOND, acctstarttime, COALESCE(acctstoptime, NOW())), 0)
+  )`;
+  const dateWhereParts: string[] = [];
+  const dateParams: string[] = [];
+  if (fromDate) {
+    dateWhereParts.push(`DATE(acctstarttime) >= ?`);
+    dateParams.push(fromDate);
+  }
+  if (toDate) {
+    dateWhereParts.push(`DATE(acctstarttime) <= ?`);
+    dateParams.push(toDate);
+  }
+  const dateWhereSql = dateWhereParts.length ? ` AND ${dateWhereParts.join(" AND ")}` : "";
+  const [dailyRows, monthlyRows, yearlyRows, todayRows, monthRows, sessionRows] = await Promise.all([
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         DATE(acctstarttime) AS period,
+         COUNT(*) AS sessions_count,
+         SUM(${sessionSecondsExpr}) AS online_seconds,
+         SUM(COALESCE(acctinputoctets,0)) AS download_bytes,
+         SUM(COALESCE(acctoutputoctets,0)) AS upload_bytes
+       FROM radacct
+       WHERE username = ?${dateWhereSql}
+       GROUP BY DATE(acctstarttime)
+       ORDER BY period DESC
+       LIMIT 90`,
+      [username, ...dateParams]
+    ),
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         DATE_FORMAT(acctstarttime, '%Y-%m') AS period,
+         COUNT(*) AS sessions_count,
+         SUM(${sessionSecondsExpr}) AS online_seconds,
+         SUM(COALESCE(acctinputoctets,0)) AS download_bytes,
+         SUM(COALESCE(acctoutputoctets,0)) AS upload_bytes
+       FROM radacct
+       WHERE username = ?${dateWhereSql}
+       GROUP BY DATE_FORMAT(acctstarttime, '%Y-%m')
+       ORDER BY period DESC
+       LIMIT 24`,
+      [username, ...dateParams]
+    ),
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         DATE_FORMAT(acctstarttime, '%Y') AS period,
+         COUNT(*) AS sessions_count,
+         SUM(${sessionSecondsExpr}) AS online_seconds,
+         SUM(COALESCE(acctinputoctets,0)) AS download_bytes,
+         SUM(COALESCE(acctoutputoctets,0)) AS upload_bytes
+       FROM radacct
+       WHERE username = ?${dateWhereSql}
+       GROUP BY DATE_FORMAT(acctstarttime, '%Y')
+       ORDER BY period DESC
+       LIMIT 10`,
+      [username, ...dateParams]
+    ),
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         SUM(${sessionSecondsExpr}) AS online_seconds,
+         SUM(COALESCE(acctinputoctets,0)) AS download_bytes,
+         SUM(COALESCE(acctoutputoctets,0)) AS upload_bytes
+       FROM radacct
+       WHERE username = ? AND DATE(acctstarttime) = CURDATE()${dateWhereSql}`,
+      [username, ...dateParams]
+    ),
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         SUM(${sessionSecondsExpr}) AS online_seconds,
+         SUM(COALESCE(acctinputoctets,0)) AS download_bytes,
+         SUM(COALESCE(acctoutputoctets,0)) AS upload_bytes
+       FROM radacct
+       WHERE username = ?
+         AND YEAR(acctstarttime) = YEAR(CURDATE())
+         AND MONTH(acctstarttime) = MONTH(CURDATE())${dateWhereSql}`,
+      [username, ...dateParams]
+    ),
+    pool.query<RowDataPacket[]>(
+      `SELECT
+         radacctid,
+         nasipaddress,
+         framedipaddress,
+         callingstationid,
+         acctstarttime,
+         acctstoptime,
+         ${sessionSecondsExpr} AS online_seconds,
+         COALESCE(acctinputoctets,0) AS download_bytes,
+         COALESCE(acctoutputoctets,0) AS upload_bytes
+       FROM radacct
+       WHERE username = ?${dateWhereSql}
+       ORDER BY acctstarttime DESC
+       LIMIT 120`,
+      [username, ...dateParams]
+    ),
+  ]);
+  const mapAggRows = (rows: RowDataPacket[]) =>
+    rows.map((r) => {
+      const download = toSafeBigInt(r.download_bytes).toString();
+      const upload = toSafeBigInt(r.upload_bytes).toString();
+      const total = (toSafeBigInt(r.download_bytes) + toSafeBigInt(r.upload_bytes)).toString();
+      return {
+        period: String(r.period ?? ""),
+        sessions_count: Number(r.sessions_count ?? 0),
+        online_seconds: Number(r.online_seconds ?? 0),
+        download_bytes: download,
+        upload_bytes: upload,
+        total_bytes: total,
+      };
+    });
+  const daily = mapAggRows(dailyRows[0] ?? []);
+  const monthly = mapAggRows(monthlyRows[0] ?? []);
+  const yearly = mapAggRows(yearlyRows[0] ?? []);
+  const today = todayRows[0]?.[0] ?? {};
+  const month = monthRows[0]?.[0] ?? {};
+  const dailyDownload = toSafeBigInt(today.download_bytes).toString();
+  const dailyUpload = toSafeBigInt(today.upload_bytes).toString();
+  const monthlyDownload = toSafeBigInt(month.download_bytes).toString();
+  const monthlyUpload = toSafeBigInt(month.upload_bytes).toString();
+  const sessions = (sessionRows[0] ?? []).map((r) => {
+    const download = toSafeBigInt(r.download_bytes).toString();
+    const upload = toSafeBigInt(r.upload_bytes).toString();
+    const total = (toSafeBigInt(r.download_bytes) + toSafeBigInt(r.upload_bytes)).toString();
+    return {
+      radacctid: String(r.radacctid ?? ""),
+      start_time: r.acctstarttime ? String(r.acctstarttime) : null,
+      stop_time: r.acctstoptime ? String(r.acctstoptime) : null,
+      online_seconds: Number(r.online_seconds ?? 0),
+      download_bytes: download,
+      upload_bytes: upload,
+      total_bytes: total,
+      framed_ip: r.framedipaddress ? String(r.framedipaddress) : null,
+      caller_id: r.callingstationid ? String(r.callingstationid) : null,
+      nas_ip: r.nasipaddress ? String(r.nasipaddress) : null,
+      is_active: !r.acctstoptime,
+    };
+  });
+  res.json({
+    username,
+    filter: {
+      from: fromDate,
+      to: toDate,
+    },
+    totals: {
+      daily_online_seconds: Number(today.online_seconds ?? 0),
+      daily_download_bytes: dailyDownload,
+      daily_upload_bytes: dailyUpload,
+      daily_total_bytes: (toSafeBigInt(today.download_bytes) + toSafeBigInt(today.upload_bytes)).toString(),
+      monthly_online_seconds: Number(month.online_seconds ?? 0),
+      monthly_download_bytes: monthlyDownload,
+      monthly_upload_bytes: monthlyUpload,
+      monthly_total_bytes: (toSafeBigInt(month.download_bytes) + toSafeBigInt(month.upload_bytes)).toString(),
+    },
+    daily,
+    monthly,
+    yearly,
+    sessions,
   });
 });
 
