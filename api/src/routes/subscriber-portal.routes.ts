@@ -211,7 +211,8 @@ router.post("/public-lookup", async (req, res) => {
 });
 
 const loginBody = z.object({
-  username: z.string().min(1).max(64),
+  username: z.string().min(1).max(64).optional(),
+  phone: z.string().min(4).max(32).optional(),
   password: z.string().min(1),
 });
 
@@ -222,15 +223,40 @@ router.post("/login", async (req, res) => {
     return;
   }
   const tenantId = config.defaultTenantId;
-  const { username, password } = parsed.data;
-  const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
-    [tenantId, username]
-  );
+  const { password } = parsed.data;
+  const usernameInput = String(parsed.data.username ?? "").trim();
+  const phoneDigits = normalizePhoneDigits(parsed.data.phone ?? "");
+  if (!usernameInput && !phoneDigits) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  let subs: RowDataPacket[] = [];
+  if (phoneDigits) {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, username, status
+       FROM subscribers
+       WHERE tenant_id = ?
+         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+       LIMIT 2`,
+      [tenantId, phoneDigits]
+    );
+    if (rows.length > 1) {
+      res.status(401).json({ error: "invalid_credentials" });
+      return;
+    }
+    subs = rows;
+  } else {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
+      [tenantId, usernameInput]
+    );
+    subs = rows;
+  }
   if (!subs[0]) {
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
+  const username = String(subs[0].username ?? "");
   const [pwRows] = await pool.query<RowDataPacket[]>(
     `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
     [username]

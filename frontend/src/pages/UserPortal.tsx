@@ -17,7 +17,12 @@ import {
   YAxis,
 } from "recharts";
 function formatBytesLabel(n: string): string {
-  const v = BigInt(n || "0");
+  let v = 0n;
+  try {
+    v = BigInt(n || "0");
+  } catch {
+    v = 0n;
+  }
   if (v <= 0n) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let x = Number(v);
@@ -76,6 +81,8 @@ type TrafficReport = {
 
 export function UserPortalLogin() {
   const { t, isRtl, locale, setLocale } = useI18n();
+  const [loginMode, setLoginMode] = useState<"phone" | "username">("phone");
+  const [phone, setPhone] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -86,7 +93,11 @@ export function UserPortalLogin() {
     setErr("");
     const r = await userApiFetch("/api/user/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(
+        loginMode === "phone"
+          ? { phone, password }
+          : { username, password }
+      ),
     });
     if (!r.ok) {
       setErr(t("userPortalLogin.error"));
@@ -125,14 +136,47 @@ export function UserPortalLogin() {
 
         <Card className="p-5 shadow-lg ring-1 ring-cyan-500/10">
           <h1 className="text-lg font-bold">{t("userPortalLogin.title")}</h1>
-          <p className="mb-4 text-sm text-[hsl(var(--muted-foreground))]">{t("userPortalLogin.subtitle")}</p>
+          <p className="mb-4 text-sm text-[hsl(var(--muted-foreground))]">
+            {loginMode === "phone" ? t("userPortalLogin.subtitlePhone") : t("userPortalLogin.subtitleUser")}
+          </p>
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={loginMode === "phone" ? "default" : "outline"}
+              onClick={() => {
+                setLoginMode("phone");
+                setErr("");
+              }}
+            >
+              {t("userPortalLogin.modePhone")}
+            </Button>
+            <Button
+              type="button"
+              variant={loginMode === "username" ? "default" : "outline"}
+              onClick={() => {
+                setLoginMode("username");
+                setErr("");
+              }}
+            >
+              {t("userPortalLogin.modeUser")}
+            </Button>
+          </div>
           <form onSubmit={onSubmit} className="flex flex-col gap-3">
-            <TextField
-              label={t("userPortalLogin.user")}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-            />
+            {loginMode === "phone" ? (
+              <TextField
+                label={t("userPortalLogin.phone")}
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="tel"
+              />
+            ) : (
+              <TextField
+                label={t("userPortalLogin.user")}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+              />
+            )}
             <TextField
               label={t("userPortalLogin.pass")}
               type="password"
@@ -190,15 +234,7 @@ export function UserPortalDashboard() {
     })();
   }, [nav]);
 
-  if (!data) {
-    return (
-      <div className="min-h-screen p-6 text-sm opacity-70" dir={isRtl ? "rtl" : "ltr"}>
-        {t("common.loading")}
-      </div>
-    );
-  }
-
-  const sub = data.subscriber as Record<string, unknown>;
+  const sub = (data?.subscriber ?? {}) as Record<string, unknown>;
   const fullName = [String(sub?.first_name ?? "").trim(), String(sub?.last_name ?? "").trim()]
     .filter(Boolean)
     .join(" ")
@@ -206,9 +242,9 @@ export function UserPortalDashboard() {
   const nickname = String(sub?.nickname ?? "").trim();
   const phone = String(sub?.phone ?? "").trim();
   const regionName = String(sub?.region_name ?? "").trim();
-  const quota = String(data.quota_bytes ?? "0");
-  const rem = data.remaining_bytes != null ? String(data.remaining_bytes) : null;
-  const used = String(data.usage_bytes ?? "0");
+  const quota = String(data?.quota_bytes ?? "0");
+  const rem = data?.remaining_bytes != null ? String(data.remaining_bytes) : null;
+  const used = String(data?.usage_bytes ?? "0");
 
   const loadTraffic = useCallback(
     async (opts?: { from?: string; to?: string }) => {
@@ -275,6 +311,14 @@ export function UserPortalDashboard() {
         totalGb: Number(d.total_bytes) / 1024 ** 3,
       }));
   }, [traffic]);
+
+  if (!data) {
+    return (
+      <div className="min-h-screen p-6 text-sm opacity-70" dir={isRtl ? "rtl" : "ltr"}>
+        {t("common.loading")}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-gradient-to-b from-cyan-950/20 to-[hsl(var(--background))] px-4 py-6" dir={isRtl ? "rtl" : "ltr"}>
