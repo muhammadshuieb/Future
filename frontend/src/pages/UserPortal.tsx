@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Fingerprint, LogIn, Network, UserCircle, Wifi } from "lucide-react";
 import { userApiFetch, setUserToken } from "../lib/api";
 import { Button } from "../components/ui/Button";
@@ -205,11 +205,6 @@ export function UserPortalLogin() {
           </form>
         </Card>
 
-        <p className="mt-4 text-center text-sm">
-          <Link to="/portal" className="text-cyan-600 hover:underline dark:text-cyan-400">
-            {t("userPortalLogin.phoneLink")}
-          </Link>
-        </p>
       </motion.div>
     </div>
   );
@@ -563,11 +558,6 @@ export function UserPortalDashboard() {
             )}
           </Card>
         ) : null}
-        <p className="text-center text-xs text-[hsl(var(--muted-foreground))]">
-          <a href="/portal" className="text-cyan-600 hover:underline">
-            {t("userPortalLogin.phoneLink")}
-          </a>
-        </p>
       </div>
     </div>
   );
