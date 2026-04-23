@@ -157,8 +157,14 @@ export class CoaService {
                 ok,
                 message: String(code),
               });
-            } catch {
-              resolve({ host, port, ok: true, message: "response received" });
+            } catch (decodeErr) {
+              const reason = decodeErr instanceof Error ? decodeErr.message : String(decodeErr);
+              resolve({
+                host,
+                port,
+                ok: false,
+                message: `invalid_response: ${reason}`,
+              });
             }
           });
         });

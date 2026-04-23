@@ -169,7 +169,21 @@ router.post(
           results.push({ radacctid: rid, ok: true });
         }
       }
-      res.json({ results });
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length > 0) {
+        console.warn("online users bulk disconnect partial failure", {
+          tenant,
+          total: results.length,
+          failed: failed.length,
+          errors: failed.slice(0, 10),
+        });
+      }
+      res.json({
+        ok: failed.length === 0,
+        total: results.length,
+        failed: failed.length,
+        results,
+      });
     } catch (e) {
       console.error("online users bulk disconnect", e);
       res.status(500).json({ error: "online_user_disconnect_failed" });
@@ -199,6 +213,13 @@ router.post(
         return;
       }
       if (outcome.status === "failed") {
+        console.warn("online users disconnect failed", {
+          tenant: req.auth!.tenantId,
+          radacctid,
+          detail: outcome.result.message,
+          host: outcome.result.host,
+          port: outcome.result.port,
+        });
         res.status(502).json({
           error: "disconnect_failed",
           detail: outcome.result.message,
