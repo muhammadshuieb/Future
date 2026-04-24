@@ -5,12 +5,14 @@ RUNTIME_DIR="${PPTP_RUNTIME_DIR:-/var/lib/futureradius/pptp}"
 STATE_FILE="$RUNTIME_DIR/pptp-state.env"
 PID_FILE="/var/run/pptpd.pid"
 START_LOG="/tmp/pptpd-start.log"
+PPP_LOG="/var/log/pppd.log"
 
 mkdir -p /etc/ppp
 
 PPTP_ENABLED="0"
 PPTP_PORT="1723"
 PPTP_PID=""
+LOG_TAIL_PID=""
 LAST_HASH=""
 
 load_state() {
@@ -35,6 +37,16 @@ ensure_ppp_device() {
     mkdir -p /dev
     mknod /dev/ppp c 108 0 || true
     chmod 600 /dev/ppp || true
+  fi
+}
+
+ensure_ppp_log() {
+  mkdir -p /var/log
+  touch "$PPP_LOG"
+  chmod 600 "$PPP_LOG" || true
+  if [ -z "$LOG_TAIL_PID" ] || ! kill -0 "$LOG_TAIL_PID" 2>/dev/null; then
+    tail -n 0 -F "$PPP_LOG" &
+    LOG_TAIL_PID="$!"
   fi
 }
 
@@ -70,6 +82,7 @@ start_pptpd() {
   fi
   echo "[pptp] starting server on port $PPTP_PORT"
   ensure_ppp_device
+  ensure_ppp_log
   rm -f "$PID_FILE" || true
   : > "$START_LOG"
   /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 || true
@@ -93,6 +106,12 @@ start_pptpd() {
     fi
     echo "[pptp] /dev/ppp status:"
     ls -l /dev/ppp 2>/dev/null || echo "/dev/ppp is missing"
+    echo "[pptp] pppd log:"
+    if [ -s "$PPP_LOG" ]; then
+      tail -n 80 "$PPP_LOG"
+    else
+      echo "pppd log is empty"
+    fi
     PPTP_PID=""
     return
   fi
@@ -117,7 +136,7 @@ calc_hash() {
   md5sum $files 2>/dev/null | md5sum | awk '{print $1}'
 }
 
-trap 'stop_pptpd; exit 0' INT TERM
+trap 'stop_pptpd; [ -n "$LOG_TAIL_PID" ] && kill "$LOG_TAIL_PID" 2>/dev/null || true; exit 0' INT TERM
 
 echo "[pptp] runtime watcher started"
 while true; do

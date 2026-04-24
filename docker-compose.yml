@@ -162,6 +162,8 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
+    devices:
+      - /dev/ppp:/dev/ppp
     environment:
       PPTP_RUNTIME_DIR: /var/lib/futureradius/pptp
     volumes:

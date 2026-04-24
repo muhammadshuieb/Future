@@ -81,7 +81,10 @@ export async function syncPptpRuntime(tenantId: string): Promise<void> {
     // Emit PPP negotiation details to container stderr for troubleshooting.
     "debug",
     "logfd 2",
+    "logfile /var/log/pppd.log",
+    "dump",
     "refuse-eap",
+    "noipdefault",
     "refuse-pap",
     "refuse-chap",
     "require-mschap-v2",
