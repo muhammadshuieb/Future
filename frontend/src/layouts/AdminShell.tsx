@@ -145,10 +145,15 @@ export function AdminShell() {
   const isStaffRoute = location.pathname.startsWith("/staff");
   const isInventoryRoute = location.pathname.startsWith("/inventory");
   const isWhatsAppRoute = location.pathname.startsWith("/whatsapp");
+  const isMaintenanceRoute =
+    location.pathname.startsWith("/maintenance") ||
+    location.pathname.startsWith("/observability") ||
+    location.pathname.startsWith("/server-logs");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
   const [inventoryOpen, setInventoryOpen] = useState(isInventoryRoute);
   const [whatsAppOpen, setWhatsAppOpen] = useState(isWhatsAppRoute);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(isMaintenanceRoute);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -163,6 +168,9 @@ export function AdminShell() {
   useEffect(() => {
     if (isInventoryRoute) setInventoryOpen(true);
   }, [isInventoryRoute]);
+  useEffect(() => {
+    if (isMaintenanceRoute) setMaintenanceOpen(true);
+  }, [isMaintenanceRoute]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -172,15 +180,16 @@ export function AdminShell() {
     { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, tone: "indigo" },
     { to: "/nas", labelKey: "nav.nas", icon: Server, tone: "cyan" },
     { to: "/accounting", labelKey: "nav.accounting", icon: Activity, tone: "emerald" },
-    { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
-    ...((user?.role === "admin" || user?.role === "manager")
-      ? ([
-          { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
-          { to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" },
-        ] as NavItem[])
-      : []),
     { to: "/settings", labelKey: "nav.settings", icon: Settings, tone: "slate" },
   ];
+  const maintenanceNav: NavItem[] =
+    user?.role === "admin" || user?.role === "manager"
+      ? ([
+          { to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" },
+          { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
+          { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
+        ] as NavItem[])
+      : [];
   const whatsappNav: NavItem[] = [
     { to: "/whatsapp/connection", labelKey: "nav.whatsappConnection", icon: Link2, tone: "green" },
     { to: "/whatsapp/templates", labelKey: "nav.whatsappTemplates", icon: FileText, tone: "indigo" },
@@ -332,6 +341,37 @@ export function AdminShell() {
                 </NavLink>
               ))
             : null}
+
+          {/* Maintenance group (admin/manager) */}
+          {maintenanceNav.length > 0 ? (
+            <>
+              <GroupButton
+                open={maintenanceOpen}
+                onToggle={() => setMaintenanceOpen((v) => !v)}
+                active={isMaintenanceRoute}
+                label={t("nav.maintenance")}
+                Icon={Wrench}
+                tone="orange"
+              />
+              {maintenanceOpen
+                ? maintenanceNav.map(({ to, labelKey, icon: Icon, tone }) => (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end={to === "/maintenance"}
+                      className={({ isActive }) => itemClass(isActive, tone, true)}
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <IconTile Icon={Icon} tone={tone} active={isActive} small />
+                          <span className="truncate">{t(labelKey)}</span>
+                        </>
+                      )}
+                    </NavLink>
+                  ))
+                : null}
+            </>
+          ) : null}
 
           {/* WhatsApp group */}
           {canManageWhatsApp ? (

@@ -161,6 +161,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const nasCols = hasNasTbl ? await getTableColumns(pool, "nas_servers") : new Set<string>();
     const staffCols = hasStaffTbl ? await getTableColumns(pool, "staff_users") : new Set<string>();
     const usageLiveCols = hasUsageLiveTbl ? await getTableColumns(pool, "user_usage_live") : new Set<string>();
+    const radCols = hasRadacctTbl ? await getTableColumns(pool, "radacct") : new Set<string>();
     const joinPkg = hasPkgTbl && subCols.has("package_id") && pkgCols.has("id");
     const joinNas = hasNasTbl && subCols.has("nas_server_id") && nasCols.has("id");
     const joinCreator = hasStaffTbl && subCols.has("created_by") && staffCols.has("id");
@@ -171,6 +172,23 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       usageLiveCols.has("tenant_id") &&
       usageLiveCols.has("username") &&
       usageLiveCols.has("total_bytes");
+    const canJoinRadUsage =
+      hasRadacctTbl &&
+      subCols.has("username") &&
+      radCols.has("username") &&
+      (radCols.has("acctinputoctets") || radCols.has("acctoutputoctets"));
+    const ruInputOctetsExpr = radCols.has("acctinputoctets")
+      ? "SUM(COALESCE(acctinputoctets,0))"
+      : "0";
+    const ruOutputOctetsExpr = radCols.has("acctoutputoctets")
+      ? "SUM(COALESCE(acctoutputoctets,0))"
+      : "0";
+    const ruInputGwExpr = radCols.has("acctinputgigawords")
+      ? "SUM(COALESCE(acctinputgigawords,0))"
+      : "0";
+    const ruOutputGwExpr = radCols.has("acctoutputgigawords")
+      ? "SUM(COALESCE(acctoutputgigawords,0))"
+      : "0";
     const safeSubCols = pickExistingColumns(subCols, [
       "id",
       "tenant_id",
@@ -195,8 +213,18 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     ]);
     const selectParts = safeSubCols.map((name) => `s.${name}`);
     if (subCols.has("used_bytes")) {
-      if (joinUsageLive) {
+      const radInput =
+        (radCols.has("acctinputoctets") ? "COALESCE(ru.sum_input_octets,0)" : "0") +
+        (radCols.has("acctinputgigawords") ? " + COALESCE(ru.sum_input_gw,0) * 4294967296" : "");
+      const radOutput =
+        (radCols.has("acctoutputoctets") ? "COALESCE(ru.sum_output_octets,0)" : "0") +
+        (radCols.has("acctoutputgigawords") ? " + COALESCE(ru.sum_output_gw,0) * 4294967296" : "");
+      if (joinUsageLive && canJoinRadUsage) {
+        selectParts.push(`COALESCE(uul.total_bytes, (${radInput}) + (${radOutput}), s.used_bytes) AS used_bytes`);
+      } else if (joinUsageLive) {
         selectParts.push(`COALESCE(uul.total_bytes, s.used_bytes) AS used_bytes`);
+      } else if (canJoinRadUsage) {
+        selectParts.push(`COALESCE(((${radInput}) + (${radOutput})), s.used_bytes) AS used_bytes`);
       } else {
         selectParts.push(`s.used_bytes AS used_bytes`);
       }
@@ -244,6 +272,20 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
         `LEFT JOIN user_usage_live uul
          ON uul.tenant_id = s.tenant_id
         AND uul.username = s.username`
+      );
+    }
+    if (canJoinRadUsage) {
+      joins.push(
+        `LEFT JOIN (
+           SELECT
+             username,
+             ${ruInputOctetsExpr} AS sum_input_octets,
+             ${ruOutputOctetsExpr} AS sum_output_octets,
+             ${ruInputGwExpr} AS sum_input_gw,
+             ${ruOutputGwExpr} AS sum_output_gw
+           FROM radacct
+           GROUP BY username
+         ) ru ON ru.username = s.username`
       );
     }
     if (hasInvoicesTbl) {

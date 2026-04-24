@@ -282,6 +282,13 @@ export function UsersPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const visibleItems = items;
@@ -586,7 +593,7 @@ export function UsersPage() {
         </div>
       </div>
 
-      <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <Card className="sticky top-2 z-20 flex flex-col gap-3 p-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-3 text-sm opacity-80">
           <span>
             {t("users.selected")}: {selectedIds.length}
@@ -692,7 +699,7 @@ export function UsersPage() {
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs font-medium uppercase tracking-wide opacity-70">
                 <th className="px-4 py-3">
                   <input
