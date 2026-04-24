@@ -206,10 +206,6 @@ export function NasPage() {
         <div className="text-sm font-semibold text-sky-700 dark:text-sky-300">{t("nas.radiusHelpTitle")}</div>
         <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-85">{t("nas.radiusHelpBody")}</p>
       </Card>
-      <Card variant="subtle" className="border-cyan-500/25 bg-cyan-500/5">
-        <div className="text-sm font-semibold text-cyan-700 dark:text-cyan-300">{t("nas.pptpHelpTitle")}</div>
-        <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-85">{t("nas.pptpHelpBody")}</p>
-      </Card>
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -235,15 +231,11 @@ export function NasPage() {
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-lg font-semibold">{String(n.name)}</div>
-                <div className="mt-1 text-[11px] opacity-65">{t("nas.ip")}</div>
-                <div className="font-mono text-sm opacity-80">{String(n.ip)}</div>
+                <div className="mt-1 font-mono text-sm opacity-80">{String(n.ip)}</div>
                 {n.pptp_tunnel_ip ? (
-                  <>
-                    <div className="mt-1 text-[11px] opacity-65">{t("nas.pptpTunnel")}</div>
-                    <div className="font-mono text-[12px] text-cyan-600 dark:text-cyan-400">
-                      {String(n.pptp_tunnel_ip)}
-                    </div>
-                  </>
+                  <div className="mt-0.5 font-mono text-[11px] text-cyan-600 dark:text-cyan-400">
+                    {t("nas.pptpTunnel")}: {String(n.pptp_tunnel_ip)}
+                  </div>
                 ) : null}
               </div>
               <div className="flex flex-col items-end gap-1">
@@ -343,7 +335,6 @@ export function NasPage() {
             value={pptpTunnelIp}
             onChange={(e) => setPptpTunnelIp(e.target.value)}
             hint={t("nas.pptpTunnelHint")}
-            placeholder={t("nas.pptpTunnelPlaceholder")}
           />
           <TextField label={t("nas.type")} value={nasType} onChange={(e) => setNasType(e.target.value)} />
           <TextField
