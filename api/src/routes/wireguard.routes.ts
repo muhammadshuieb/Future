@@ -339,22 +339,22 @@ router.get("/peers/:id/mikrotik-conf", routePolicy({ allow: ["admin", "manager"]
     const endpoint = `${resolveEndpointHost(req, settings)}:${settings.wireguard_server_port}`;
     const lines = [
       "[Interface]",
-      `PrivateKey = ${privateKey}`,
-      `Address = ${addressWithInterfacePrefix(tunnelIp, settings.wireguard_interface_cidr)}`,
+      `Address=${addressWithInterfacePrefix(tunnelIp, settings.wireguard_interface_cidr)}`,
+      "ListenPort=13231",
+      `PrivateKey=${privateKey}`,
     ];
-    if (settings.wireguard_client_dns) lines.push(`DNS = ${settings.wireguard_client_dns}`);
     lines.push(
       "",
       "[Peer]",
-      `PublicKey = ${settings.wireguard_server_public_key}`,
-      `Endpoint = ${endpoint}`,
-      `AllowedIPs = ${defaultAllowedIps(row, settings)}`,
-      `PersistentKeepalive = ${settings.wireguard_persistent_keepalive}`
+      `PublicKey=${settings.wireguard_server_public_key}`,
+      `AllowedIPs=${defaultAllowedIps(row, settings)}`,
+      `Endpoint=${endpoint}`
     );
+    const config = `${lines.join("\r\n")}\r\n`;
     res.json({
       username: String(row.username ?? ""),
       filename: `${routerOsName(String(row.username ?? "wireguard"))}-wireguard.conf`,
-      config: `${lines.join("\n")}\n`,
+      config,
     });
   } catch (e) {
     console.error("wireguard mikrotik wg import get", e);
