@@ -44,6 +44,13 @@ function parseCidr(raw: string): Ipv4Cidr | null {
   return { address, network: (address & mask) >>> 0, prefix };
 }
 
+export function isWireGuardTunnelIp(raw: string): boolean {
+  const value = String(raw ?? "").trim();
+  if (!value) return false;
+  if (value.includes("/")) return parseCidr(value) !== null;
+  return ipToInt(value) >= 0;
+}
+
 function networkCidr(raw: string): string {
   const cidr = parseCidr(raw);
   if (!cidr) return "10.20.0.0/24";
@@ -52,6 +59,7 @@ function networkCidr(raw: string): string {
 
 function ipWithPrefix(ip: string): string {
   const value = String(ip ?? "").trim();
+  if (!isWireGuardTunnelIp(value)) return "10.20.0.2/32";
   return value.includes("/") ? value : `${value}/32`;
 }
 
@@ -130,7 +138,7 @@ export async function syncWireGuardRuntime(tenantId: string): Promise<void> {
       const tunnelIp = String(row.tunnel_ip ?? "").trim();
       const privateBlob = row.private_key_encrypted as Buffer | Uint8Array | null | undefined;
       const privateKey = privateBlob ? (tryDecryptSecret(Buffer.from(privateBlob)) ?? "") : "";
-      if (!username || !publicKey || !tunnelIp || !privateKey) continue;
+      if (!username || !publicKey || !isWireGuardTunnelIp(tunnelIp) || !privateKey) continue;
       peers.push({
         username,
         publicKey,

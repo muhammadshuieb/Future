@@ -12,6 +12,7 @@ import {
   allocateWireGuardPeerIp,
   encryptWireGuardPrivateKey,
   generateWireGuardKeyPair,
+  isWireGuardTunnelIp,
   syncWireGuardRuntime,
 } from "../services/wireguard-runtime.service.js";
 
@@ -116,7 +117,12 @@ router.post("/peers", routePolicy({ allow: ["admin", "manager"] }), async (req, 
     }
     const keys = generateWireGuardKeyPair();
     const id = randomUUID();
-    const tunnelIp = parsed.data.tunnel_ip?.trim() || (await allocateWireGuardPeerIp(req.auth!.tenantId));
+    const requestedTunnelIp = parsed.data.tunnel_ip?.trim() || "";
+    if (requestedTunnelIp && !isWireGuardTunnelIp(requestedTunnelIp)) {
+      res.status(400).json({ error: "invalid_tunnel_ip" });
+      return;
+    }
+    const tunnelIp = requestedTunnelIp || (await allocateWireGuardPeerIp(req.auth!.tenantId));
     await pool.execute(
       `INSERT INTO wireguard_peers
        (id, tenant_id, username, public_key, private_key_encrypted, tunnel_ip, allowed_ips, is_active, note)
@@ -155,6 +161,10 @@ router.patch("/peers/:id", routePolicy({ allow: ["admin", "manager"] }), async (
       vals.push(parsed.data.username);
     }
     if (parsed.data.tunnel_ip !== undefined) {
+      if (parsed.data.tunnel_ip.trim() && !isWireGuardTunnelIp(parsed.data.tunnel_ip)) {
+        res.status(400).json({ error: "invalid_tunnel_ip" });
+        return;
+      }
       sets.push("tunnel_ip = ?");
       vals.push(parsed.data.tunnel_ip.trim());
     }
@@ -218,11 +228,21 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
       return;
     }
     const privateKey = tryDecryptSecret(Buffer.from(row.private_key_encrypted as Buffer)) ?? "";
+    let tunnelIp = String(row.tunnel_ip ?? "").trim();
+    if (!isWireGuardTunnelIp(tunnelIp)) {
+      tunnelIp = await allocateWireGuardPeerIp(req.auth!.tenantId);
+      await pool.execute(`UPDATE wireguard_peers SET tunnel_ip = ? WHERE id = ? AND tenant_id = ?`, [
+        tunnelIp,
+        String(req.params.id),
+        req.auth!.tenantId,
+      ]);
+      await syncWireGuardRuntime(req.auth!.tenantId);
+    }
     const endpoint = `${settings.wireguard_server_host || "YOUR_SERVER_IP"}:${settings.wireguard_server_port}`;
     const lines = [
       "[Interface]",
       `PrivateKey = ${privateKey}`,
-      `Address = ${String(row.tunnel_ip ?? "").includes("/") ? String(row.tunnel_ip) : `${String(row.tunnel_ip)}/32`}`,
+      `Address = ${tunnelIp.includes("/") ? tunnelIp : `${tunnelIp}/32`}`,
     ];
     if (settings.wireguard_client_dns) lines.push(`DNS = ${settings.wireguard_client_dns}`);
     lines.push(
