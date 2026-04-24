@@ -29,6 +29,14 @@ copy_runtime_files() {
 }
 
 stop_pptpd() {
+  if [ -f "$PID_FILE" ]; then
+    FILE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$FILE_PID" ] && kill -0 "$FILE_PID" 2>/dev/null; then
+      kill "$FILE_PID" 2>/dev/null || true
+      wait "$FILE_PID" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE" || true
+  fi
   if [ -n "$PPTP_PID" ] && kill -0 "$PPTP_PID" 2>/dev/null; then
     kill "$PPTP_PID" 2>/dev/null || true
     wait "$PPTP_PID" 2>/dev/null || true
@@ -46,8 +54,18 @@ start_pptpd() {
     return
   fi
   echo "[pptp] starting server on port $PPTP_PORT"
-  /usr/sbin/pptpd --fg --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" &
-  PPTP_PID="$!"
+  rm -f "$PID_FILE" || true
+  /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" || true
+  sleep 1
+  if [ -f "$PID_FILE" ]; then
+    PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  fi
+  if [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null; then
+    echo "[pptp] failed to start: pptpd is not running"
+    PPTP_PID=""
+    return
+  fi
+  echo "[pptp] started with pid $PPTP_PID"
 }
 
 calc_hash() {
