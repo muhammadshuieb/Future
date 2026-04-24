@@ -5,6 +5,7 @@ RUNTIME_DIR="${WIREGUARD_RUNTIME_DIR:-/var/lib/futureradius/wireguard}"
 STATE_FILE="$RUNTIME_DIR/wireguard-state.env"
 CONFIG_FILE="$RUNTIME_DIR/wg0.conf"
 PEER_STATUS_FILE="$RUNTIME_DIR/peer-status.tsv"
+PEER_PING_FILE="$RUNTIME_DIR/peer-ping.tsv"
 TARGET_DIR="/etc/wireguard"
 TARGET_CONFIG="$TARGET_DIR/wg0.conf"
 
@@ -64,12 +65,47 @@ start_wireguard() {
 
 write_peer_status() {
   local tmp="$PEER_STATUS_FILE.tmp"
+  local ptmp="$PEER_PING_FILE.tmp"
   if [ "$WIREGUARD_ENABLED" = "1" ] && ip link show wg0 >/dev/null 2>&1; then
-    wg show wg0 dump 2>/dev/null | awk 'NR > 1 { print $1 "\t" $4 "\t" $5 "\t" $6 "\t" $3 }' > "$tmp" || true
+    wg show wg0 dump 2>/dev/null | awk '
+      NF < 2 { next }
+      $1 == "0000000000000000000000000000000000000000000000000000000000000000" { next }
+      NR == 1 { next }
+      {
+        pkey  = $1
+        psk   = $2
+        ep    = $3
+        aip   = $4
+        lhand = $5
+        rx    = $6
+        tx    = $7
+        if (ep == "(none)") ep = ""
+        if (aip == "(none)" || aip == "0.0.0.0/0" || aip == "") { next }
+        print pkey "\t" aip "\t" lhand "\t" rx "\t" tx "\t" ep
+      }
+    ' > "$tmp" || true
+    if [ -f "$tmp" ] && [ -s "$tmp" ]; then
+      : > "$ptmp" 2>/dev/null || true
+      while IFS="$(printf '\t')" read -r _ allowed _ _ _ _; do
+        [ -z "$allowed" ] && continue
+        first="${allowed%%,*}"
+        ip="${first%%/*}"
+        if command -v ping >/dev/null 2>&1; then
+          if ping -c 1 -W 1 -I wg0 "$ip" >/dev/null 2>&1; then
+            echo "$ip" >> "$ptmp" || true
+          fi
+        fi
+      done < "$tmp" || true
+    else
+      : > "$ptmp" 2>/dev/null || true
+    fi
     mv "$tmp" "$PEER_STATUS_FILE" 2>/dev/null || true
+    mv "$ptmp" "$PEER_PING_FILE" 2>/dev/null || true
   else
     : > "$tmp" 2>/dev/null || true
+    : > "$ptmp" 2>/dev/null || true
     mv "$tmp" "$PEER_STATUS_FILE" 2>/dev/null || true
+    mv "$ptmp" "$PEER_PING_FILE" 2>/dev/null || true
   fi
 }
 

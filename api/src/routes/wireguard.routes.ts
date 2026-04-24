@@ -106,31 +106,96 @@ function defaultAllowedIps(row: RowDataPacket, settings: Awaited<ReturnType<type
   return String(row.allowed_ips ?? "").trim() || settings.wireguard_interface_cidr.replace(/\.\d+\/(\d+)$/, ".0/$1") || "10.20.0.0/24";
 }
 
-async function readPeerConnectionStatuses(): Promise<Map<string, PeerConnectionStatus>> {
+async function readStatusFile(
+  name: "peer-status" | "peer-ping"
+): Promise<{ text: string; mtimeMs: number } | null> {
   const runtimeDir = process.env.WIREGUARD_RUNTIME_DIR || "/app/runtime/wireguard";
-  const statusPath = path.join(runtimeDir, "peer-status.tsv");
+  const fileName = name === "peer-status" ? "peer-status.tsv" : "peer-ping.tsv";
+  const p = path.join(runtimeDir, fileName);
   try {
-    const [content, fileStat] = await Promise.all([readFile(statusPath, "utf8"), stat(statusPath)]);
-    const isFresh = Date.now() - fileStat.mtimeMs <= 30_000;
-    const statuses = new Map<string, PeerConnectionStatus>();
-    for (const line of content.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const [publicKey, latestHandshakeRaw, rxRaw, txRaw, endpointRaw] = line.split("\t");
-      const latestHandshake = Number(latestHandshakeRaw || 0);
-      const secondsAgo = latestHandshake > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - latestHandshake) : null;
-      statuses.set(publicKey, {
-        status: !isFresh ? "unknown" : latestHandshake > 0 && secondsAgo !== null && secondsAgo <= 180 ? "connected" : "waiting",
-        latest_handshake_at: latestHandshake > 0 ? new Date(latestHandshake * 1000).toISOString() : null,
-        latest_handshake_seconds_ago: secondsAgo,
-        endpoint: endpointRaw && endpointRaw !== "(none)" ? endpointRaw : null,
-        rx_bytes: Number(rxRaw || 0),
-        tx_bytes: Number(txRaw || 0),
-      });
-    }
-    return statuses;
+    const [text, s] = await Promise.all([readFile(p, "utf8"), stat(p)]);
+    return { text, mtimeMs: s.mtimeMs };
   } catch {
+    return null;
+  }
+}
+
+function applyPeerPing(base: PeerConnectionStatus, options: { pingOk: boolean | null; wgStale: boolean }): PeerConnectionStatus {
+  if (base.status === "connected" && !options.wgStale) {
+    return base;
+  }
+  if (options.pingOk === true) {
+    return { ...base, status: "connected" };
+  }
+  if (options.pingOk === false) {
+    if (options.wgStale) {
+      return { ...base, status: "unknown" };
+    }
+    if (base.status === "connected") {
+      return base;
+    }
+    return { ...base, status: "waiting" };
+  }
+  if (options.wgStale) {
+    return { ...base, status: "unknown" };
+  }
+  return base;
+}
+
+async function readPeerConnectionStatuses(): Promise<Map<string, PeerConnectionStatus>> {
+  const [wgFile, pingFile] = await Promise.all([readStatusFile("peer-status"), readStatusFile("peer-ping")]);
+  const pingIps = new Set<string>();
+  const pingIsFresh = !!pingFile && Date.now() - pingFile.mtimeMs <= 30_000;
+  if (pingFile?.text) {
+    for (const line of pingFile.text.split(/\r?\n/)) {
+      const ip = line.trim();
+      if (ip) pingIps.add(ip);
+    }
+  }
+
+  if (!wgFile) {
     return new Map();
   }
+  const wgStale = Date.now() - wgFile.mtimeMs > 30_000;
+  const statuses = new Map<string, PeerConnectionStatus>();
+  for (const line of wgFile.text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    if (parts.length < 4) continue;
+    const [publicKey, allowed, latestHandshakeRaw, rxRaw, txRaw, endpointRaw] = parts;
+    const latestHandshake = Number(latestHandshakeRaw || 0);
+    const secondsAgo = latestHandshake > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - latestHandshake) : null;
+    const firstAllowed = String(allowed ?? "").split(",")[0]?.trim() ?? "";
+    const peerIp = firstAllowed.replace(/\/\d+$/, "");
+    const rx = Number(rxRaw || 0);
+    const tx = Number(txRaw || 0);
+    const hasTraffic = rx + tx > 0;
+    const hasHandshake = latestHandshake > 0;
+    const pingOk: boolean | null = !pingIsFresh
+      ? null
+      : peerIp
+        ? pingIps.has(peerIp)
+        : null;
+    const base: PeerConnectionStatus = wgStale
+      ? {
+          status: "unknown",
+          latest_handshake_at: latestHandshake > 0 ? new Date(latestHandshake * 1000).toISOString() : null,
+          latest_handshake_seconds_ago: secondsAgo,
+          endpoint: endpointRaw && endpointRaw !== "(none)" ? endpointRaw : null,
+          rx_bytes: rx,
+          tx_bytes: tx,
+        }
+      : {
+          status: hasHandshake || hasTraffic ? "connected" : "waiting",
+          latest_handshake_at: latestHandshake > 0 ? new Date(latestHandshake * 1000).toISOString() : null,
+          latest_handshake_seconds_ago: secondsAgo,
+          endpoint: endpointRaw && endpointRaw !== "(none)" ? endpointRaw : null,
+          rx_bytes: rx,
+          tx_bytes: tx,
+        };
+    statuses.set(publicKey, applyPeerPing(base, { pingOk, wgStale }));
+  }
+  return statuses;
 }
 
 router.get("/config", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
