@@ -57,18 +57,25 @@ start_pptpd() {
   echo "[pptp] starting server on port $PPTP_PORT"
   rm -f "$PID_FILE" || true
   : > "$START_LOG"
-  /usr/sbin/pptpd --fg --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 &
-  LAUNCH_PID="$!"
-  sleep 1
-  if [ -f "$PID_FILE" ]; then
-    PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  fi
-  if [ -z "$PPTP_PID" ]; then
-    PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
-  fi
-  if [ -z "$PPTP_PID" ] && kill -0 "$LAUNCH_PID" 2>/dev/null; then
-    PPTP_PID="$LAUNCH_PID"
-  fi
+  /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 || true
+  i=0
+  while [ "$i" -lt 5 ]; do
+    if [ -f "$PID_FILE" ]; then
+      PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+    fi
+    if [ -z "$PPTP_PID" ]; then
+      PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
+    fi
+    if [ -n "$PPTP_PID" ] && kill -0 "$PPTP_PID" 2>/dev/null; then
+      break
+    fi
+    if ss -lnt 2>/dev/null | awk -v p=":$PPTP_PORT" '$4 ~ (p "$") { found=1 } END { exit !found }'; then
+      PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
+      break
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
   if [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null; then
     echo "[pptp] failed to start: pptpd is not running"
     if [ -s "$START_LOG" ]; then
