@@ -264,6 +264,7 @@ router.delete("/peers/:id", routePolicy({ allow: ["admin", "manager"] }), async 
 
 router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {
+    await syncWireGuardRuntime(req.auth!.tenantId);
     const settings = await getSystemSettings(req.auth!.tenantId);
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT username, private_key_encrypted, tunnel_ip, allowed_ips
@@ -312,6 +313,7 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
 
 router.get("/peers/:id/mikrotik-conf", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {
+    await syncWireGuardRuntime(req.auth!.tenantId);
     const settings = await getSystemSettings(req.auth!.tenantId);
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT username, private_key_encrypted, tunnel_ip, allowed_ips
@@ -364,6 +366,7 @@ router.get("/peers/:id/mikrotik-conf", routePolicy({ allow: ["admin", "manager"]
 
 router.get("/peers/:id/mikrotik", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {
+    await syncWireGuardRuntime(req.auth!.tenantId);
     const settings = await getSystemSettings(req.auth!.tenantId);
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT username, private_key_encrypted, tunnel_ip, allowed_ips

@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "crypto";
+import { createPrivateKey, createPublicKey, randomBytes, randomUUID } from "crypto";
 import { mkdir, rm, writeFile } from "fs/promises";
 import path from "path";
 import type { RowDataPacket } from "mysql2";
@@ -10,15 +10,34 @@ import { getSystemSettings, updateSystemSettings } from "./system-settings.servi
 type KeyPair = { privateKey: string; publicKey: string };
 type Ipv4Cidr = { address: number; network: number; prefix: number };
 
+const X25519_PKCS8_PRIVATE_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex");
+
 function keyObjectToWireGuardKey(key: Buffer): string {
   return key.subarray(key.length - 32).toString("base64");
 }
 
+export function deriveWireGuardPublicKey(privateKey: string): string | null {
+  const rawPrivateKey = Buffer.from(String(privateKey ?? "").trim(), "base64");
+  if (rawPrivateKey.length !== 32) return null;
+  const keyObject = createPrivateKey({
+    key: Buffer.concat([X25519_PKCS8_PRIVATE_PREFIX, rawPrivateKey]),
+    format: "der",
+    type: "pkcs8",
+  });
+  return keyObjectToWireGuardKey(createPublicKey(keyObject).export({ type: "spki", format: "der" }) as Buffer);
+}
+
 export function generateWireGuardKeyPair(): KeyPair {
-  const pair = generateKeyPairSync("x25519");
+  const privateKey = randomBytes(32);
+  privateKey[0] &= 248;
+  privateKey[31] &= 127;
+  privateKey[31] |= 64;
+  const privateKeyBase64 = privateKey.toString("base64");
+  const publicKey = deriveWireGuardPublicKey(privateKeyBase64);
+  if (!publicKey) throw new Error("wireguard_key_generation_failed");
   return {
-    privateKey: keyObjectToWireGuardKey(pair.privateKey.export({ type: "pkcs8", format: "der" }) as Buffer),
-    publicKey: keyObjectToWireGuardKey(pair.publicKey.export({ type: "spki", format: "der" }) as Buffer),
+    privateKey: privateKeyBase64,
+    publicKey,
   };
 }
 
@@ -70,6 +89,17 @@ function safeClientFileName(username: string): string {
 export async function ensureWireGuardServerKeys(tenantId: string): Promise<KeyPair> {
   const settings = await getSystemSettings(tenantId);
   if (settings.wireguard_server_private_key && settings.wireguard_server_public_key) {
+    const derivedPublicKey = deriveWireGuardPublicKey(settings.wireguard_server_private_key);
+    if (derivedPublicKey && derivedPublicKey !== settings.wireguard_server_public_key) {
+      await updateSystemSettings(tenantId, {
+        ...settings,
+        wireguard_server_public_key: derivedPublicKey,
+      });
+      return {
+        privateKey: settings.wireguard_server_private_key,
+        publicKey: derivedPublicKey,
+      };
+    }
     return {
       privateKey: settings.wireguard_server_private_key,
       publicKey: settings.wireguard_server_public_key,
@@ -117,6 +147,7 @@ export async function syncWireGuardRuntime(tenantId: string): Promise<void> {
   const vpnCidr = networkCidr(settings.wireguard_interface_cidr);
 
   const peers: Array<{
+    id: string;
     username: string;
     publicKey: string;
     privateKey: string;
@@ -126,7 +157,7 @@ export async function syncWireGuardRuntime(tenantId: string): Promise<void> {
   }> = [];
   if (await hasTable(pool, "wireguard_peers")) {
     const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT username, public_key, private_key_encrypted, tunnel_ip, allowed_ips, is_active
+      `SELECT id, username, public_key, private_key_encrypted, tunnel_ip, allowed_ips, is_active
        FROM wireguard_peers
        WHERE tenant_id = ?
        ORDER BY username ASC`,
@@ -138,10 +169,19 @@ export async function syncWireGuardRuntime(tenantId: string): Promise<void> {
       const tunnelIp = String(row.tunnel_ip ?? "").trim();
       const privateBlob = row.private_key_encrypted as Buffer | Uint8Array | null | undefined;
       const privateKey = privateBlob ? (tryDecryptSecret(Buffer.from(privateBlob)) ?? "") : "";
-      if (!username || !publicKey || !isWireGuardTunnelIp(tunnelIp) || !privateKey) continue;
+      const derivedPublicKey = privateKey ? deriveWireGuardPublicKey(privateKey) : null;
+      if (derivedPublicKey && derivedPublicKey !== publicKey) {
+        await pool.execute(`UPDATE wireguard_peers SET public_key = ? WHERE id = ? AND tenant_id = ?`, [
+          derivedPublicKey,
+          String(row.id),
+          tenantId,
+        ]);
+      }
+      if (!username || !(derivedPublicKey || publicKey) || !isWireGuardTunnelIp(tunnelIp) || !privateKey) continue;
       peers.push({
+        id: String(row.id),
         username,
-        publicKey,
+        publicKey: derivedPublicKey || publicKey,
         privateKey,
         tunnelIp,
         allowedIps: String(row.allowed_ips ?? "").trim() || vpnCidr,
