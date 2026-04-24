@@ -29,7 +29,7 @@ import { ObservabilityPage } from "./pages/Observability";
 import { ServerLogsPage } from "./pages/ServerLogs";
 import { SubscriberPublicPortalPage } from "./pages/SubscriberPublicPortal";
 import { CardBatchPage } from "./pages/CardBatch";
-import { PptpPage } from "./pages/Pptp";
+import { WireGuardPage } from "./pages/WireGuard";
 
 function ProtectedAdmin({ children }: { children: React.ReactElement }) {
   const { user } = useAuth();
@@ -71,7 +71,7 @@ function AppRoutes() {
         <Route path="staff/roles-permissions" element={<RolesPermissionsPage />} />
         <Route path="staff/audit" element={<AuditLogsPage />} />
         <Route path="maintenance" element={<MaintenancePage />} />
-        <Route path="pptp" element={<PptpPage />} />
+        <Route path="wireguard" element={<WireGuardPage />} />
         <Route path="whatsapp" element={<Navigate to="/whatsapp/connection" replace />} />
         <Route path="whatsapp/connection" element={<WhatsAppConnectionPage />} />
         <Route path="whatsapp/templates" element={<WhatsAppTemplatesPage />} />

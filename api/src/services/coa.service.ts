@@ -34,11 +34,11 @@ export class CoaService {
   private async getNasServerCoaConfig(nasIp: string, tenantId: string): Promise<NasServerCoaConfig | null> {
     if (!(await hasTable(this.pool, "nas_servers"))) return null;
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT ip, pptp_tunnel_ip, coa_port, secret_encrypted
+      `SELECT ip, wireguard_tunnel_ip, coa_port, secret_encrypted
        FROM nas_servers
        WHERE tenant_id = ?
          AND status = 'active'
-         AND (ip = ? OR pptp_tunnel_ip = ?)
+         AND (ip = ? OR wireguard_tunnel_ip = ?)
        ORDER BY CASE WHEN ip = ? THEN 0 ELSE 1 END
        LIMIT 1`,
       [tenantId, nasIp, nasIp, nasIp]
@@ -46,7 +46,7 @@ export class CoaService {
     const row = rows[0];
     if (!row) return null;
     const rowIp = String(row.ip ?? nasIp);
-    const tunnelIp = String(row.pptp_tunnel_ip ?? "").trim();
+    const tunnelIp = String(row.wireguard_tunnel_ip ?? "").trim();
     const coaHost = tunnelIp || rowIp || nasIp;
     const coaPortRaw = Number(row.coa_port ?? 3799);
     const coaPort = Number.isFinite(coaPortRaw) && coaPortRaw > 0 ? Math.floor(coaPortRaw) : 3799;

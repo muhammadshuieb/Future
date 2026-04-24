@@ -32,13 +32,13 @@ import auditRoutes from "./routes/audit.routes.js";
 import observabilityRoutes from "./routes/observability.routes.js";
 import serverLogsRoutes from "./routes/server-logs.routes.js";
 import systemSettingsRoutes from "./routes/system-settings.routes.js";
-import pptpRoutes from "./routes/pptp.routes.js";
+import wireguardRoutes from "./routes/wireguard.routes.js";
 import regionsRoutes from "./routes/regions.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
 import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
-import { syncPptpRuntime } from "./services/pptp-runtime.service.js";
+import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
 
 const app = express();
 app.use(helmet());
@@ -77,7 +77,7 @@ app.use("/api/audit", auditRoutes);
 app.use("/api/observability", observabilityRoutes);
 app.use("/api/server-logs", serverLogsRoutes);
 app.use("/api/system-settings", systemSettingsRoutes);
-app.use("/api/pptp", pptpRoutes);
+app.use("/api/wireguard", wireguardRoutes);
 app.use("/api/regions", regionsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
@@ -159,9 +159,9 @@ async function start() {
     console.error("[bootstrap] default admin seed failed", error);
   }
   try {
-    await syncPptpRuntime(config.defaultTenantId);
+    await syncWireGuardRuntime(config.defaultTenantId);
   } catch (error) {
-    console.error("[bootstrap] pptp runtime sync failed", error);
+    console.error("[bootstrap] wireguard runtime sync failed", error);
   }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {

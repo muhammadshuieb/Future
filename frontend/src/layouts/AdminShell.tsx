@@ -33,7 +33,7 @@ import {
   FolderKanban,
   Tag,
   CreditCard,
-  Network,
+  KeyRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -148,7 +148,7 @@ export function AdminShell() {
   const isWhatsAppRoute = location.pathname.startsWith("/whatsapp");
   const isMaintenanceRoute =
     location.pathname.startsWith("/maintenance") ||
-    location.pathname.startsWith("/pptp") ||
+    location.pathname.startsWith("/wireguard") ||
     location.pathname.startsWith("/observability") ||
     location.pathname.startsWith("/server-logs");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
@@ -188,7 +188,7 @@ export function AdminShell() {
     user?.role === "admin" || user?.role === "manager"
       ? ([
           { to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" },
-          { to: "/pptp", labelKey: "nav.pptp", icon: Network, tone: "sky" },
+          { to: "/wireguard", labelKey: "nav.wireguard", icon: KeyRound, tone: "sky" },
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
         ] as NavItem[])

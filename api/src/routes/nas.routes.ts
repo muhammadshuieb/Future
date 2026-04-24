@@ -75,7 +75,7 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
         "last_check_at",
         "session_count",
         "created_at",
-        "pptp_tunnel_ip",
+        "wireguard_tunnel_ip",
       ];
       const sel = want.filter((c) => col.has(c.toLowerCase()));
       if (sel.length > 0 && col.has("tenant_id")) {
@@ -125,7 +125,7 @@ const nasBody = z.object({
   mikrotik_api_user: z.string().optional(),
   mikrotik_api_password: z.string().optional(),
   legacy_nas_id: z.number().int().nullable().optional(),
-  pptp_tunnel_ip: z.string().max(64).nullable().optional(),
+  wireguard_tunnel_ip: z.string().max(64).nullable().optional(),
 });
 
 router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
@@ -174,8 +174,8 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
       fields.push("session_count");
       vals.push(0);
     }
-    if (col.has("pptp_tunnel_ip")) {
-      push("pptp_tunnel_ip", parsed.data.pptp_tunnel_ip?.trim() || null);
+    if (col.has("wireguard_tunnel_ip")) {
+      push("wireguard_tunnel_ip", parsed.data.wireguard_tunnel_ip?.trim() || null);
     }
     if (fields.length === 0) {
       res.status(500).json({ error: "nas_servers_schema", detail: "no insertable columns" });
@@ -263,9 +263,9 @@ router.patch(
       sets.push("legacy_nas_id = ?");
       vals.push(b.legacy_nas_id);
     }
-    if (b.pptp_tunnel_ip !== undefined && col.has("pptp_tunnel_ip")) {
-      sets.push("pptp_tunnel_ip = ?");
-      vals.push(b.pptp_tunnel_ip?.trim() || null);
+    if (b.wireguard_tunnel_ip !== undefined && col.has("wireguard_tunnel_ip")) {
+      sets.push("wireguard_tunnel_ip = ?");
+      vals.push(b.wireguard_tunnel_ip?.trim() || null);
     }
     if (b.secret !== undefined && b.secret.length > 0) {
       sets.push("secret_encrypted = ?");

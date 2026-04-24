@@ -37,6 +37,7 @@ export function NasPage() {
   const [mikrotikApiEnabled, setMikrotikApiEnabled] = useState(false);
   const [mikrotikApiUser, setMikrotikApiUser] = useState("");
   const [mikrotikApiPassword, setMikrotikApiPassword] = useState("");
+  const [wireguardTunnelIp, setWireguardTunnelIp] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,6 +118,7 @@ export function NasPage() {
     setMikrotikApiEnabled(false);
     setMikrotikApiUser("");
     setMikrotikApiPassword("");
+    setWireguardTunnelIp("");
     setFormError(null);
     setModal("create");
   }
@@ -131,6 +133,7 @@ export function NasPage() {
     setMikrotikApiEnabled(Boolean(n.mikrotik_api_enabled));
     setMikrotikApiUser(String(n.mikrotik_api_user ?? ""));
     setMikrotikApiPassword("");
+    setWireguardTunnelIp(String(n.wireguard_tunnel_ip ?? ""));
     setFormError(null);
     setModal("edit");
   }
@@ -156,6 +159,7 @@ export function NasPage() {
             mikrotik_api_enabled: mikrotikApiEnabled,
             mikrotik_api_user: mikrotikApiUser || undefined,
             mikrotik_api_password: mikrotikApiPassword || undefined,
+            wireguard_tunnel_ip: wireguardTunnelIp || undefined,
           }),
         });
         if (r.ok) {
@@ -172,6 +176,7 @@ export function NasPage() {
         body.mikrotik_api_enabled = mikrotikApiEnabled;
         body.mikrotik_api_user = mikrotikApiUser || null;
         if (mikrotikApiPassword.trim()) body.mikrotik_api_password = mikrotikApiPassword;
+        body.wireguard_tunnel_ip = wireguardTunnelIp || null;
         const r = await apiFetch(`/api/nas/${editId}`, {
           method: "PATCH",
           body: JSON.stringify(body),
@@ -274,6 +279,11 @@ export function NasPage() {
               <span>
                 {t("nas.mikrotikApiEnabled")}: {Boolean(n.mikrotik_api_enabled) ? t("common.yes") : t("common.no")}
               </span>
+              {n.wireguard_tunnel_ip ? (
+                <span>
+                  {t("nas.wireguardTunnel")}: {String(n.wireguard_tunnel_ip)}
+                </span>
+              ) : null}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[hsl(var(--border))]/40 pt-2">
               <span className="text-xs font-medium opacity-70">{t("nas.secret")}:</span>
@@ -335,6 +345,12 @@ export function NasPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             hint={t("nas.passwordHint")}
+          />
+          <TextField
+            label={t("nas.wireguardTunnel")}
+            value={wireguardTunnelIp}
+            onChange={(e) => setWireguardTunnelIp(e.target.value)}
+            hint={t("nas.wireguardTunnelHint")}
           />
           <label className="flex items-center gap-2 text-sm">
             <input

@@ -92,11 +92,11 @@ services:
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       SQL_MIGRATIONS_DIR: /app/sql/migrations
-      PPTP_RUNTIME_DIR: /app/runtime/pptp
+      WIREGUARD_RUNTIME_DIR: /app/runtime/wireguard
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro
-      - pptp_runtime:/app/runtime/pptp
+      - wireguard_runtime:/app/runtime/wireguard
     depends_on:
       mysql:
         condition: service_healthy
@@ -152,23 +152,21 @@ services:
       api:
         condition: service_healthy
 
-  pptp:
+  wireguard:
     build:
       context: .
-      dockerfile: docker/pptp/Dockerfile
-    image: futureradius-pptp:local
+      dockerfile: docker/wireguard/Dockerfile
+    image: futureradius-wireguard:local
     network_mode: host
-    pid: host
     privileged: true
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    devices:
-      - /dev/ppp:/dev/ppp
     environment:
-      PPTP_RUNTIME_DIR: /var/lib/futureradius/pptp
+      WIREGUARD_RUNTIME_DIR: /var/lib/futureradius/wireguard
+      WIREGUARD_NAT_INTERFACE: ${WIREGUARD_NAT_INTERFACE:-eth0}
     volumes:
-      - pptp_runtime:/var/lib/futureradius/pptp:ro
+      - wireguard_runtime:/var/lib/futureradius/wireguard:ro
     depends_on:
       api:
         condition: service_healthy
@@ -178,4 +176,4 @@ volumes:
   mysql_data:
   backup_data:
   waha_sessions:
-  pptp_runtime:
+  wireguard_runtime:

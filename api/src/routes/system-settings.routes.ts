@@ -32,13 +32,14 @@ const bodySchema = z.object({
   disconnect_on_update: z.boolean().optional(),
   subscription_license_note: z.string().max(512).optional(),
   accountant_contact_phone: z.string().max(32).optional(),
-  pptp_vpn_enabled: z.boolean().optional(),
-  pptp_server_host: z.string().max(128).optional(),
-  pptp_server_port: z.number().int().min(1).max(65535).optional(),
-  pptp_server_username: z.string().max(128).optional(),
-  pptp_server_password: z.string().max(128).optional(),
-  pptp_local_network_cidr: z.string().max(64).optional(),
-  pptp_client_pool_cidr: z.string().max(64).optional(),
+  wireguard_vpn_enabled: z.boolean().optional(),
+  wireguard_server_host: z.string().max(128).optional(),
+  wireguard_server_port: z.number().int().min(1).max(65535).optional(),
+  wireguard_interface_cidr: z.string().max(64).optional(),
+  wireguard_client_dns: z.string().max(128).optional(),
+  wireguard_persistent_keepalive: z.number().int().min(0).max(300).optional(),
+  wireguard_server_public_key: z.string().max(64).optional(),
+  wireguard_server_private_key: z.string().max(64).optional(),
 });
 
 router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
@@ -59,13 +60,15 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
       disconnect_on_update: parsed.data.disconnect_on_update ?? cur.disconnect_on_update,
       subscription_license_note: parsed.data.subscription_license_note ?? cur.subscription_license_note,
       accountant_contact_phone: parsed.data.accountant_contact_phone ?? cur.accountant_contact_phone,
-      pptp_vpn_enabled: parsed.data.pptp_vpn_enabled ?? cur.pptp_vpn_enabled,
-      pptp_server_host: parsed.data.pptp_server_host ?? cur.pptp_server_host,
-      pptp_server_port: parsed.data.pptp_server_port ?? cur.pptp_server_port,
-      pptp_server_username: parsed.data.pptp_server_username ?? cur.pptp_server_username,
-      pptp_server_password: parsed.data.pptp_server_password,
-      pptp_local_network_cidr: parsed.data.pptp_local_network_cidr ?? cur.pptp_local_network_cidr,
-      pptp_client_pool_cidr: parsed.data.pptp_client_pool_cidr ?? cur.pptp_client_pool_cidr,
+      wireguard_vpn_enabled: parsed.data.wireguard_vpn_enabled ?? cur.wireguard_vpn_enabled,
+      wireguard_server_host: parsed.data.wireguard_server_host ?? cur.wireguard_server_host,
+      wireguard_server_port: parsed.data.wireguard_server_port ?? cur.wireguard_server_port,
+      wireguard_interface_cidr: parsed.data.wireguard_interface_cidr ?? cur.wireguard_interface_cidr,
+      wireguard_client_dns: parsed.data.wireguard_client_dns ?? cur.wireguard_client_dns,
+      wireguard_persistent_keepalive:
+        parsed.data.wireguard_persistent_keepalive ?? cur.wireguard_persistent_keepalive,
+      wireguard_server_public_key: parsed.data.wireguard_server_public_key ?? cur.wireguard_server_public_key,
+      wireguard_server_private_key: parsed.data.wireguard_server_private_key,
     };
     const settings = await updateSystemSettings(req.auth!.tenantId, next);
     res.json({ settings });

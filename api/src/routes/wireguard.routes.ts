@@ -1,0 +1,243 @@
+import { randomUUID } from "crypto";
+import { Router } from "express";
+import type { RowDataPacket } from "mysql2";
+import { z } from "zod";
+import { pool } from "../db/pool.js";
+import { hasTable } from "../db/schemaGuards.js";
+import { requireAuth } from "../middleware/auth.js";
+import { routePolicy } from "../middleware/policy.js";
+import { tryDecryptSecret } from "../services/crypto.service.js";
+import { getSystemSettings, updateSystemSettings } from "../services/system-settings.service.js";
+import {
+  allocateWireGuardPeerIp,
+  encryptWireGuardPrivateKey,
+  generateWireGuardKeyPair,
+  syncWireGuardRuntime,
+} from "../services/wireguard-runtime.service.js";
+
+const router = Router();
+router.use(requireAuth);
+
+const configSchema = z.object({
+  wireguard_vpn_enabled: z.boolean(),
+  wireguard_server_host: z.string().max(128),
+  wireguard_server_port: z.number().int().min(1).max(65535),
+  wireguard_interface_cidr: z.string().max(64),
+  wireguard_client_dns: z.string().max(128),
+  wireguard_persistent_keepalive: z.number().int().min(0).max(300),
+});
+
+const peerCreateSchema = z.object({
+  username: z.string().trim().min(1).max(128),
+  tunnel_ip: z.string().trim().max(64).optional(),
+  allowed_ips: z.string().trim().max(255).optional(),
+  note: z.string().trim().max(255).optional(),
+  is_active: z.boolean().optional(),
+});
+
+const peerUpdateSchema = peerCreateSchema.partial();
+
+function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>) {
+  return {
+    wireguard_vpn_enabled: settings.wireguard_vpn_enabled,
+    wireguard_server_host: settings.wireguard_server_host,
+    wireguard_server_port: settings.wireguard_server_port,
+    wireguard_interface_cidr: settings.wireguard_interface_cidr,
+    wireguard_client_dns: settings.wireguard_client_dns,
+    wireguard_persistent_keepalive: settings.wireguard_persistent_keepalive,
+    wireguard_server_public_key: settings.wireguard_server_public_key,
+    wireguard_server_private_key_set: settings.wireguard_server_private_key_set,
+  };
+}
+
+router.get("/config", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
+  try {
+    await syncWireGuardRuntime(req.auth!.tenantId);
+    const settings = await getSystemSettings(req.auth!.tenantId);
+    res.json({ config: publicConfig(settings) });
+  } catch (e) {
+    console.error("wireguard config get", e);
+    res.status(500).json({ error: "wireguard_config_failed" });
+  }
+});
+
+router.put("/config", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  const parsed = configSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const cur = await getSystemSettings(req.auth!.tenantId);
+    await updateSystemSettings(req.auth!.tenantId, {
+      ...cur,
+      ...parsed.data,
+      wireguard_server_public_key: cur.wireguard_server_public_key,
+    });
+    await syncWireGuardRuntime(req.auth!.tenantId);
+    const next = await getSystemSettings(req.auth!.tenantId);
+    res.json({ config: publicConfig(next) });
+  } catch (e) {
+    console.error("wireguard config put", e);
+    res.status(500).json({ error: "wireguard_config_save_failed" });
+  }
+});
+
+router.get("/peers", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
+  try {
+    if (!(await hasTable(pool, "wireguard_peers"))) {
+      res.json({ peers: [] });
+      return;
+    }
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, username, public_key, tunnel_ip, allowed_ips, is_active, note, updated_at
+       FROM wireguard_peers
+       WHERE tenant_id = ?
+       ORDER BY username ASC`,
+      [req.auth!.tenantId]
+    );
+    res.json({ peers: rows });
+  } catch (e) {
+    console.error("wireguard peers get", e);
+    res.status(500).json({ error: "wireguard_peers_failed" });
+  }
+});
+
+router.post("/peers", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  const parsed = peerCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    if (!(await hasTable(pool, "wireguard_peers"))) {
+      res.status(503).json({ error: "wireguard_peers_table_missing" });
+      return;
+    }
+    const keys = generateWireGuardKeyPair();
+    const id = randomUUID();
+    const tunnelIp = parsed.data.tunnel_ip?.trim() || (await allocateWireGuardPeerIp(req.auth!.tenantId));
+    await pool.execute(
+      `INSERT INTO wireguard_peers
+       (id, tenant_id, username, public_key, private_key_encrypted, tunnel_ip, allowed_ips, is_active, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        req.auth!.tenantId,
+        parsed.data.username,
+        keys.publicKey,
+        encryptWireGuardPrivateKey(keys.privateKey),
+        tunnelIp,
+        parsed.data.allowed_ips?.trim() || null,
+        parsed.data.is_active === false ? 0 : 1,
+        parsed.data.note?.trim() || null,
+      ]
+    );
+    await syncWireGuardRuntime(req.auth!.tenantId);
+    res.json({ ok: true, id });
+  } catch (e) {
+    console.error("wireguard peers post", e);
+    res.status(500).json({ error: "wireguard_peer_create_failed" });
+  }
+});
+
+router.patch("/peers/:id", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  const parsed = peerUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const sets: string[] = [];
+    const vals: Array<string | number | null> = [];
+    if (parsed.data.username !== undefined) {
+      sets.push("username = ?");
+      vals.push(parsed.data.username);
+    }
+    if (parsed.data.tunnel_ip !== undefined) {
+      sets.push("tunnel_ip = ?");
+      vals.push(parsed.data.tunnel_ip.trim());
+    }
+    if (parsed.data.allowed_ips !== undefined) {
+      sets.push("allowed_ips = ?");
+      vals.push(parsed.data.allowed_ips.trim() || null);
+    }
+    if (parsed.data.note !== undefined) {
+      sets.push("note = ?");
+      vals.push(parsed.data.note.trim() || null);
+    }
+    if (parsed.data.is_active !== undefined) {
+      sets.push("is_active = ?");
+      vals.push(parsed.data.is_active ? 1 : 0);
+    }
+    if (!sets.length) {
+      res.status(400).json({ error: "nothing_to_update" });
+      return;
+    }
+    await pool.execute(
+      `UPDATE wireguard_peers SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`,
+      [...vals, String(req.params.id), req.auth!.tenantId]
+    );
+    await syncWireGuardRuntime(req.auth!.tenantId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("wireguard peers patch", e);
+    res.status(500).json({ error: "wireguard_peer_update_failed" });
+  }
+});
+
+router.delete("/peers/:id", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  try {
+    if (await hasTable(pool, "wireguard_peers")) {
+      await pool.execute(`DELETE FROM wireguard_peers WHERE id = ? AND tenant_id = ?`, [
+        String(req.params.id),
+        req.auth!.tenantId,
+      ]);
+    }
+    await syncWireGuardRuntime(req.auth!.tenantId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("wireguard peers delete", e);
+    res.status(500).json({ error: "wireguard_peer_delete_failed" });
+  }
+});
+
+router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  try {
+    const settings = await getSystemSettings(req.auth!.tenantId);
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT username, private_key_encrypted, tunnel_ip, allowed_ips
+       FROM wireguard_peers
+       WHERE id = ? AND tenant_id = ?
+       LIMIT 1`,
+      [String(req.params.id), req.auth!.tenantId]
+    );
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const privateKey = tryDecryptSecret(Buffer.from(row.private_key_encrypted as Buffer)) ?? "";
+    const endpoint = `${settings.wireguard_server_host || "YOUR_SERVER_IP"}:${settings.wireguard_server_port}`;
+    const lines = [
+      "[Interface]",
+      `PrivateKey = ${privateKey}`,
+      `Address = ${String(row.tunnel_ip ?? "").includes("/") ? String(row.tunnel_ip) : `${String(row.tunnel_ip)}/32`}`,
+    ];
+    if (settings.wireguard_client_dns) lines.push(`DNS = ${settings.wireguard_client_dns}`);
+    lines.push(
+      "",
+      "[Peer]",
+      `PublicKey = ${settings.wireguard_server_public_key}`,
+      `Endpoint = ${endpoint}`,
+      `AllowedIPs = ${String(row.allowed_ips ?? "").trim() || "10.20.0.0/24"}`,
+      `PersistentKeepalive = ${settings.wireguard_persistent_keepalive}`
+    );
+    res.json({ username: String(row.username ?? ""), config: `${lines.join("\n")}\n` });
+  } catch (e) {
+    console.error("wireguard peer config get", e);
+    res.status(500).json({ error: "wireguard_peer_config_failed" });
+  }
+});
+
+export default router;

@@ -14,14 +14,15 @@ export type SystemSettingsView = {
   disconnect_on_update: boolean;
   subscription_license_note: string;
   accountant_contact_phone: string;
-  pptp_vpn_enabled: boolean;
-  pptp_server_host: string;
-  pptp_server_port: number;
-  pptp_server_username: string;
-  pptp_server_password: string;
-  pptp_server_password_set: boolean;
-  pptp_local_network_cidr: string;
-  pptp_client_pool_cidr: string;
+  wireguard_vpn_enabled: boolean;
+  wireguard_server_host: string;
+  wireguard_server_port: number;
+  wireguard_interface_cidr: string;
+  wireguard_client_dns: string;
+  wireguard_persistent_keepalive: number;
+  wireguard_server_public_key: string;
+  wireguard_server_private_key: string;
+  wireguard_server_private_key_set: boolean;
 };
 
 export async function ensureSystemSettings(tenantId: string): Promise<void> {
@@ -32,13 +33,14 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       critical_alert_phone VARCHAR(32) DEFAULT NULL,
       critical_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
       server_log_retention_days INT NOT NULL DEFAULT 14,
-      pptp_vpn_enabled TINYINT(1) NOT NULL DEFAULT 0,
-      pptp_server_host VARCHAR(128) DEFAULT NULL,
-      pptp_server_port INT NOT NULL DEFAULT 1723,
-      pptp_server_username VARCHAR(128) DEFAULT NULL,
-      pptp_server_password_encrypted VARBINARY(512) DEFAULT NULL,
-      pptp_local_network_cidr VARCHAR(64) DEFAULT NULL,
-      pptp_client_pool_cidr VARCHAR(64) DEFAULT NULL,
+      wireguard_vpn_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      wireguard_server_host VARCHAR(128) DEFAULT NULL,
+      wireguard_server_port INT NOT NULL DEFAULT 51820,
+      wireguard_interface_cidr VARCHAR(64) DEFAULT NULL,
+      wireguard_client_dns VARCHAR(128) DEFAULT NULL,
+      wireguard_persistent_keepalive INT NOT NULL DEFAULT 25,
+      wireguard_server_public_key VARCHAR(64) DEFAULT NULL,
+      wireguard_server_private_key_encrypted VARBINARY(512) DEFAULT NULL,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
@@ -57,22 +59,18 @@ function normalizePhone(raw: string | null | undefined): string {
 }
 
 function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
-  let pptpPassword = "";
-  const pptpPasswordBlob = col.has("pptp_server_password_encrypted")
-    ? (row.pptp_server_password_encrypted as Buffer | Uint8Array | null | undefined)
+  let wireguardPrivateKey = "";
+  const wireguardPrivateBlob = col.has("wireguard_server_private_key_encrypted")
+    ? (row.wireguard_server_private_key_encrypted as Buffer | Uint8Array | null | undefined)
     : null;
-  if (pptpPasswordBlob) {
-    pptpPassword = tryDecryptSecret(Buffer.from(pptpPasswordBlob)) ?? "";
+  if (wireguardPrivateBlob) {
+    wireguardPrivateKey = tryDecryptSecret(Buffer.from(wireguardPrivateBlob)) ?? "";
   }
-  const pptpHostRaw = col.has("pptp_server_host") ? String(row.pptp_server_host ?? "").trim() : "";
-  const pptpUserRaw = col.has("pptp_server_username") ? String(row.pptp_server_username ?? "").trim() : "";
-  const pptpLocalRaw = col.has("pptp_local_network_cidr")
-    ? String(row.pptp_local_network_cidr ?? "").trim()
+  const wireguardHostRaw = col.has("wireguard_server_host") ? String(row.wireguard_server_host ?? "").trim() : "";
+  const wireguardCidrRaw = col.has("wireguard_interface_cidr")
+    ? String(row.wireguard_interface_cidr ?? "").trim()
     : "";
-  const pptpPoolRaw = col.has("pptp_client_pool_cidr")
-    ? String(row.pptp_client_pool_cidr ?? "").trim()
-    : "";
-  const pptpUnconfigured = !pptpHostRaw && !pptpUserRaw && !pptpLocalRaw && !pptpPoolRaw && !pptpPassword;
+  const wireguardUnconfigured = !wireguardHostRaw && !wireguardCidrRaw && !wireguardPrivateKey;
   return {
     critical_alert_enabled: Boolean(Number(row.critical_alert_enabled ?? 0)),
     critical_alert_phone: normalizePhone(String(row.critical_alert_phone ?? "")),
@@ -96,26 +94,29 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     accountant_contact_phone: col.has("accountant_contact_phone")
       ? normalizePhone(String(row.accountant_contact_phone ?? ""))
       : "",
-    pptp_vpn_enabled: col.has("pptp_vpn_enabled")
-      ? (pptpUnconfigured ? true : Boolean(Number(row.pptp_vpn_enabled ?? 0)))
+    wireguard_vpn_enabled: col.has("wireguard_vpn_enabled")
+      ? (wireguardUnconfigured ? true : Boolean(Number(row.wireguard_vpn_enabled ?? 1)))
       : true,
-    pptp_server_host: col.has("pptp_server_host")
-      ? String(row.pptp_server_host ?? "")
+    wireguard_server_host: col.has("wireguard_server_host")
+      ? String(row.wireguard_server_host ?? "")
       : "",
-    pptp_server_port: col.has("pptp_server_port")
-      ? Math.max(1, Math.min(65535, Number(row.pptp_server_port ?? 1723)))
-      : 1723,
-    pptp_server_username: col.has("pptp_server_username")
-      ? String(row.pptp_server_username ?? "")
+    wireguard_server_port: col.has("wireguard_server_port")
+      ? Math.max(1, Math.min(65535, Number(row.wireguard_server_port ?? 51820)))
+      : 51820,
+    wireguard_interface_cidr: col.has("wireguard_interface_cidr")
+      ? String(row.wireguard_interface_cidr ?? "") || "10.20.0.1/24"
+      : "10.20.0.1/24",
+    wireguard_client_dns: col.has("wireguard_client_dns")
+      ? String(row.wireguard_client_dns ?? "") || "1.1.1.1,8.8.8.8"
+      : "1.1.1.1,8.8.8.8",
+    wireguard_persistent_keepalive: col.has("wireguard_persistent_keepalive")
+      ? Math.max(0, Math.min(300, Number(row.wireguard_persistent_keepalive ?? 25)))
+      : 25,
+    wireguard_server_public_key: col.has("wireguard_server_public_key")
+      ? String(row.wireguard_server_public_key ?? "")
       : "",
-    pptp_server_password: pptpPassword,
-    pptp_server_password_set: Boolean(pptpPassword),
-    pptp_local_network_cidr: col.has("pptp_local_network_cidr")
-      ? String(row.pptp_local_network_cidr ?? "") || "10.0.0.0/24"
-      : "10.0.0.0/24",
-    pptp_client_pool_cidr: col.has("pptp_client_pool_cidr")
-      ? String(row.pptp_client_pool_cidr ?? "") || "10.10.10.0/24"
-      : "10.10.10.0/24",
+    wireguard_server_private_key: wireguardPrivateKey,
+    wireguard_server_private_key_set: Boolean(wireguardPrivateKey),
   };
 }
 
@@ -140,13 +141,14 @@ export type SystemSettingsInput = {
   disconnect_on_update: boolean;
   subscription_license_note: string;
   accountant_contact_phone: string;
-  pptp_vpn_enabled: boolean;
-  pptp_server_host: string;
-  pptp_server_port: number;
-  pptp_server_username: string;
-  pptp_server_password?: string;
-  pptp_local_network_cidr: string;
-  pptp_client_pool_cidr: string;
+  wireguard_vpn_enabled: boolean;
+  wireguard_server_host: string;
+  wireguard_server_port: number;
+  wireguard_interface_cidr: string;
+  wireguard_client_dns: string;
+  wireguard_persistent_keepalive: number;
+  wireguard_server_public_key: string;
+  wireguard_server_private_key?: string;
 };
 
 export async function updateSystemSettings(
@@ -192,39 +194,43 @@ export async function updateSystemSettings(
     baseSets.push("accountant_contact_phone = ?");
     baseVals.push(normalizePhone(input.accountant_contact_phone) || null);
   }
-  if (col.has("pptp_vpn_enabled")) {
-    baseSets.push("pptp_vpn_enabled = ?");
-    baseVals.push(input.pptp_vpn_enabled ? 1 : 0);
+  if (col.has("wireguard_vpn_enabled")) {
+    baseSets.push("wireguard_vpn_enabled = ?");
+    baseVals.push(input.wireguard_vpn_enabled ? 1 : 0);
   }
-  if (col.has("pptp_server_host")) {
-    const host = String(input.pptp_server_host ?? "").trim();
-    baseSets.push("pptp_server_host = ?");
+  if (col.has("wireguard_server_host")) {
+    const host = String(input.wireguard_server_host ?? "").trim();
+    baseSets.push("wireguard_server_host = ?");
     baseVals.push(host.length ? host.slice(0, 128) : null);
   }
-  if (col.has("pptp_server_port")) {
-    baseSets.push("pptp_server_port = ?");
-    baseVals.push(Math.max(1, Math.min(65535, Math.floor(input.pptp_server_port || 1723))));
+  if (col.has("wireguard_server_port")) {
+    baseSets.push("wireguard_server_port = ?");
+    baseVals.push(Math.max(1, Math.min(65535, Math.floor(input.wireguard_server_port || 51820))));
   }
-  if (col.has("pptp_server_username")) {
-    const user = String(input.pptp_server_username ?? "").trim();
-    baseSets.push("pptp_server_username = ?");
-    baseVals.push(user.length ? user.slice(0, 128) : null);
-  }
-  if (col.has("pptp_local_network_cidr")) {
-    const cidr = String(input.pptp_local_network_cidr ?? "").trim();
-    baseSets.push("pptp_local_network_cidr = ?");
+  if (col.has("wireguard_interface_cidr")) {
+    const cidr = String(input.wireguard_interface_cidr ?? "").trim();
+    baseSets.push("wireguard_interface_cidr = ?");
     baseVals.push(cidr.length ? cidr.slice(0, 64) : null);
   }
-  if (col.has("pptp_client_pool_cidr")) {
-    const cidr = String(input.pptp_client_pool_cidr ?? "").trim();
-    baseSets.push("pptp_client_pool_cidr = ?");
-    baseVals.push(cidr.length ? cidr.slice(0, 64) : null);
+  if (col.has("wireguard_client_dns")) {
+    const dns = String(input.wireguard_client_dns ?? "").trim();
+    baseSets.push("wireguard_client_dns = ?");
+    baseVals.push(dns.length ? dns.slice(0, 128) : null);
   }
-  if (col.has("pptp_server_password_encrypted")) {
-    const password = String(input.pptp_server_password ?? "");
-    if (password.trim().length > 0) {
-      baseSets.push("pptp_server_password_encrypted = ?");
-      baseVals.push(encryptSecret(password.trim()));
+  if (col.has("wireguard_persistent_keepalive")) {
+    baseSets.push("wireguard_persistent_keepalive = ?");
+    baseVals.push(Math.max(0, Math.min(300, Math.floor(input.wireguard_persistent_keepalive || 25))));
+  }
+  if (col.has("wireguard_server_public_key")) {
+    const publicKey = String(input.wireguard_server_public_key ?? "").trim();
+    baseSets.push("wireguard_server_public_key = ?");
+    baseVals.push(publicKey.length ? publicKey.slice(0, 64) : null);
+  }
+  if (col.has("wireguard_server_private_key_encrypted")) {
+    const privateKey = String(input.wireguard_server_private_key ?? "");
+    if (privateKey.trim().length > 0) {
+      baseSets.push("wireguard_server_private_key_encrypted = ?");
+      baseVals.push(encryptSecret(privateKey.trim()));
     }
   }
   await pool.query(`UPDATE system_settings SET ${baseSets.join(", ")} WHERE tenant_id = ?`, [

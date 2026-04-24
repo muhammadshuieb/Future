@@ -1,4 +1,4 @@
--- RADIUS operation hints, subscription license note, PPTP tunnel IP for NAS, accountant contact for public portal
+-- RADIUS operation hints, subscription license note, WireGuard tunnel IP for NAS, accountant contact for public portal
 -- Duplicate column errors are treated as benign by the migrator.
 
 ALTER TABLE system_settings
@@ -15,4 +15,4 @@ ALTER TABLE system_settings
   ADD COLUMN accountant_contact_phone VARCHAR(32) DEFAULT NULL;
 
 ALTER TABLE nas_servers
-  ADD COLUMN pptp_tunnel_ip VARCHAR(64) DEFAULT NULL COMMENT 'Static address for PPTP/tunnel to MikroTik (optional)';
+  ADD COLUMN wireguard_tunnel_ip VARCHAR(64) DEFAULT NULL COMMENT 'Static WireGuard tunnel address for MikroTik (optional)';
