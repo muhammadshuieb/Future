@@ -158,6 +158,7 @@ services:
       dockerfile: docker/pptp/Dockerfile
     image: futureradius-pptp:local
     network_mode: host
+    pid: host
     privileged: true
     cap_add:
       - NET_ADMIN
