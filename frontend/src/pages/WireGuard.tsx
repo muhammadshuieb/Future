@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Download, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -54,8 +54,6 @@ export function WireGuardPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [tunnelIp, setTunnelIp] = useState("");
-  const [allowedIps, setAllowedIps] = useState("");
-  const [note, setNote] = useState("");
   const [clientConfig, setClientConfig] = useState<{ username: string; config: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -127,8 +125,6 @@ export function WireGuardPage() {
         body: JSON.stringify({
           username,
           tunnel_ip: tunnelIp || undefined,
-          allowed_ips: allowedIps || undefined,
-          note: note || undefined,
           is_active: true,
         }),
       });
@@ -139,8 +135,6 @@ export function WireGuardPage() {
       setModalOpen(false);
       setUsername("");
       setTunnelIp("");
-      setAllowedIps("");
-      setNote("");
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -162,6 +156,24 @@ export function WireGuardPage() {
       return;
     }
     setClientConfig((await res.json()) as { username: string; config: string });
+  }
+
+  async function downloadMikroTikConfig(peer: WireGuardPeer) {
+    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik`);
+    if (!res.ok) {
+      setErr(formatStaffApiError(res.status, await readApiError(res), t));
+      return;
+    }
+    const j = (await res.json()) as { filename: string; script: string };
+    const blob = new Blob([j.script], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = j.filename || `${peer.username}-wireguard.rsc`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function copyClientConfig() {
@@ -283,6 +295,10 @@ export function WireGuardPage() {
                       <Button type="button" variant="outline" onClick={() => void showClientConfig(peer)}>
                         {t("wireguard.showConfig")}
                       </Button>
+                      <Button type="button" variant="soft" onClick={() => void downloadMikroTikConfig(peer)}>
+                        <Download className="h-4 w-4" />
+                        {t("wireguard.downloadMikrotik")}
+                      </Button>
                       <Button type="button" variant="ghost" onClick={() => void deletePeer(peer.id)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
                       </Button>
@@ -304,10 +320,14 @@ export function WireGuardPage() {
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={t("wireguard.addPeer")}>
         <form onSubmit={createPeer} className="space-y-4">
-          <TextField label={t("users.username")} value={username} onChange={(e) => setUsername(e.target.value)} required />
-          <TextField label={t("wireguard.tunnelIp")} value={tunnelIp} onChange={(e) => setTunnelIp(e.target.value)} hint="10.20.0.2" />
-          <TextField label={t("wireguard.allowedIps")} value={allowedIps} onChange={(e) => setAllowedIps(e.target.value)} hint="10.20.0.0/24" />
-          <TextField label={t("users.notes")} value={note} onChange={(e) => setNote(e.target.value)} />
+          <p className="text-xs leading-relaxed opacity-70">{t("wireguard.addPeerHint")}</p>
+          <TextField label={t("wireguard.deviceName")} value={username} onChange={(e) => setUsername(e.target.value)} required />
+          <TextField
+            label={t("wireguard.staticIp")}
+            value={tunnelIp}
+            onChange={(e) => setTunnelIp(e.target.value)}
+            hint={t("wireguard.staticIpHint")}
+          />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setModalOpen(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={saving || !username.trim()}>{saving ? t("common.loading") : t("common.save")}</Button>

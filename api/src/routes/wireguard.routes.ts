@@ -51,6 +51,19 @@ function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>) {
   };
 }
 
+function routerOsQuote(value: string): string {
+  return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function routerOsName(value: string): string {
+  return String(value ?? "wireguard-peer").replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 40) || "wireguard-peer";
+}
+
+function addressWithPrefix(value: string): string {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.includes("/") ? trimmed : `${trimmed}/32`;
+}
+
 router.get("/config", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
   try {
     await syncWireGuardRuntime(req.auth!.tenantId);
@@ -257,6 +270,79 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
   } catch (e) {
     console.error("wireguard peer config get", e);
     res.status(500).json({ error: "wireguard_peer_config_failed" });
+  }
+});
+
+router.get("/peers/:id/mikrotik", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+  try {
+    const settings = await getSystemSettings(req.auth!.tenantId);
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT username, private_key_encrypted, tunnel_ip, allowed_ips
+       FROM wireguard_peers
+       WHERE id = ? AND tenant_id = ?
+       LIMIT 1`,
+      [String(req.params.id), req.auth!.tenantId]
+    );
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const privateKey = tryDecryptSecret(Buffer.from(row.private_key_encrypted as Buffer)) ?? "";
+    let tunnelIp = String(row.tunnel_ip ?? "").trim();
+    if (!isWireGuardTunnelIp(tunnelIp)) {
+      tunnelIp = await allocateWireGuardPeerIp(req.auth!.tenantId);
+      await pool.execute(`UPDATE wireguard_peers SET tunnel_ip = ? WHERE id = ? AND tenant_id = ?`, [
+        tunnelIp,
+        String(req.params.id),
+        req.auth!.tenantId,
+      ]);
+      await syncWireGuardRuntime(req.auth!.tenantId);
+    }
+    const interfaceName = `wg-${routerOsName(String(row.username ?? "future")).toLowerCase()}`;
+    const endpointHost = settings.wireguard_server_host || "YOUR_SERVER_IP";
+    const endpointPort = settings.wireguard_server_port;
+    const allowedIps = String(row.allowed_ips ?? "").trim() || "10.20.0.0/24";
+    const keepalive = Math.max(0, Math.min(300, Number(settings.wireguard_persistent_keepalive || 25)));
+    const lines = [
+      "# Future Radius - MikroTik WireGuard setup",
+      "# Import this file in MikroTik Terminal or via Files > Import.",
+      `:local wgName ${routerOsQuote(interfaceName)}`,
+      "",
+      "/interface wireguard",
+      `add name=$wgName private-key=${routerOsQuote(privateKey)} disabled=no`,
+      "",
+      "/ip address",
+      `add address=${addressWithPrefix(tunnelIp)} interface=$wgName comment=${routerOsQuote("Future Radius WireGuard")}`,
+      "",
+      "/interface wireguard peers",
+      [
+        "add",
+        "interface=$wgName",
+        `public-key=${routerOsQuote(settings.wireguard_server_public_key)}`,
+        `endpoint-address=${routerOsQuote(endpointHost)}`,
+        `endpoint-port=${endpointPort}`,
+        `allowed-address=${allowedIps}`,
+        keepalive > 0 ? `persistent-keepalive=${keepalive}s` : "",
+        "disabled=no",
+      ].filter(Boolean).join(" "),
+      "",
+      "/ip route",
+      `add dst-address=${allowedIps} gateway=$wgName comment=${routerOsQuote("Future Radius WireGuard route")}`,
+      "",
+      "# After import, test with: /ping 10.20.0.1",
+      "# In Future Radius NAS page, set WireGuard tunnel address to this device IP:",
+      `# ${tunnelIp.replace(/\/\d+$/, "")}`,
+      "",
+    ];
+    res.json({
+      username: String(row.username ?? ""),
+      filename: `${routerOsName(String(row.username ?? "wireguard"))}-wireguard.rsc`,
+      script: lines.join("\n"),
+    });
+  } catch (e) {
+    console.error("wireguard mikrotik config get", e);
+    res.status(500).json({ error: "wireguard_mikrotik_config_failed" });
   }
 });
 
