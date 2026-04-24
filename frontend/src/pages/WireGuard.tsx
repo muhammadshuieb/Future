@@ -178,14 +178,36 @@ export function WireGuardPage() {
 
   async function copyClientConfig() {
     if (!clientConfig) return;
-    await navigator.clipboard.writeText(clientConfig.config);
-    setMsg(t("wireguard.copied"));
+    await copyText(clientConfig.config);
   }
 
   async function copyMikroTikCommands() {
     if (!mikrotikCommands) return;
-    await navigator.clipboard.writeText(mikrotikCommands.commands);
-    setMsg(t("wireguard.copied"));
+    await copyText(mikrotikCommands.commands);
+  }
+
+  async function copyText(text: string) {
+    setErr(null);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      setMsg(t("wireguard.copied"));
+    } catch {
+      setErr(t("wireguard.copyFailed"));
+    }
   }
 
   return (
@@ -367,7 +389,8 @@ export function WireGuardPage() {
       <Modal open={clientConfig !== null} onClose={() => setClientConfig(null)} title={clientConfig?.username ?? ""} wide>
         <div className="space-y-3">
           <textarea
-            className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-xs"
+            className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-left text-xs"
+            dir="ltr"
             value={clientConfig?.config ?? ""}
             readOnly
           />
@@ -382,7 +405,8 @@ export function WireGuardPage() {
         <div className="space-y-3">
           <p className="text-xs leading-relaxed opacity-70">{t("wireguard.mikrotikCommandsHint")}</p>
           <textarea
-            className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-xs"
+            className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-left text-xs"
+            dir="ltr"
             value={mikrotikCommands?.commands ?? ""}
             readOnly
           />
