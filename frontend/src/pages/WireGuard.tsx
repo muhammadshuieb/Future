@@ -159,6 +159,24 @@ export function WireGuardPage() {
   }
 
   async function downloadMikroTikConfig(peer: WireGuardPeer) {
+    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik-conf`);
+    if (!res.ok) {
+      setErr(formatStaffApiError(res.status, await readApiError(res), t));
+      return;
+    }
+    const j = (await res.json()) as { filename: string; config: string };
+    const blob = new Blob([j.config], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = j.filename || `${peer.username}-wireguard.conf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function downloadRouterOsScript(peer: WireGuardPeer) {
     const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik`);
     if (!res.ok) {
       setErr(formatStaffApiError(res.status, await readApiError(res), t));
@@ -298,6 +316,10 @@ export function WireGuardPage() {
                       <Button type="button" variant="soft" onClick={() => void downloadMikroTikConfig(peer)}>
                         <Download className="h-4 w-4" />
                         {t("wireguard.downloadMikrotik")}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => void downloadRouterOsScript(peer)}>
+                        <Download className="h-4 w-4" />
+                        {t("wireguard.downloadRouterOsScript")}
                       </Button>
                       <Button type="button" variant="ghost" onClick={() => void deletePeer(peer.id)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
