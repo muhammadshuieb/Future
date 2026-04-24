@@ -4,6 +4,7 @@ set -eu
 RUNTIME_DIR="${PPTP_RUNTIME_DIR:-/var/lib/futureradius/pptp}"
 STATE_FILE="$RUNTIME_DIR/pptp-state.env"
 PID_FILE="/var/run/pptpd.pid"
+START_LOG="/tmp/pptpd-start.log"
 
 mkdir -p /etc/ppp
 
@@ -55,13 +56,25 @@ start_pptpd() {
   fi
   echo "[pptp] starting server on port $PPTP_PORT"
   rm -f "$PID_FILE" || true
-  /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" || true
+  : > "$START_LOG"
+  /usr/sbin/pptpd --fg --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 &
+  LAUNCH_PID="$!"
   sleep 1
   if [ -f "$PID_FILE" ]; then
     PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   fi
+  if [ -z "$PPTP_PID" ]; then
+    PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
+  fi
+  if [ -z "$PPTP_PID" ] && kill -0 "$LAUNCH_PID" 2>/dev/null; then
+    PPTP_PID="$LAUNCH_PID"
+  fi
   if [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null; then
     echo "[pptp] failed to start: pptpd is not running"
+    if [ -s "$START_LOG" ]; then
+      echo "[pptp] start output:"
+      cat "$START_LOG"
+    fi
     PPTP_PID=""
     return
   fi
