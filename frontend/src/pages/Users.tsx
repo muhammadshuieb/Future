@@ -559,7 +559,12 @@ export function UsersPage() {
   function header(label: string, key: SortKey, alignClass: string) {
     const active = sortKey === key;
     return (
-      <th className={cn("px-4 py-3", alignClass)}>
+      <th
+        className={cn(
+          "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+          alignClass
+        )}
+      >
         <button
           type="button"
           onClick={() => toggleSort(key)}
@@ -593,89 +598,91 @@ export function UsersPage() {
         </div>
       </div>
 
-      <Card className="sticky-list-panel flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-3 text-sm opacity-80">
-          <span>
-            {t("users.selected")}: {selectedIds.length}
-          </span>
-          <span>
-            {t("users.pageLabel")}: {currentPage}/{totalPages}
-          </span>
-          <div className="flex items-center gap-2">
-            <span>{t("users.perPage")}:</span>
-            <select
-              className="rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
-              value={pageSize}
-              onChange={(e) => {
-                setPageSize(Number(e.target.value) || 25);
-                setCurrentPage(1);
-              }}
-            >
-              {PAGE_SIZE_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              applySearch();
-            }}
-          >
-            <input
-              className="w-44 rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
-              placeholder={t("users.searchPlaceholder")}
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-            />
-            <Button type="submit" variant="outline">
-              {t("common.search")}
-            </Button>
-            {searchText ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setSearchText("");
+      <div className="sticky-list-panel rounded-2xl">
+        <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3 text-sm opacity-80">
+            <span>
+              {t("users.selected")}: {selectedIds.length}
+            </span>
+            <span>
+              {t("users.pageLabel")}: {currentPage}/{totalPages}
+            </span>
+            <div className="flex items-center gap-2">
+              <span>{t("users.perPage")}:</span>
+              <select
+                className="rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value) || 25);
                   setCurrentPage(1);
-                  setSearchParams({});
                 }}
               >
-                {t("users.searchClear")}
+                {PAGE_SIZE_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                applySearch();
+              }}
+            >
+              <input
+                className="w-44 rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
+                placeholder={t("users.searchPlaceholder")}
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+              />
+              <Button type="submit" variant="outline">
+                {t("common.search")}
+              </Button>
+              {searchText ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setSearchText("");
+                    setCurrentPage(1);
+                    setSearchParams({});
+                  }}
+                >
+                  {t("users.searchClear")}
+                </Button>
+              ) : null}
+            </form>
+            <Button type="button" variant="outline" onClick={toggleAll} disabled={visibleItems.length === 0}>
+              {allSelected ? t("users.clearSelection") : t("users.selectAll")}
+            </Button>
+            <Button type="button" variant="outline" onClick={exportSelected} disabled={selectedIds.length === 0}>
+              <Download className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+              {t("users.exportSelected")}
+            </Button>
+            {canManage ? (
+              <Button type="button" variant="outline" onClick={() => void deleteSelected()} disabled={selectedIds.length === 0}>
+                <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                {t("users.deleteSelected")}
               </Button>
             ) : null}
-          </form>
-          <Button type="button" variant="outline" onClick={toggleAll} disabled={visibleItems.length === 0}>
-            {allSelected ? t("users.clearSelection") : t("users.selectAll")}
-          </Button>
-          <Button type="button" variant="outline" onClick={exportSelected} disabled={selectedIds.length === 0}>
-            <Download className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
-            {t("users.exportSelected")}
-          </Button>
-          {canManage ? (
-            <Button type="button" variant="outline" onClick={() => void deleteSelected()} disabled={selectedIds.length === 0}>
-              <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
-              {t("users.deleteSelected")}
+            <Button type="button" variant="outline" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage <= 1}>
+              {t("users.prevPage")}
             </Button>
-          ) : null}
-          <Button type="button" variant="outline" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage <= 1}>
-            {t("users.prevPage")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-            disabled={currentPage >= totalPages}
-          >
-            {t("users.nextPage")}
-          </Button>
-        </div>
-      </Card>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+            >
+              {t("users.nextPage")}
+            </Button>
+          </div>
+        </Card>
+      </div>
 
       {msg ? (
         <p
@@ -701,7 +708,7 @@ export function UsersPage() {
           <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs font-medium uppercase tracking-wide opacity-70">
-                <th className="px-4 py-3">
+                <th className="sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75">
                   <input
                     ref={selectAllRef}
                     type="checkbox"
@@ -713,17 +720,38 @@ export function UsersPage() {
                 {header(t("users.username"), "username", isRtl ? "text-right" : "text-left")}
                 {header(t("users.fullName"), "full_name", isRtl ? "text-right" : "text-left")}
                 {header(t("users.phone"), "phone", isRtl ? "text-right" : "text-left")}
-                <th className={cn("px-4 py-3", isRtl ? "text-right" : "text-left")}>{t("users.password")}</th>
+                <th
+                  className={cn(
+                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                    isRtl ? "text-right" : "text-left"
+                  )}
+                >
+                  {t("users.password")}
+                </th>
                 {header(t("users.status"), "status", isRtl ? "text-right" : "text-left")}
                 {header(t("users.package"), "package_name", isRtl ? "text-right" : "text-left")}
-                <th className={cn("px-4 py-3", isRtl ? "text-right" : "text-left")}>{t("users.remainingQuota")}</th>
+                <th
+                  className={cn(
+                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                    isRtl ? "text-right" : "text-left"
+                  )}
+                >
+                  {t("users.remainingQuota")}
+                </th>
                 {header(t("users.nasNetwork"), "nas_network", isRtl ? "text-right" : "text-left")}
                 {header(t("users.region"), "region_name", isRtl ? "text-right" : "text-left")}
                 {header(t("users.createdBy"), "created_by", isRtl ? "text-right" : "text-left")}
                 {header(t("users.createdAt"), "created_at", isRtl ? "text-right" : "text-left")}
                 {header(t("users.startDate"), "start_date", isRtl ? "text-right" : "text-left")}
                 {header(t("users.expires"), "expiration_date", isRtl ? "text-right" : "text-left")}
-                <th className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>{t("common.actions")}</th>
+                <th
+                  className={cn(
+                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                    isRtl ? "text-left" : "text-right"
+                  )}
+                >
+                  {t("common.actions")}
+                </th>
               </tr>
             </thead>
             <tbody>
