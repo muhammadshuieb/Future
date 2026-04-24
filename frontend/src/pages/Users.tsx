@@ -703,7 +703,7 @@ export function UsersPage() {
         </p>
       ) : null}
 
-      <Card className="overflow-hidden p-0">
+      <div className="glass overflow-hidden rounded-2xl p-0">
         <div className="overflow-x-auto">
           <table className="sticky-list-table w-full text-sm">
             <thead>
@@ -877,7 +877,7 @@ export function UsersPage() {
             {appliedSearch ? t("users.searchNoResults") : t("users.empty")}
           </p>
         ) : null}
-      </Card>
+      </div>
 
       <Modal open={modal} onClose={() => setModal(false)} title={t("users.add")} wide>
         <form onSubmit={onCreate} className="space-y-4">

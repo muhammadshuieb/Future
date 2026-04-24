@@ -1,6 +1,7 @@
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { getTableColumns } from "../db/schemaGuards.js";
+import { encryptSecret, tryDecryptSecret } from "./crypto.service.js";
 
 export type SystemSettingsView = {
   critical_alert_enabled: boolean;
@@ -13,6 +14,14 @@ export type SystemSettingsView = {
   disconnect_on_update: boolean;
   subscription_license_note: string;
   accountant_contact_phone: string;
+  pptp_vpn_enabled: boolean;
+  pptp_server_host: string;
+  pptp_server_port: number;
+  pptp_server_username: string;
+  pptp_server_password: string;
+  pptp_server_password_set: boolean;
+  pptp_local_network_cidr: string;
+  pptp_client_pool_cidr: string;
 };
 
 export async function ensureSystemSettings(tenantId: string): Promise<void> {
@@ -23,6 +32,13 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       critical_alert_phone VARCHAR(32) DEFAULT NULL,
       critical_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
       server_log_retention_days INT NOT NULL DEFAULT 14,
+      pptp_vpn_enabled TINYINT(1) NOT NULL DEFAULT 0,
+      pptp_server_host VARCHAR(128) DEFAULT NULL,
+      pptp_server_port INT NOT NULL DEFAULT 1723,
+      pptp_server_username VARCHAR(128) DEFAULT NULL,
+      pptp_server_password_encrypted VARBINARY(512) DEFAULT NULL,
+      pptp_local_network_cidr VARCHAR(64) DEFAULT NULL,
+      pptp_client_pool_cidr VARCHAR(64) DEFAULT NULL,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
@@ -41,6 +57,13 @@ function normalizePhone(raw: string | null | undefined): string {
 }
 
 function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
+  let pptpPassword = "";
+  const pptpPasswordBlob = col.has("pptp_server_password_encrypted")
+    ? (row.pptp_server_password_encrypted as Buffer | Uint8Array | null | undefined)
+    : null;
+  if (pptpPasswordBlob) {
+    pptpPassword = tryDecryptSecret(Buffer.from(pptpPasswordBlob)) ?? "";
+  }
   return {
     critical_alert_enabled: Boolean(Number(row.critical_alert_enabled ?? 0)),
     critical_alert_phone: normalizePhone(String(row.critical_alert_phone ?? "")),
@@ -63,6 +86,26 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
       : "",
     accountant_contact_phone: col.has("accountant_contact_phone")
       ? normalizePhone(String(row.accountant_contact_phone ?? ""))
+      : "",
+    pptp_vpn_enabled: col.has("pptp_vpn_enabled")
+      ? Boolean(Number(row.pptp_vpn_enabled ?? 0))
+      : false,
+    pptp_server_host: col.has("pptp_server_host")
+      ? String(row.pptp_server_host ?? "")
+      : "",
+    pptp_server_port: col.has("pptp_server_port")
+      ? Math.max(1, Math.min(65535, Number(row.pptp_server_port ?? 1723)))
+      : 1723,
+    pptp_server_username: col.has("pptp_server_username")
+      ? String(row.pptp_server_username ?? "")
+      : "",
+    pptp_server_password: pptpPassword,
+    pptp_server_password_set: Boolean(pptpPassword),
+    pptp_local_network_cidr: col.has("pptp_local_network_cidr")
+      ? String(row.pptp_local_network_cidr ?? "")
+      : "",
+    pptp_client_pool_cidr: col.has("pptp_client_pool_cidr")
+      ? String(row.pptp_client_pool_cidr ?? "")
       : "",
   };
 }
@@ -88,6 +131,13 @@ export type SystemSettingsInput = {
   disconnect_on_update: boolean;
   subscription_license_note: string;
   accountant_contact_phone: string;
+  pptp_vpn_enabled: boolean;
+  pptp_server_host: string;
+  pptp_server_port: number;
+  pptp_server_username: string;
+  pptp_server_password?: string;
+  pptp_local_network_cidr: string;
+  pptp_client_pool_cidr: string;
 };
 
 export async function updateSystemSettings(
@@ -132,6 +182,41 @@ export async function updateSystemSettings(
   if (col.has("accountant_contact_phone")) {
     baseSets.push("accountant_contact_phone = ?");
     baseVals.push(normalizePhone(input.accountant_contact_phone) || null);
+  }
+  if (col.has("pptp_vpn_enabled")) {
+    baseSets.push("pptp_vpn_enabled = ?");
+    baseVals.push(input.pptp_vpn_enabled ? 1 : 0);
+  }
+  if (col.has("pptp_server_host")) {
+    const host = String(input.pptp_server_host ?? "").trim();
+    baseSets.push("pptp_server_host = ?");
+    baseVals.push(host.length ? host.slice(0, 128) : null);
+  }
+  if (col.has("pptp_server_port")) {
+    baseSets.push("pptp_server_port = ?");
+    baseVals.push(Math.max(1, Math.min(65535, Math.floor(input.pptp_server_port || 1723))));
+  }
+  if (col.has("pptp_server_username")) {
+    const user = String(input.pptp_server_username ?? "").trim();
+    baseSets.push("pptp_server_username = ?");
+    baseVals.push(user.length ? user.slice(0, 128) : null);
+  }
+  if (col.has("pptp_local_network_cidr")) {
+    const cidr = String(input.pptp_local_network_cidr ?? "").trim();
+    baseSets.push("pptp_local_network_cidr = ?");
+    baseVals.push(cidr.length ? cidr.slice(0, 64) : null);
+  }
+  if (col.has("pptp_client_pool_cidr")) {
+    const cidr = String(input.pptp_client_pool_cidr ?? "").trim();
+    baseSets.push("pptp_client_pool_cidr = ?");
+    baseVals.push(cidr.length ? cidr.slice(0, 64) : null);
+  }
+  if (col.has("pptp_server_password_encrypted")) {
+    const password = String(input.pptp_server_password ?? "");
+    if (password.trim().length > 0) {
+      baseSets.push("pptp_server_password_encrypted = ?");
+      baseVals.push(encryptSecret(password.trim()));
+    }
   }
   await pool.query(`UPDATE system_settings SET ${baseSets.join(", ")} WHERE tenant_id = ?`, [
     ...baseVals,
