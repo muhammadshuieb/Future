@@ -13,6 +13,7 @@ PPTP_ENABLED="0"
 PPTP_PORT="1723"
 PPTP_PID=""
 LOG_TAIL_PID=""
+START_TAIL_PID=""
 LAST_HASH=""
 
 load_state() {
@@ -43,7 +44,13 @@ ensure_ppp_device() {
 ensure_ppp_log() {
   mkdir -p /var/log
   touch "$PPP_LOG"
+  touch "$START_LOG"
   chmod 600 "$PPP_LOG" || true
+  chmod 600 "$START_LOG" || true
+  if [ -z "$START_TAIL_PID" ] || ! kill -0 "$START_TAIL_PID" 2>/dev/null; then
+    tail -n 0 -F "$START_LOG" &
+    START_TAIL_PID="$!"
+  fi
   if [ -z "$LOG_TAIL_PID" ] || ! kill -0 "$LOG_TAIL_PID" 2>/dev/null; then
     tail -n 0 -F "$PPP_LOG" &
     LOG_TAIL_PID="$!"
@@ -85,20 +92,17 @@ start_pptpd() {
   ensure_ppp_log
   rm -f "$PID_FILE" || true
   : > "$START_LOG"
-  /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 || true
+  /usr/sbin/pptpd --fg --debug --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 &
+  PPTP_PID="$!"
   i=0
   while [ "$i" -lt 6 ]; do
-    if is_pptp_listening; then
-      PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-      if [ -z "$PPTP_PID" ]; then
-        PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
-      fi
+    if [ -n "$PPTP_PID" ] && kill -0 "$PPTP_PID" 2>/dev/null && is_pptp_listening; then
       break
     fi
     sleep 1
     i=$((i + 1))
   done
-  if ! is_pptp_listening; then
+  if [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null || ! is_pptp_listening; then
     echo "[pptp] failed to start: pptpd is not running"
     if [ -s "$START_LOG" ]; then
       echo "[pptp] start output:"
@@ -115,11 +119,7 @@ start_pptpd() {
     PPTP_PID=""
     return
   fi
-  if [ -n "$PPTP_PID" ]; then
-    echo "[pptp] started with pid $PPTP_PID"
-  else
-    echo "[pptp] started (pid unavailable, listener is up)"
-  fi
+  echo "[pptp] started with supervised pid $PPTP_PID"
 }
 
 calc_hash() {
@@ -136,7 +136,7 @@ calc_hash() {
   md5sum $files 2>/dev/null | md5sum | awk '{print $1}'
 }
 
-trap 'stop_pptpd; [ -n "$LOG_TAIL_PID" ] && kill "$LOG_TAIL_PID" 2>/dev/null || true; exit 0' INT TERM
+trap 'stop_pptpd; [ -n "$LOG_TAIL_PID" ] && kill "$LOG_TAIL_PID" 2>/dev/null || true; [ -n "$START_TAIL_PID" ] && kill "$START_TAIL_PID" 2>/dev/null || true; exit 0' INT TERM
 
 echo "[pptp] runtime watcher started"
 while true; do
@@ -148,8 +148,12 @@ while true; do
     start_pptpd
     LAST_HASH="$HASH"
   fi
-  if ! is_pptp_listening; then
+  if [ "$PPTP_ENABLED" = "1" ] && { [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null || ! is_pptp_listening; }; then
     echo "[pptp] process exited, restarting"
+    if [ -s "$START_LOG" ]; then
+      echo "[pptp] last start output:"
+      tail -n 80 "$START_LOG"
+    fi
     load_state
     start_pptpd
   fi
