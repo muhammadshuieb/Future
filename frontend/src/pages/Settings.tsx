@@ -18,14 +18,6 @@ type SystemSettings = {
   disconnect_on_update: boolean;
   subscription_license_note: string;
   accountant_contact_phone: string;
-  pptp_vpn_enabled: boolean;
-  pptp_server_host: string;
-  pptp_server_port: number;
-  pptp_server_username: string;
-  pptp_server_password: string;
-  pptp_server_password_set?: boolean;
-  pptp_local_network_cidr: string;
-  pptp_client_pool_cidr: string;
 };
 
 export function SettingsPage() {
@@ -46,14 +38,6 @@ export function SettingsPage() {
     disconnect_on_update: true,
     subscription_license_note: "",
     accountant_contact_phone: "",
-    pptp_vpn_enabled: false,
-    pptp_server_host: "",
-    pptp_server_port: 1723,
-    pptp_server_username: "",
-    pptp_server_password: "",
-    pptp_server_password_set: false,
-    pptp_local_network_cidr: "",
-    pptp_client_pool_cidr: "",
   });
 
   const load = useCallback(async () => {
@@ -94,7 +78,7 @@ export function SettingsPage() {
         return;
       }
       const j = (await res.json()) as { settings: Partial<SystemSettings> };
-      setSettings((prev) => ({ ...prev, ...j.settings, pptp_server_password: "" }));
+      setSettings((prev) => ({ ...prev, ...j.settings }));
       setMsg(t("settings.saved"));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -168,73 +152,6 @@ export function SettingsPage() {
           }
           hint={t("settings.logRetentionHint")}
         />
-      </Card>
-
-      <Card className="space-y-4">
-        <div className="flex items-center gap-2 font-semibold">
-          <ShieldCheck className="h-4 w-4 text-sky-500" />
-          {t("settings.pptpTitle")}
-        </div>
-        <p className="text-xs text-[hsl(var(--muted-foreground))]">{t("settings.pptpHint")}</p>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={settings.pptp_vpn_enabled}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_vpn_enabled: e.target.checked }))}
-          />
-          {t("settings.pptpEnabled")}
-        </label>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <TextField
-            label={t("settings.pptpHost")}
-            value={settings.pptp_server_host}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_server_host: e.target.value }))}
-          />
-          <TextField
-            label={t("settings.pptpPort")}
-            type="number"
-            min={1}
-            max={65535}
-            value={String(settings.pptp_server_port)}
-            onChange={(e) =>
-              setSettings((p) => ({
-                ...p,
-                pptp_server_port: Math.max(1, Math.min(65535, Number(e.target.value) || 1723)),
-              }))
-            }
-          />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <TextField
-            label={t("settings.pptpUsername")}
-            value={settings.pptp_server_username}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_server_username: e.target.value }))}
-          />
-          <TextField
-            label={
-              settings.pptp_server_password_set
-                ? `${t("settings.pptpPassword")} (${t("settings.optionalChange")})`
-                : t("settings.pptpPassword")
-            }
-            type="password"
-            value={settings.pptp_server_password}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_server_password: e.target.value }))}
-          />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <TextField
-            label={t("settings.pptpLocalNetwork")}
-            value={settings.pptp_local_network_cidr}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_local_network_cidr: e.target.value }))}
-            hint={t("settings.pptpLocalNetworkHint")}
-          />
-          <TextField
-            label={t("settings.pptpClientPool")}
-            value={settings.pptp_client_pool_cidr}
-            onChange={(e) => setSettings((p) => ({ ...p, pptp_client_pool_cidr: e.target.value }))}
-            hint={t("settings.pptpClientPoolHint")}
-          />
-        </div>
       </Card>
 
       <Card className="space-y-4">

@@ -37,7 +37,6 @@ export function NasPage() {
   const [mikrotikApiEnabled, setMikrotikApiEnabled] = useState(false);
   const [mikrotikApiUser, setMikrotikApiUser] = useState("");
   const [mikrotikApiPassword, setMikrotikApiPassword] = useState("");
-  const [pptpTunnelIp, setPptpTunnelIp] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,7 +117,6 @@ export function NasPage() {
     setMikrotikApiEnabled(false);
     setMikrotikApiUser("");
     setMikrotikApiPassword("");
-    setPptpTunnelIp("");
     setFormError(null);
     setModal("create");
   }
@@ -133,7 +131,6 @@ export function NasPage() {
     setMikrotikApiEnabled(Boolean(n.mikrotik_api_enabled));
     setMikrotikApiUser(String(n.mikrotik_api_user ?? ""));
     setMikrotikApiPassword("");
-    setPptpTunnelIp(String(n.pptp_tunnel_ip ?? ""));
     setFormError(null);
     setModal("edit");
   }
@@ -159,7 +156,6 @@ export function NasPage() {
             mikrotik_api_enabled: mikrotikApiEnabled,
             mikrotik_api_user: mikrotikApiUser || undefined,
             mikrotik_api_password: mikrotikApiPassword || undefined,
-            pptp_tunnel_ip: pptpTunnelIp.trim() || null,
           }),
         });
         if (r.ok) {
@@ -176,7 +172,6 @@ export function NasPage() {
         body.mikrotik_api_enabled = mikrotikApiEnabled;
         body.mikrotik_api_user = mikrotikApiUser || null;
         if (mikrotikApiPassword.trim()) body.mikrotik_api_password = mikrotikApiPassword;
-        body.pptp_tunnel_ip = pptpTunnelIp.trim() || null;
         const r = await apiFetch(`/api/nas/${editId}`, {
           method: "PATCH",
           body: JSON.stringify(body),
@@ -232,11 +227,6 @@ export function NasPage() {
               <div>
                 <div className="text-lg font-semibold">{String(n.name)}</div>
                 <div className="mt-1 font-mono text-sm opacity-80">{String(n.ip)}</div>
-                {n.pptp_tunnel_ip ? (
-                  <div className="mt-0.5 font-mono text-[11px] text-cyan-600 dark:text-cyan-400">
-                    {t("nas.pptpTunnel")}: {String(n.pptp_tunnel_ip)}
-                  </div>
-                ) : null}
               </div>
               <div className="flex flex-col items-end gap-1">
                 <span
@@ -330,12 +320,6 @@ export function NasPage() {
           ) : null}
           <TextField label={t("nas.name")} value={name} onChange={(e) => setName(e.target.value)} required />
           <TextField label={t("nas.ip")} value={ip} onChange={(e) => setIp(e.target.value)} required />
-          <TextField
-            label={t("nas.pptpTunnel")}
-            value={pptpTunnelIp}
-            onChange={(e) => setPptpTunnelIp(e.target.value)}
-            hint={t("nas.pptpTunnelHint")}
-          />
           <TextField label={t("nas.type")} value={nasType} onChange={(e) => setNasType(e.target.value)} />
           <TextField
             label={t("nas.secret")}

@@ -32,6 +32,7 @@ import auditRoutes from "./routes/audit.routes.js";
 import observabilityRoutes from "./routes/observability.routes.js";
 import serverLogsRoutes from "./routes/server-logs.routes.js";
 import systemSettingsRoutes from "./routes/system-settings.routes.js";
+import pptpRoutes from "./routes/pptp.routes.js";
 import regionsRoutes from "./routes/regions.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
@@ -75,6 +76,7 @@ app.use("/api/audit", auditRoutes);
 app.use("/api/observability", observabilityRoutes);
 app.use("/api/server-logs", serverLogsRoutes);
 app.use("/api/system-settings", systemSettingsRoutes);
+app.use("/api/pptp", pptpRoutes);
 app.use("/api/regions", regionsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
