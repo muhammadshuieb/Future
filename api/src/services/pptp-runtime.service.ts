@@ -76,6 +76,8 @@ export async function syncPptpRuntime(tenantId: string): Promise<void> {
 
   const optionsLines = [
     "name pptpd",
+    // Server mode: do not require the server to authenticate itself to clients.
+    "noauth",
     "refuse-pap",
     "refuse-chap",
     "require-mschap-v2",
