@@ -152,7 +152,7 @@ export async function updateSystemSettings(
     "critical_alert_use_session_owner = ?",
     "server_log_retention_days = ?",
   ];
-  const baseVals: (string | number | null)[] = [
+  const baseVals: (string | number | Buffer | null)[] = [
     input.critical_alert_enabled ? 1 : 0,
     normalizePhone(input.critical_alert_phone) || null,
     input.critical_alert_use_session_owner ? 1 : 0,
