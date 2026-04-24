@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Download, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -63,6 +63,7 @@ export function WireGuardPage() {
   const [username, setUsername] = useState("");
   const [tunnelIp, setTunnelIp] = useState("");
   const [clientConfig, setClientConfig] = useState<{ username: string; config: string } | null>(null);
+  const [mikrotikCommands, setMikrotikCommands] = useState<{ username: string; commands: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -166,27 +167,24 @@ export function WireGuardPage() {
     setClientConfig((await res.json()) as { username: string; config: string });
   }
 
-  async function downloadMikroTikConfig(peer: WireGuardPeer) {
-    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik-conf`);
+  async function showMikroTikCommands(peer: WireGuardPeer) {
+    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik-commands`);
     if (!res.ok) {
       setErr(formatStaffApiError(res.status, await readApiError(res), t));
       return;
     }
-    const j = (await res.json()) as { filename: string; config: string };
-    const blob = new Blob([j.config], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = j.filename || `${peer.username}-wireguard.conf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    setMikrotikCommands((await res.json()) as { username: string; commands: string });
   }
 
   async function copyClientConfig() {
     if (!clientConfig) return;
     await navigator.clipboard.writeText(clientConfig.config);
+    setMsg(t("wireguard.copied"));
+  }
+
+  async function copyMikroTikCommands() {
+    if (!mikrotikCommands) return;
+    await navigator.clipboard.writeText(mikrotikCommands.commands);
     setMsg(t("wireguard.copied"));
   }
 
@@ -326,9 +324,9 @@ export function WireGuardPage() {
                       <Button type="button" variant="outline" onClick={() => void showClientConfig(peer)}>
                         {t("wireguard.showConfig")}
                       </Button>
-                      <Button type="button" variant="soft" onClick={() => void downloadMikroTikConfig(peer)}>
-                        <Download className="h-4 w-4" />
-                        {t("wireguard.downloadMikrotik")}
+                      <Button type="button" variant="soft" onClick={() => void showMikroTikCommands(peer)}>
+                        <Copy className="h-4 w-4" />
+                        {t("wireguard.mikrotikCommands")}
                       </Button>
                       <Button type="button" variant="ghost" onClick={() => void deletePeer(peer.id)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
@@ -374,6 +372,21 @@ export function WireGuardPage() {
             readOnly
           />
           <Button type="button" onClick={() => void copyClientConfig()}>
+            <Copy className="h-4 w-4" />
+            {t("wireguard.copyConfig")}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal open={mikrotikCommands !== null} onClose={() => setMikrotikCommands(null)} title={mikrotikCommands?.username ?? ""} wide>
+        <div className="space-y-3">
+          <p className="text-xs leading-relaxed opacity-70">{t("wireguard.mikrotikCommandsHint")}</p>
+          <textarea
+            className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-xs"
+            value={mikrotikCommands?.commands ?? ""}
+            readOnly
+          />
+          <Button type="button" onClick={() => void copyMikroTikCommands()}>
             <Copy className="h-4 w-4" />
             {t("wireguard.copyConfig")}
           </Button>

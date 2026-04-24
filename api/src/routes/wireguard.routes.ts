@@ -92,6 +92,10 @@ function routerOsName(value: string): string {
   return String(value ?? "wireguard-peer").replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 40) || "wireguard-peer";
 }
 
+function routerOsQuote(value: string): string {
+  return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function addressWithInterfacePrefix(value: string, interfaceCidr: string): string {
   const ip = String(value ?? "").trim().replace(/\/\d+$/, "");
   const prefix = String(interfaceCidr ?? "").trim().split("/")[1] || "24";
@@ -353,7 +357,7 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
   }
 });
 
-router.get("/peers/:id/mikrotik-conf", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
+router.get("/peers/:id/mikrotik-commands", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {
     await syncWireGuardRuntime(req.auth!.tenantId);
     const settings = await getSystemSettings(req.auth!.tenantId);
@@ -381,28 +385,42 @@ router.get("/peers/:id/mikrotik-conf", routePolicy({ allow: ["admin", "manager"]
       await syncWireGuardRuntime(req.auth!.tenantId);
     }
     const endpoint = `${resolveEndpointHost(req, settings)}:${settings.wireguard_server_port}`;
+    const [endpointHost, endpointPort] = endpoint.split(":");
+    const interfaceName = `wg-${routerOsName(String(row.username ?? "future")).toLowerCase()}`;
+    const keepalive = Math.max(0, Math.min(300, Number(settings.wireguard_persistent_keepalive || 25)));
     const lines = [
-      "[Interface]",
-      `Address=${addressWithInterfacePrefix(tunnelIp, settings.wireguard_interface_cidr)}`,
-      "ListenPort=13231",
-      `PrivateKey=${privateKey}`,
-    ];
-    lines.push(
+      "/interface wireguard",
+      [
+        "add",
+        `name=${routerOsQuote(interfaceName)}`,
+        "listen-port=13231",
+        `private-key=${routerOsQuote(privateKey)}`,
+        "disabled=no",
+      ].join(" "),
       "",
-      "[Peer]",
-      `PublicKey=${settings.wireguard_server_public_key}`,
-      `AllowedIPs=${defaultAllowedIps(row, settings)}`,
-      `Endpoint=${endpoint}`
-    );
-    const config = `${lines.join("\r\n")}\r\n`;
+      "/ip address",
+      `add address=${addressWithInterfacePrefix(tunnelIp, settings.wireguard_interface_cidr)} interface=${routerOsQuote(interfaceName)}`,
+      "",
+      "/interface wireguard peers",
+      [
+        "add",
+        `interface=${routerOsQuote(interfaceName)}`,
+        `public-key=${routerOsQuote(settings.wireguard_server_public_key)}`,
+        `endpoint-address=${endpointHost}`,
+        `endpoint-port=${endpointPort || settings.wireguard_server_port}`,
+        `allowed-address=${defaultAllowedIps(row, settings)}`,
+        keepalive > 0 ? `persistent-keepalive=${keepalive}s` : "",
+        "disabled=no",
+      ].filter(Boolean).join(" "),
+    ];
     res.json({
       username: String(row.username ?? ""),
-      filename: `${routerOsName(String(row.username ?? "wireguard"))}-wireguard.conf`,
-      config,
+      interfaceName,
+      commands: `${lines.join("\n")}\n`,
     });
   } catch (e) {
-    console.error("wireguard mikrotik wg import get", e);
-    res.status(500).json({ error: "wireguard_mikrotik_conf_failed" });
+    console.error("wireguard mikrotik commands get", e);
+    res.status(500).json({ error: "wireguard_mikrotik_commands_failed" });
   }
 });
 
