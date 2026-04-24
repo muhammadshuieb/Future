@@ -193,6 +193,15 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
       type: parsed.data.type ?? "mikrotik",
       secret: parsed.data.secret,
     });
+    if (parsed.data.wireguard_tunnel_ip?.trim()) {
+      await upsertLegacyNas({
+        legacyId: null,
+        ip: parsed.data.wireguard_tunnel_ip.trim(),
+        name: `${parsed.data.name} WireGuard`,
+        type: parsed.data.type ?? "mikrotik",
+        secret: parsed.data.secret,
+      });
+    }
     if (legacyId && col.has("legacy_nas_id")) {
       await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
         legacyId,
@@ -316,6 +325,15 @@ router.patch(
         type: b.type ?? currentType,
         secret: b.secret && b.secret.length > 0 ? b.secret : currentSecret,
       });
+      if (b.wireguard_tunnel_ip?.trim()) {
+        await upsertLegacyNas({
+          legacyId: null,
+          ip: b.wireguard_tunnel_ip.trim(),
+          name: `${b.name ?? currentName} WireGuard`,
+          type: b.type ?? currentType,
+          secret: b.secret && b.secret.length > 0 ? b.secret : currentSecret,
+        });
+      }
       if (syncedLegacyId && col.has("legacy_nas_id")) {
         await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
           syncedLegacyId,
