@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { Router } from "express";
+import type { Request } from "express";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
@@ -38,10 +39,10 @@ const peerCreateSchema = z.object({
 
 const peerUpdateSchema = peerCreateSchema.partial();
 
-function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>) {
+function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>, inferredHost = "") {
   return {
     wireguard_vpn_enabled: settings.wireguard_vpn_enabled,
-    wireguard_server_host: settings.wireguard_server_host,
+    wireguard_server_host: settings.wireguard_server_host || inferredHost,
     wireguard_server_port: settings.wireguard_server_port,
     wireguard_interface_cidr: settings.wireguard_interface_cidr,
     wireguard_client_dns: settings.wireguard_client_dns,
@@ -49,6 +50,32 @@ function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>) {
     wireguard_server_public_key: settings.wireguard_server_public_key,
     wireguard_server_private_key_set: settings.wireguard_server_private_key_set,
   };
+}
+
+function stripPort(host: string): string {
+  const value = String(host ?? "").trim();
+  if (!value) return "";
+  if (value.startsWith("[")) return value.replace(/^\[|\](?::\d+)?$/g, "");
+  return value.split(":")[0] ?? "";
+}
+
+function inferServerHost(req: Request): string {
+  const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim() ?? "";
+  const host = forwardedHost || String(req.headers.host ?? "");
+  const fromHost = stripPort(host);
+  if (fromHost) return fromHost;
+
+  const origin = String(req.headers.origin ?? req.headers.referer ?? "");
+  if (!origin) return "";
+  try {
+    return new URL(origin).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function resolveEndpointHost(req: Request, settings: Awaited<ReturnType<typeof getSystemSettings>>): string {
+  return settings.wireguard_server_host || inferServerHost(req) || "YOUR_SERVER_IP";
 }
 
 function routerOsQuote(value: string): string {
@@ -68,7 +95,7 @@ router.get("/config", routePolicy({ allow: ["admin", "manager", "accountant", "v
   try {
     await syncWireGuardRuntime(req.auth!.tenantId);
     const settings = await getSystemSettings(req.auth!.tenantId);
-    res.json({ config: publicConfig(settings) });
+    res.json({ config: publicConfig(settings, inferServerHost(req)) });
   } catch (e) {
     console.error("wireguard config get", e);
     res.status(500).json({ error: "wireguard_config_failed" });
@@ -90,7 +117,7 @@ router.put("/config", routePolicy({ allow: ["admin", "manager"] }), async (req, 
     });
     await syncWireGuardRuntime(req.auth!.tenantId);
     const next = await getSystemSettings(req.auth!.tenantId);
-    res.json({ config: publicConfig(next) });
+    res.json({ config: publicConfig(next, inferServerHost(req)) });
   } catch (e) {
     console.error("wireguard config put", e);
     res.status(500).json({ error: "wireguard_config_save_failed" });
@@ -251,7 +278,7 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
       ]);
       await syncWireGuardRuntime(req.auth!.tenantId);
     }
-    const endpoint = `${settings.wireguard_server_host || "YOUR_SERVER_IP"}:${settings.wireguard_server_port}`;
+    const endpoint = `${resolveEndpointHost(req, settings)}:${settings.wireguard_server_port}`;
     const lines = [
       "[Interface]",
       `PrivateKey = ${privateKey}`,
@@ -300,7 +327,7 @@ router.get("/peers/:id/mikrotik", routePolicy({ allow: ["admin", "manager"] }), 
       await syncWireGuardRuntime(req.auth!.tenantId);
     }
     const interfaceName = `wg-${routerOsName(String(row.username ?? "future")).toLowerCase()}`;
-    const endpointHost = settings.wireguard_server_host || "YOUR_SERVER_IP";
+    const endpointHost = resolveEndpointHost(req, settings);
     const endpointPort = settings.wireguard_server_port;
     const allowedIps = String(row.allowed_ips ?? "").trim() || "10.20.0.0/24";
     const keepalive = Math.max(0, Math.min(300, Number(settings.wireguard_persistent_keepalive || 25)));
