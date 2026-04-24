@@ -38,6 +38,10 @@ ensure_ppp_device() {
   fi
 }
 
+is_pptp_listening() {
+  ss -lnt 2>/dev/null | awk -v p=":$PPTP_PORT" '$4 ~ (p "$") { found=1 } END { exit !found }'
+}
+
 stop_pptpd() {
   if [ -f "$PID_FILE" ]; then
     FILE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -51,6 +55,7 @@ stop_pptpd() {
     kill "$PPTP_PID" 2>/dev/null || true
     wait "$PPTP_PID" 2>/dev/null || true
   fi
+  pkill -x pptpd 2>/dev/null || true
   PPTP_PID=""
 }
 
@@ -67,19 +72,35 @@ start_pptpd() {
   ensure_ppp_device
   rm -f "$PID_FILE" || true
   : > "$START_LOG"
-  /usr/sbin/pptpd --fg --debug --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 &
-  PPTP_PID="$!"
-  sleep 1
-  if [ -z "$PPTP_PID" ] || ! kill -0 "$PPTP_PID" 2>/dev/null; then
+  /usr/sbin/pptpd --option /etc/ppp/pptpd-options --pidfile "$PID_FILE" >"$START_LOG" 2>&1 || true
+  i=0
+  while [ "$i" -lt 6 ]; do
+    if is_pptp_listening; then
+      PPTP_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+      if [ -z "$PPTP_PID" ]; then
+        PPTP_PID="$(pgrep -xo pptpd 2>/dev/null || true)"
+      fi
+      break
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  if ! is_pptp_listening; then
     echo "[pptp] failed to start: pptpd is not running"
     if [ -s "$START_LOG" ]; then
       echo "[pptp] start output:"
       cat "$START_LOG"
     fi
+    echo "[pptp] /dev/ppp status:"
+    ls -l /dev/ppp 2>/dev/null || echo "/dev/ppp is missing"
     PPTP_PID=""
     return
   fi
-  echo "[pptp] started with pid $PPTP_PID"
+  if [ -n "$PPTP_PID" ]; then
+    echo "[pptp] started with pid $PPTP_PID"
+  else
+    echo "[pptp] started (pid unavailable, listener is up)"
+  fi
 }
 
 calc_hash() {
@@ -108,7 +129,7 @@ while true; do
     start_pptpd
     LAST_HASH="$HASH"
   fi
-  if [ -n "$PPTP_PID" ] && ! kill -0 "$PPTP_PID" 2>/dev/null; then
+  if ! is_pptp_listening; then
     echo "[pptp] process exited, restarting"
     load_state
     start_pptpd
