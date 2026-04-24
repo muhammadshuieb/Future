@@ -64,6 +64,15 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
   if (pptpPasswordBlob) {
     pptpPassword = tryDecryptSecret(Buffer.from(pptpPasswordBlob)) ?? "";
   }
+  const pptpHostRaw = col.has("pptp_server_host") ? String(row.pptp_server_host ?? "").trim() : "";
+  const pptpUserRaw = col.has("pptp_server_username") ? String(row.pptp_server_username ?? "").trim() : "";
+  const pptpLocalRaw = col.has("pptp_local_network_cidr")
+    ? String(row.pptp_local_network_cidr ?? "").trim()
+    : "";
+  const pptpPoolRaw = col.has("pptp_client_pool_cidr")
+    ? String(row.pptp_client_pool_cidr ?? "").trim()
+    : "";
+  const pptpUnconfigured = !pptpHostRaw && !pptpUserRaw && !pptpLocalRaw && !pptpPoolRaw && !pptpPassword;
   return {
     critical_alert_enabled: Boolean(Number(row.critical_alert_enabled ?? 0)),
     critical_alert_phone: normalizePhone(String(row.critical_alert_phone ?? "")),
@@ -88,8 +97,8 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
       ? normalizePhone(String(row.accountant_contact_phone ?? ""))
       : "",
     pptp_vpn_enabled: col.has("pptp_vpn_enabled")
-      ? Boolean(Number(row.pptp_vpn_enabled ?? 0))
-      : false,
+      ? (pptpUnconfigured ? true : Boolean(Number(row.pptp_vpn_enabled ?? 0)))
+      : true,
     pptp_server_host: col.has("pptp_server_host")
       ? String(row.pptp_server_host ?? "")
       : "",
@@ -102,11 +111,11 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     pptp_server_password: pptpPassword,
     pptp_server_password_set: Boolean(pptpPassword),
     pptp_local_network_cidr: col.has("pptp_local_network_cidr")
-      ? String(row.pptp_local_network_cidr ?? "")
-      : "",
+      ? String(row.pptp_local_network_cidr ?? "") || "10.0.0.0/24"
+      : "10.0.0.0/24",
     pptp_client_pool_cidr: col.has("pptp_client_pool_cidr")
-      ? String(row.pptp_client_pool_cidr ?? "")
-      : "",
+      ? String(row.pptp_client_pool_cidr ?? "") || "10.10.10.0/24"
+      : "10.10.10.0/24",
   };
 }
 

@@ -47,14 +47,14 @@ export function PptpPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [config, setConfig] = useState<PptpConfig>({
-    pptp_vpn_enabled: false,
+    pptp_vpn_enabled: true,
     pptp_server_host: "",
     pptp_server_port: 1723,
-    pptp_server_username: "",
+    pptp_server_username: "pptp-user",
     pptp_server_password: "",
     pptp_server_password_set: false,
-    pptp_local_network_cidr: "",
-    pptp_client_pool_cidr: "",
+    pptp_local_network_cidr: "10.0.0.0/24",
+    pptp_client_pool_cidr: "10.10.10.0/24",
   });
 
   const [secrets, setSecrets] = useState<PptpSecret[]>([]);
