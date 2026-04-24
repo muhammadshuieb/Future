@@ -40,6 +40,10 @@ type PptpConnection = {
 
 export function PptpPage() {
   const { t, isRtl } = useI18n();
+  const defaultServerHost =
+    typeof window !== "undefined" && window.location.hostname !== "localhost"
+      ? window.location.hostname
+      : "";
   const [loading, setLoading] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [savingSecret, setSavingSecret] = useState(false);
@@ -48,9 +52,9 @@ export function PptpPage() {
 
   const [config, setConfig] = useState<PptpConfig>({
     pptp_vpn_enabled: true,
-    pptp_server_host: "",
+    pptp_server_host: defaultServerHost,
     pptp_server_port: 1723,
-    pptp_server_username: "pptp-user",
+    pptp_server_username: "",
     pptp_server_password: "",
     pptp_server_password_set: false,
     pptp_local_network_cidr: "10.0.0.0/24",
@@ -96,7 +100,14 @@ export function PptpPage() {
       const sec = (await secretsRes.json()) as { secrets: PptpSecret[] };
       const con = (await conRes.json()) as { connections: PptpConnection[] };
 
-      setConfig((prev) => ({ ...prev, ...cfg.config, pptp_server_password: "" }));
+      setConfig((prev) => ({
+        ...prev,
+        ...cfg.config,
+        // Server mode: host defaults to current system host if backend value is empty.
+        pptp_server_host: String(cfg.config.pptp_server_host ?? "").trim() || defaultServerHost,
+        pptp_server_username: "",
+        pptp_server_password: "",
+      }));
       setSecrets(sec.secrets ?? []);
       setConnections(con.connections ?? []);
     } catch (e) {
@@ -122,7 +133,12 @@ export function PptpPage() {
     try {
       const res = await apiFetch("/api/pptp/config", {
         method: "PUT",
-        body: JSON.stringify(config),
+        body: JSON.stringify({
+          ...config,
+          // Server mode does not require a global login account.
+          pptp_server_username: "",
+          pptp_server_password: "",
+        }),
       });
       if (!res.ok) {
         const raw = await readApiError(res);
@@ -130,7 +146,13 @@ export function PptpPage() {
         return;
       }
       const next = (await res.json()) as { config: Partial<PptpConfig> };
-      setConfig((prev) => ({ ...prev, ...next.config, pptp_server_password: "" }));
+      setConfig((prev) => ({
+        ...prev,
+        ...next.config,
+        pptp_server_host: String(next.config.pptp_server_host ?? "").trim() || defaultServerHost,
+        pptp_server_username: "",
+        pptp_server_password: "",
+      }));
       setMessage(t("settings.saved"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -224,6 +246,7 @@ export function PptpPage() {
             label={t("settings.pptpHost")}
             value={config.pptp_server_host}
             onChange={(e) => setConfig((p) => ({ ...p, pptp_server_host: e.target.value }))}
+            hint={t("settings.pptpHostHint")}
           />
           <TextField
             label={t("settings.pptpPort")}
@@ -237,23 +260,6 @@ export function PptpPage() {
                 pptp_server_port: Math.max(1, Math.min(65535, Number(e.target.value) || 1723)),
               }))
             }
-          />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <TextField
-            label={t("settings.pptpUsername")}
-            value={config.pptp_server_username}
-            onChange={(e) => setConfig((p) => ({ ...p, pptp_server_username: e.target.value }))}
-          />
-          <TextField
-            label={
-              config.pptp_server_password_set
-                ? `${t("settings.pptpPassword")} (${t("settings.optionalChange")})`
-                : t("settings.pptpPassword")
-            }
-            type="password"
-            value={config.pptp_server_password}
-            onChange={(e) => setConfig((p) => ({ ...p, pptp_server_password: e.target.value }))}
           />
         </div>
         <div className="grid gap-4 sm:grid-cols-2">

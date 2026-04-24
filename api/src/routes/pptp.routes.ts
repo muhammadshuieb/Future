@@ -16,7 +16,7 @@ const configSchema = z.object({
   pptp_vpn_enabled: z.boolean(),
   pptp_server_host: z.string().max(128),
   pptp_server_port: z.number().int().min(1).max(65535),
-  pptp_server_username: z.string().max(128),
+  pptp_server_username: z.string().max(128).optional(),
   pptp_server_password: z.string().max(128).optional(),
   pptp_local_network_cidr: z.string().max(64),
   pptp_client_pool_cidr: z.string().max(64),
@@ -69,7 +69,9 @@ router.put("/config", routePolicy({ allow: ["admin", "manager"] }), async (req, 
     const next = await updateSystemSettings(req.auth!.tenantId, {
       ...cur,
       ...parsed.data,
-      pptp_server_password: parsed.data.pptp_server_password,
+      // Server mode: per-user credentials are managed via PPTP secrets, not global settings.
+      pptp_server_username: "",
+      pptp_server_password: "",
     });
     res.json({
       config: {
