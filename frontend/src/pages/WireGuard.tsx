@@ -28,6 +28,14 @@ type WireGuardPeer = {
   is_active: boolean;
   note: string;
   updated_at?: string | null;
+  connection?: {
+    status: "connected" | "waiting" | "unknown";
+    latest_handshake_at: string | null;
+    latest_handshake_seconds_ago: number | null;
+    endpoint: string | null;
+    rx_bytes: number;
+    tx_bytes: number;
+  };
 };
 
 const defaultServerHost =
@@ -176,24 +184,6 @@ export function WireGuardPage() {
     URL.revokeObjectURL(url);
   }
 
-  async function downloadRouterOsScript(peer: WireGuardPeer) {
-    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik`);
-    if (!res.ok) {
-      setErr(formatStaffApiError(res.status, await readApiError(res), t));
-      return;
-    }
-    const j = (await res.json()) as { filename: string; script: string };
-    const blob = new Blob([j.script], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = j.filename || `${peer.username}-wireguard.rsc`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
   async function copyClientConfig() {
     if (!clientConfig) return;
     await navigator.clipboard.writeText(clientConfig.config);
@@ -298,6 +288,7 @@ export function WireGuardPage() {
               <tr>
                 <th className="px-3 py-2 text-start">{t("users.username")}</th>
                 <th className="px-3 py-2 text-start">{t("wireguard.tunnelIp")}</th>
+                <th className="px-3 py-2 text-start">{t("wireguard.status")}</th>
                 <th className="px-3 py-2 text-start">{t("wireguard.allowedIps")}</th>
                 <th className="px-3 py-2 text-start">{t("common.actions")}</th>
               </tr>
@@ -307,6 +298,28 @@ export function WireGuardPage() {
                 <tr key={peer.id} className="border-t border-[hsl(var(--border))]/60">
                   <td className="px-3 py-2 font-medium">{peer.username}</td>
                   <td className="px-3 py-2 font-mono">{peer.tunnel_ip}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-col gap-1">
+                      <span
+                        className={cn(
+                          "inline-flex w-fit rounded-full px-2 py-1 text-xs font-medium",
+                          peer.connection?.status === "connected"
+                            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                            : peer.connection?.status === "waiting"
+                              ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                              : "bg-slate-500/10 text-slate-600 dark:text-slate-300"
+                        )}
+                      >
+                        {t(`wireguard.status.${peer.connection?.status ?? "unknown"}`)}
+                      </span>
+                      {peer.connection?.latest_handshake_seconds_ago !== null &&
+                      peer.connection?.latest_handshake_seconds_ago !== undefined ? (
+                        <span className="text-xs opacity-60">
+                          {t("wireguard.lastHandshake")}: {peer.connection.latest_handshake_seconds_ago}s
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
                   <td className="px-3 py-2 font-mono">{peer.allowed_ips || config.wireguard_interface_cidr}</td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
@@ -317,10 +330,6 @@ export function WireGuardPage() {
                         <Download className="h-4 w-4" />
                         {t("wireguard.downloadMikrotik")}
                       </Button>
-                      <Button type="button" variant="outline" onClick={() => void downloadRouterOsScript(peer)}>
-                        <Download className="h-4 w-4" />
-                        {t("wireguard.downloadRouterOsScript")}
-                      </Button>
                       <Button type="button" variant="ghost" onClick={() => void deletePeer(peer.id)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
                       </Button>
@@ -330,7 +339,7 @@ export function WireGuardPage() {
               ))}
               {peers.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-3 py-8 text-center text-sm opacity-60">
+                  <td colSpan={5} className="px-3 py-8 text-center text-sm opacity-60">
                     {t("wireguard.noPeers")}
                   </td>
                 </tr>

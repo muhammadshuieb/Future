@@ -166,7 +166,7 @@ services:
       WIREGUARD_RUNTIME_DIR: /var/lib/futureradius/wireguard
       WIREGUARD_NAT_INTERFACE: ${WIREGUARD_NAT_INTERFACE:-eth0}
     volumes:
-      - wireguard_runtime:/var/lib/futureradius/wireguard:ro
+      - wireguard_runtime:/var/lib/futureradius/wireguard
     depends_on:
       api:
         condition: service_healthy

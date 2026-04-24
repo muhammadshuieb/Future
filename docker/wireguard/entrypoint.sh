@@ -4,6 +4,7 @@ set -eu
 RUNTIME_DIR="${WIREGUARD_RUNTIME_DIR:-/var/lib/futureradius/wireguard}"
 STATE_FILE="$RUNTIME_DIR/wireguard-state.env"
 CONFIG_FILE="$RUNTIME_DIR/wg0.conf"
+PEER_STATUS_FILE="$RUNTIME_DIR/peer-status.tsv"
 TARGET_DIR="/etc/wireguard"
 TARGET_CONFIG="$TARGET_DIR/wg0.conf"
 
@@ -61,6 +62,17 @@ start_wireguard() {
   fi
 }
 
+write_peer_status() {
+  local tmp="$PEER_STATUS_FILE.tmp"
+  if [ "$WIREGUARD_ENABLED" = "1" ] && ip link show wg0 >/dev/null 2>&1; then
+    wg show wg0 dump 2>/dev/null | awk 'NR > 1 { print $1 "\t" $4 "\t" $5 "\t" $6 "\t" $3 }' > "$tmp" || true
+    mv "$tmp" "$PEER_STATUS_FILE" 2>/dev/null || true
+  else
+    : > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$PEER_STATUS_FILE" 2>/dev/null || true
+  fi
+}
+
 trap 'stop_wireguard; exit 0' INT TERM
 
 echo "[wireguard] runtime watcher started"
@@ -76,5 +88,6 @@ while true; do
     echo "[wireguard] interface disappeared, restarting"
     start_wireguard
   fi
+  write_peer_status
   sleep 3
 done
