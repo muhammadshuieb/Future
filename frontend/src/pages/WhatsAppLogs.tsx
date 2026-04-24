@@ -149,7 +149,7 @@ export function WhatsAppLogsPage() {
       {error ? <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</div> : null}
       {info ? <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">{info}</div> : null}
 
-      <Card className="flex flex-wrap items-center gap-2">
+      <Card className="sticky-list-panel flex flex-wrap items-center gap-2">
         <Button type="button" variant="outline" onClick={() => void resendFailed()} disabled={working || failedCount === 0}>
           <RotateCcw className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
           {t("whatsapp.resendFailed")}
@@ -175,7 +175,7 @@ export function WhatsAppLogsPage() {
 
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase opacity-70">
                 <th className="px-4 py-3 text-left">

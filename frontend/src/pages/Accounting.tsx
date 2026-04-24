@@ -34,7 +34,7 @@ export function AccountingPage() {
       )}
       <Card className="max-h-[480px] overflow-auto">
         <h2 className="mb-2 font-semibold">Online sessions</h2>
-        <table className="w-full text-left text-xs">
+        <table className="sticky-list-table w-full text-left text-xs">
           <thead>
             <tr className="opacity-60">
               <th className="pb-2">User</th>

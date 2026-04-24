@@ -338,7 +338,7 @@ export function OnlineUsersPage() {
         </Card>
       </div>
 
-      <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <Card className="sticky-list-panel flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <form
           className="flex flex-wrap items-center gap-2"
           onSubmit={(e) => {
@@ -411,7 +411,7 @@ export function OnlineUsersPage() {
 
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase opacity-70">
                 {canDisconnect ? (

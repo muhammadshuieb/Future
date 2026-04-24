@@ -72,7 +72,7 @@ export function ExpenseCategoriesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">{t("expenses.categoriesTitle")}</h1>
-      <Card className="flex flex-wrap items-end gap-2 p-4">
+      <Card className="sticky-list-panel flex flex-wrap items-end gap-2 p-4">
         <TextField
           label={t("expenses.categoryName")}
           value={name}
@@ -87,7 +87,7 @@ export function ExpenseCategoriesPage() {
       {message ? <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{message}</p> : null}
       <Card className="p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase opacity-70">
                 <th className="px-4 py-3 text-left">#</th>

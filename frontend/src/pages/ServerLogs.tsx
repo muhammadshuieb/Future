@@ -223,7 +223,7 @@ export function ServerLogsPage() {
       </div>
 
       {/* Filters */}
-      <Card variant="subtle" className="flex flex-wrap items-end gap-3">
+      <Card variant="subtle" className="sticky-list-panel flex flex-wrap items-end gap-3">
         <SelectField label={t("logs.level")} value={level} onChange={(e) => setLevel((e.target.value || "") as typeof level)} className="min-w-[10rem]">
           <option value="">{t("logs.all")}</option>
           <option value="error">{t("logs.level_error")}</option>

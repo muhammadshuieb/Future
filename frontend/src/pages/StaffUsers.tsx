@@ -194,7 +194,7 @@ export function StaffUsersPage() {
           {error}
         </div>
       ) : null}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="sticky-list-panel flex flex-col gap-4 rounded-xl border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("staff.title")}</h1>
           <p className="mt-1 text-sm opacity-70">{t("staff.subtitle")}</p>
@@ -213,7 +213,7 @@ export function StaffUsersPage() {
 
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs font-medium uppercase tracking-wide opacity-70">
                 <th className="px-4 py-3 text-left">{t("staff.name")}</th>

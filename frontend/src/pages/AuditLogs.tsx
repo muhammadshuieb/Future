@@ -90,7 +90,7 @@ export function AuditLogsPage() {
         <p className="mt-1 text-sm opacity-70">{t("audit.subtitle")}</p>
       </div>
 
-      <Card className="flex flex-wrap items-end gap-2 p-4">
+      <Card className="sticky-list-panel flex flex-wrap items-end gap-2 p-4">
         <TextField
           label={t("audit.action")}
           value={actionFilter}
@@ -125,7 +125,7 @@ export function AuditLogsPage() {
 
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="sticky-list-table w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase tracking-wide opacity-70">
                 <th className="px-4 py-3 text-start">{t("audit.time")}</th>
