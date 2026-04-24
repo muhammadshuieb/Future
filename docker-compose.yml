@@ -92,9 +92,11 @@ services:
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       SQL_MIGRATIONS_DIR: /app/sql/migrations
+      PPTP_RUNTIME_DIR: /app/runtime/pptp
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro
+      - pptp_runtime:/app/runtime/pptp
     depends_on:
       mysql:
         condition: service_healthy
@@ -150,7 +152,24 @@ services:
       api:
         condition: service_healthy
 
+  pptp:
+    build:
+      context: .
+      dockerfile: docker/pptp/Dockerfile
+    image: futureradius-pptp:local
+    network_mode: host
+    privileged: true
+    environment:
+      PPTP_RUNTIME_DIR: /var/lib/futureradius/pptp
+    volumes:
+      - pptp_runtime:/var/lib/futureradius/pptp:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   backup_data:
   waha_sessions:
+  pptp_runtime:

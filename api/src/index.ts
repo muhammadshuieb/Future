@@ -38,6 +38,7 @@ import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
 import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
+import { syncPptpRuntime } from "./services/pptp-runtime.service.js";
 
 const app = express();
 app.use(helmet());
@@ -156,6 +157,11 @@ async function start() {
     console.log(`[bootstrap] default admin ${seeded.status}: ${seeded.email}`);
   } catch (error) {
     console.error("[bootstrap] default admin seed failed", error);
+  }
+  try {
+    await syncPptpRuntime(config.defaultTenantId);
+  } catch (error) {
+    console.error("[bootstrap] pptp runtime sync failed", error);
   }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {

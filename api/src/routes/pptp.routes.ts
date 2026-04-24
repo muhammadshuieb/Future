@@ -8,6 +8,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { routePolicy } from "../middleware/policy.js";
 import { getSystemSettings, updateSystemSettings } from "../services/system-settings.service.js";
 import { encryptSecret, tryDecryptSecret } from "../services/crypto.service.js";
+import { syncPptpRuntime } from "../services/pptp-runtime.service.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -73,6 +74,7 @@ router.put("/config", routePolicy({ allow: ["admin", "manager"] }), async (req, 
       pptp_server_username: "",
       pptp_server_password: "",
     });
+    await syncPptpRuntime(req.auth!.tenantId);
     res.json({
       config: {
         pptp_vpn_enabled: next.pptp_vpn_enabled,
@@ -145,6 +147,7 @@ router.post("/secrets", routePolicy({ allow: ["admin", "manager"] }), async (req
         parsed.data.note?.trim() || null,
       ]
     );
+    await syncPptpRuntime(req.auth!.tenantId);
     res.json({ ok: true, id });
   } catch (e) {
     console.error("pptp secrets post", e);
@@ -195,6 +198,7 @@ router.patch("/secrets/:id", routePolicy({ allow: ["admin", "manager"] }), async
        WHERE id = ? AND tenant_id = ?`,
       [...vals, String(req.params.id), req.auth!.tenantId]
     );
+    await syncPptpRuntime(req.auth!.tenantId);
     res.json({ ok: true });
   } catch (e) {
     console.error("pptp secrets patch", e);
@@ -212,6 +216,7 @@ router.delete("/secrets/:id", routePolicy({ allow: ["admin", "manager"] }), asyn
       String(req.params.id),
       req.auth!.tenantId,
     ]);
+    await syncPptpRuntime(req.auth!.tenantId);
     res.json({ ok: true });
   } catch (e) {
     console.error("pptp secrets delete", e);
