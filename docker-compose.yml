@@ -150,6 +150,27 @@ services:
       api:
         condition: service_healthy
 
+  # Optional PPTP VPN server for linking remote NAS nodes.
+  # Run with: docker compose --profile vpn up -d --build pptp-vpn
+  # NOTE: PPTP needs TCP/1723 + GRE(protocol 47) allowed on host firewall.
+  pptp-vpn:
+    profiles: ["vpn"]
+    build:
+      context: .
+      dockerfile: docker/pptp/Dockerfile
+    image: futureradius-pptp:local
+    network_mode: host
+    privileged: true
+    environment:
+      PPTP_SERVER_LOCAL_IP: ${PPTP_SERVER_LOCAL_IP:-10.10.10.1}
+      PPTP_CLIENT_IP_RANGE: ${PPTP_CLIENT_IP_RANGE:-10.10.10.100-10.10.10.240}
+      PPTP_DNS1: ${PPTP_DNS1:-1.1.1.1}
+      PPTP_DNS2: ${PPTP_DNS2:-8.8.8.8}
+      PPTP_MTU: ${PPTP_MTU:-1400}
+      PPTP_MRU: ${PPTP_MRU:-1400}
+      PPTP_USERS: ${PPTP_USERS:-}
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   backup_data:

@@ -21,3 +21,19 @@ cd /path/to/Future-Radius
 git pull origin main
 docker compose up -d --build
 ```
+
+## Optional PPTP VPN integration
+
+If you need to link remote servers/NAS to the main server over VPN, you can run the built-in PPTP service profile:
+
+```bash
+docker compose --profile vpn up -d --build pptp-vpn
+```
+
+Important host/network requirements:
+
+- Open `TCP 1723` on the VPS firewall.
+- Allow `GRE` (IP protocol 47) on the VPS/network firewall.
+- Ensure the host kernel supports PPP/PPTP (typical on most VPS images).
+
+After tunnel clients connect, set each NAS `pptp_tunnel_ip` in the app so CoA/disconnect is sent through the tunnel address.

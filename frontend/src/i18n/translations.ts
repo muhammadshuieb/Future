@@ -369,6 +369,13 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nav.cardBatch": "بطاقات — دفعة",
     "nas.pptpTunnel": "عنوان PPTP / نفق ثابت (للمايكروتك)",
     "nas.pptpTunnelHint": "عنوان يضبط في النفق أو السيرفر ليربط أجهزة المايكروتك بالراديس (اختياري).",
+    "nas.pptpTunnelPlaceholder": "مثال: 10.10.10.101",
+    "nas.pptpHelpTitle": "ربط NAS عبر PPTP (بدون Public IP)",
+    "nas.pptpHelpBody":
+      "لكل سيرفر NAS بعيد يمكنك إدخال عنوانه الداخلي الثابت داخل نفق PPTP في الحقل أعلاه.\n" +
+      "• اترك IP الرئيسي كهوية السيرفر داخل النظام.\n" +
+      "• وضع عنوان PPTP الثابت يسمح باعتبار الاتصال داخليًا بين الفروع والسيرفر الرئيسي.\n" +
+      "• عند تفعيل هذا الحقل، عمليات CoA/Disconnect ستستخدم عنوان النفق الثابت.",
     "publicPortal.title": "استعلام برقم الجوال",
     "publicPortal.subtitle": "أدخل رقم هاتفك المسجّل لدينا (بدون اسم مستخدم/كلمة مرور)",
     "publicPortal.phoneLabel": "رقم الجوال",
@@ -940,6 +947,13 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nav.cardBatch": "Cards — batch",
     "nas.pptpTunnel": "PPTP / tunnel static address",
     "nas.pptpTunnelHint": "Optional fixed address to bind MikroTik tunnel/PPTP to the RADIUS side.",
+    "nas.pptpTunnelPlaceholder": "Example: 10.10.10.101",
+    "nas.pptpHelpTitle": "NAS over PPTP (no public IP)",
+    "nas.pptpHelpBody":
+      "For each remote NAS server, set its fixed internal PPTP tunnel address in the field above.\n" +
+      "• Keep the main NAS IP as the server identity in the system.\n" +
+      "• The fixed PPTP address makes branch-to-main communication behave like an internal network.\n" +
+      "• When set, CoA/Disconnect is routed through the tunnel address.",
     "publicPortal.title": "Look up by phone",
     "publicPortal.subtitle": "Enter the phone on file (no username/password on this page)",
     "publicPortal.phoneLabel": "Phone number",
