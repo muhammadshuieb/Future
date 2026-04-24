@@ -78,10 +78,15 @@ export async function syncPptpRuntime(tenantId: string): Promise<void> {
     "name pptpd",
     // Server mode: do not require the server to authenticate itself to clients.
     "noauth",
+    // Emit PPP negotiation details to container stderr for troubleshooting.
+    "debug",
+    "logfd 2",
+    "refuse-eap",
     "refuse-pap",
     "refuse-chap",
     "require-mschap-v2",
-    "require-mppe-128",
+    // Use broadly compatible MPPE requirement; 128-bit-only can fail with some clients.
+    "require-mppe",
     "ms-dns 8.8.8.8",
     "ms-dns 1.1.1.1",
     "proxyarp",
