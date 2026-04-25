@@ -9,6 +9,8 @@ export type DmaImportOptions = {
   tenantId: string;
   validateSchema: boolean;
   dryRun: boolean;
+  /** If set, only these usernames are synced (order preserved by sort inside). */
+  onlyUsernames?: string[];
 };
 
 export type DmaImportStats = {
@@ -81,7 +83,11 @@ export async function importSubscribersFromDma(
   const userSet = new Set<string>();
   for (const r of radRows) userSet.add(r.username as string);
   for (const r of rmRows) userSet.add(r.username as string);
-  const usernames = [...userSet].sort((a, b) => a.localeCompare(b));
+  let usernames = [...userSet].sort((a, b) => a.localeCompare(b));
+  if (options.onlyUsernames?.length) {
+    const allow = new Set(options.onlyUsernames.map((u) => u.trim()).filter(Boolean));
+    usernames = usernames.filter((u) => allow.has(u));
+  }
 
   let created = 0;
   let updated = 0;

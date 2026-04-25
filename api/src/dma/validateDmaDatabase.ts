@@ -1,16 +1,13 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import {
-  CONTRACT_VERSION,
-  DMA_DATABASE_NAME,
-  DMA_MINIMUM_COLUMNS,
-  DMA_REFERENCE_DUMP_TABLES,
-} from "./dmaSchemaContract.js";
+import { config } from "../config.js";
+import { CONTRACT_VERSION, DMA_MINIMUM_COLUMNS, DMA_REFERENCE_DUMP_TABLES } from "./dmaSchemaContract.js";
 
 export type DmaValidationResult = {
   ok: boolean;
   contractVersion: string;
-  expectedDatabaseName: typeof DMA_DATABASE_NAME;
+  /** Empty = no name constraint; otherwise must match `SELECT DATABASE()`. */
+  expectedDatabaseName: string;
   actualDatabaseName: string | null;
   databaseNameMatches: boolean;
   missingTables: string[];
@@ -20,26 +17,17 @@ export type DmaValidationResult = {
 export async function validateDmaDatabase(pool: Pool): Promise<DmaValidationResult> {
   const [dbRows] = await pool.query<RowDataPacket[]>(`SELECT DATABASE() AS d`);
   const schema = dbRows[0]?.d as string | null;
-  const databaseNameMatches = schema === DMA_DATABASE_NAME;
+  /** اسم القاعدة في radius.sql الافتراضي هو `radius`؛ يمكن استعادتها باسم آخر. */
+  const expectedName = config.expectedRmSchemaName;
+  const databaseNameMatches = Boolean(schema) && (!expectedName || schema === expectedName);
   if (!schema) {
     return {
       ok: false,
       contractVersion: CONTRACT_VERSION,
-      expectedDatabaseName: DMA_DATABASE_NAME,
+      expectedDatabaseName: expectedName,
       actualDatabaseName: null,
       databaseNameMatches: false,
       missingTables: ["(no database selected)"],
-      columnMismatches: [],
-    };
-  }
-  if (!databaseNameMatches) {
-    return {
-      ok: false,
-      contractVersion: CONTRACT_VERSION,
-      expectedDatabaseName: DMA_DATABASE_NAME,
-      actualDatabaseName: schema,
-      databaseNameMatches: false,
-      missingTables: [],
       columnMismatches: [],
     };
   }
@@ -69,13 +57,11 @@ export async function validateDmaDatabase(pool: Pool): Promise<DmaValidationResu
       columnMismatches.push({ table, missingColumns });
   }
 
+  const nameOk = databaseNameMatches;
   return {
-    ok:
-      databaseNameMatches &&
-      missingTables.length === 0 &&
-      columnMismatches.every((m) => m.missingColumns.length === 0),
+    ok: nameOk && missingTables.length === 0 && columnMismatches.every((m) => m.missingColumns.length === 0),
     contractVersion: CONTRACT_VERSION,
-    expectedDatabaseName: DMA_DATABASE_NAME,
+    expectedDatabaseName: expectedName,
     actualDatabaseName: schema,
     databaseNameMatches,
     missingTables,

@@ -1,7 +1,6 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import { randomUUID } from "crypto";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
 import { requireSubscriberAuth } from "../middleware/subscriber-auth.js";
@@ -12,6 +11,8 @@ import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import type { RowDataPacket } from "mysql2";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
+import { importSubscribersFromDma } from "../dma/importSubscribersFromDma.js";
+import { verifyLegacySubscriberPassword } from "../dma/legacyPassword.js";
 
 const router = Router();
 const radius = new RadiusService(pool);
@@ -231,45 +232,90 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     res.status(400).json({ error: "invalid_body" });
     return;
   }
-  let subs: RowDataPacket[] = [];
-  if (phoneDigits) {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT id, username, status
-       FROM subscribers
-       WHERE tenant_id = ?
-         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
-       LIMIT 2`,
-      [tenantId, phoneDigits]
-    );
-    if (rows.length > 1) {
-      res.status(401).json({ error: "invalid_credentials" });
-      return;
+  async function loadSubscribersByLookup(): Promise<RowDataPacket[]> {
+    if (phoneDigits) {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT id, username, status
+         FROM subscribers
+         WHERE tenant_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+         LIMIT 2`,
+        [tenantId, phoneDigits]
+      );
+      return rows;
     }
-    subs = rows;
-  } else {
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
       [tenantId, usernameInput]
     );
-    subs = rows;
+    return rows;
   }
+
+  let subs: RowDataPacket[] = await loadSubscribersByLookup();
+  if (phoneDigits && subs.length > 1) {
+    res.status(401).json({ error: "invalid_credentials" });
+    return;
+  }
+
+  /** Restored DMA DB: create extension row from rm_users + radcheck when missing. */
+  if (!subs[0] && (await hasTable(pool, "rm_users"))) {
+    let legacyUser: string | null = null;
+    if (usernameInput) {
+      const [c] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+        [usernameInput]
+      );
+      if (c[0]) legacyUser = String(c[0].username);
+    } else if (phoneDigits) {
+      const [c] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM rm_users
+         WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+            OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile,''),' ',''),'-',''),'+',''),'(','') = ?
+         LIMIT 2`,
+        [phoneDigits, phoneDigits]
+      );
+      if (c.length === 1) legacyUser = String(c[0].username);
+    }
+    if (legacyUser) {
+      const reloadAfterImport = async () => {
+        const [byUser] = await pool.query<RowDataPacket[]>(
+          `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
+          [tenantId, legacyUser]
+        );
+        subs = byUser;
+      };
+      if (phoneDigits && !password) {
+        await importSubscribersFromDma(pool, {
+          tenantId,
+          validateSchema: false,
+          dryRun: false,
+          onlyUsernames: [legacyUser],
+        });
+        await reloadAfterImport();
+      } else if (password && (await verifyLegacySubscriberPassword(pool, legacyUser, password))) {
+        await importSubscribersFromDma(pool, {
+          tenantId,
+          validateSchema: false,
+          dryRun: false,
+          onlyUsernames: [legacyUser],
+        });
+        await reloadAfterImport();
+      }
+    }
+  }
+
   if (!subs[0]) {
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
   const username = String(subs[0].username ?? "");
-  // Phone mode keeps legacy behavior: login by phone only (no password).
+  // Phone mode: login by phone only (no password) after match.
   if (!phoneDigits) {
     if (!password) {
       res.status(401).json({ error: "invalid_credentials" });
       return;
     }
-    const [pwRows] = await pool.query<RowDataPacket[]>(
-      `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
-      [username]
-    );
-    const stored = pwRows[0]?.value != null ? String(pwRows[0].value) : null;
-    if (!stored || stored !== password) {
+    if (!(await verifyLegacySubscriberPassword(pool, username, password))) {
       res.status(401).json({ error: "invalid_credentials" });
       return;
     }

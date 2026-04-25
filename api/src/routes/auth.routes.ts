@@ -10,6 +10,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { parseManagerPermissions, parsePermissionsObject } from "../lib/manager-permissions.js";
 import type { RowDataPacket } from "mysql2";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
+import { tryLoginViaRmManagers } from "../services/rm-legacy-staff.service.js";
 
 const router = Router();
 
@@ -40,13 +41,22 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     `SELECT ${selectCols.join(", ")} FROM staff_users WHERE ${whereClause} LIMIT 1`,
     values
   );
-  const row = rows[0];
-  if (!row?.active) {
-    res.status(401).json({ error: "invalid_credentials" });
-    return;
+  let row = rows[0] as RowDataPacket | undefined;
+  if (row?.active) {
+    const ok = await bcrypt.compare(password, row.password_hash as string);
+    if (ok) {
+      // fall through to JWT
+    } else {
+      row = undefined;
+    }
+  } else {
+    row = undefined;
   }
-  const ok = await bcrypt.compare(password, row.password_hash as string);
-  if (!ok) {
+  if (!row) {
+    const fromRm = await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password);
+    if (fromRm) row = fromRm;
+  }
+  if (!row?.active) {
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }

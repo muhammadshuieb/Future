@@ -17,6 +17,13 @@ function parseDatabaseUrl(url: string) {
 }
 
 const defaultDatabaseUrl = `mysql://root:rootpass@localhost:3306/${DMA_DATABASE_NAME}`;
+
+/**
+ * If set, schema validation (DMA) requires `SELECT DATABASE()` to equal this name.
+ * Leave unset to accept any database name the connection uses (e.g. restored under a custom name).
+ */
+const expectedRmSchemaName = process.env.RM_DATABASE_NAME?.trim() ?? "";
+
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const rawJwt = process.env.JWT_SECRET?.trim();
 
@@ -34,10 +41,17 @@ function parseCorsOrigins(): string[] | "all" {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+const parsedUrl = parseDatabaseUrl(process.env.DATABASE_URL ?? defaultDatabaseUrl);
+
 export const config = {
   nodeEnv,
-  /** مطابق لـ radius.sql: `Database: radius` */
-  databaseName: DMA_DATABASE_NAME,
+  /** Current schema from DATABASE_URL (actual connection). */
+  databaseName: parsedUrl.database,
+  /**
+   * Optional: when non-empty, `validateDmaDatabase` requires the session DB to match.
+   * Example: `RM_DATABASE_NAME=radius` after restoring `radius.sql` into database `radius`.
+   */
+  expectedRmSchemaName,
   databaseUrl: process.env.DATABASE_URL ?? defaultDatabaseUrl,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: rawJwt ?? "dev-secret-change-me",
@@ -52,13 +66,5 @@ export const config = {
   eventsChannel: process.env.EVENTS_CHANNEL ?? "fr:events",
   /** Comma-separated origins, or omit / * for permissive dev (still tighten in prod via CORS_ORIGINS) */
   corsOrigins: parseCorsOrigins(),
-  db: (() => {
-    const parsed = parseDatabaseUrl(process.env.DATABASE_URL ?? defaultDatabaseUrl);
-    if (parsed.database !== DMA_DATABASE_NAME) {
-      throw new Error(
-        `DATABASE_URL must use database name "${DMA_DATABASE_NAME}" (same as radius.sql). Got "${parsed.database}". Example: mysql://USER:PASS@HOST:3306/${DMA_DATABASE_NAME}`
-      );
-    }
-    return parsed;
-  })(),
+  db: parsedUrl,
 };

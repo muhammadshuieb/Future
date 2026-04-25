@@ -8,8 +8,11 @@
 /**
  * نفس اسم القاعدة في ملف الـ dump المرجعي:
  * `-- Database: radius`
+ * (يمكن الاتصال بقاعدة باسم آخر عبر DATABASE_URL؛ التحقق الاختياري بـ RM_DATABASE_NAME.)
  */
 export const DMA_DATABASE_NAME = "radius" as const;
+
+/** ملاحظة: جدول `rm_payments` شائع في نسخ DMA لكنه غير موجود في نسخة radius.sql المرجعية المستخدمة هنا؛ عند ظهوره في نسختك أضف فحوصاً منفصلة. */
 
 /** يُستخدم للتحقق من أن القاعدة تحوي كل جداول ملف radius.sql المرجعي */
 export const DMA_REFERENCE_DUMP_TABLES: readonly string[] = [

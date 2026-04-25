@@ -11,6 +11,7 @@
     "worker": "tsx watch src/workers/index.ts",
     "sync:subscribers": "tsx src/scripts/sync-radcheck-subscribers.ts",
     "validate:dma-schema": "tsx src/scripts/validate-dma-schema.ts",
+    "verify:rm-restore": "tsx src/scripts/verify-rm-restore.ts",
     "import:dma": "tsx src/scripts/import-dma-subscribers.ts",
     "seed:staff": "tsx src/scripts/seed-staff.ts"
   },
