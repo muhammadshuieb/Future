@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, Link2, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Download, Link2, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -67,6 +67,12 @@ export function MaintenancePage() {
   const [rcloneConfigText, setRcloneConfigText] = useState("");
   const [savingRclone, setSavingRclone] = useState(false);
   const [testingRclone, setTestingRclone] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [applySchemaExtensions, setApplySchemaExtensions] = useState(true);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreInfo, setRestoreInfo] = useState<{ max_bytes: number; schema_extensions_resolved: string | null } | null>(
+    null
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,6 +102,20 @@ export function MaintenancePage() {
     if (!(user?.role === "admin" || user?.role === "manager")) return;
     void load();
   }, [load, user?.role]);
+
+  useEffect(() => {
+    if (user?.role !== "admin") {
+      setRestoreInfo(null);
+      return;
+    }
+    void (async () => {
+      const res = await apiFetch("/api/maintenance/restore-sql/info");
+      if (res.ok) {
+        const j = (await res.json()) as { max_bytes: number; schema_extensions_resolved: string | null };
+        setRestoreInfo(j);
+      }
+    })();
+  }, [user?.role]);
 
   if (!(user?.role === "admin" || user?.role === "manager")) {
     return <p className="text-sm opacity-70">{t("api.error_403")}</p>;
@@ -175,6 +195,33 @@ export function MaintenancePage() {
     }
   }
 
+  async function runSqlRestore() {
+    if (!restoreFile) {
+      setError(t("maintenance.restorePickFile"));
+      return;
+    }
+    if (!window.confirm(t("maintenance.restoreConfirm"))) {
+      return;
+    }
+    setRestoring(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", restoreFile);
+      fd.append("applySchemaExtensions", applySchemaExtensions ? "true" : "false");
+      const res = await apiFetch("/api/maintenance/restore-sql", { method: "POST", body: fd });
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      setInfo(t("maintenance.restoreSuccess"));
+      setRestoreFile(null);
+    } finally {
+      setRestoring(false);
+    }
+  }
+
   async function testRcloneConfig() {
     setTestingRclone(true);
     setError(null);
@@ -229,6 +276,47 @@ export function MaintenancePage() {
 
       {info ? <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">{info}</div> : null}
       {error ? <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</div> : null}
+
+      {user?.role === "admin" ? (
+        <Card className="space-y-4 border-amber-500/30">
+          <div className="flex items-center gap-2 font-semibold text-amber-200">
+            <Upload className="h-4 w-4" />
+            {t("maintenance.restoreTitle")}
+          </div>
+          <p className="text-sm opacity-80">{t("maintenance.restoreHint")}</p>
+          {restoreInfo ? (
+            <p className="text-xs opacity-70">
+              {t("maintenance.restoreMaxSize")}: {fmtBytes(restoreInfo.max_bytes)}
+            </p>
+          ) : null}
+          <div>
+            <label className="block text-sm font-medium">{t("maintenance.restorePickFile")}</label>
+            <input
+              type="file"
+              accept=".sql,.txt,application/sql,text/plain"
+              className="mt-1 block w-full text-sm"
+              onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)}
+            />
+            {restoreFile ? (
+              <div className="mt-1 text-xs opacity-80">
+                {restoreFile.name} — {fmtBytes(restoreFile.size)}
+              </div>
+            ) : null}
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={applySchemaExtensions}
+              onChange={(e) => setApplySchemaExtensions(e.target.checked)}
+            />
+            {t("maintenance.restoreApplyExtensions")}
+          </label>
+          <Button type="button" onClick={() => void runSqlRestore()} disabled={restoring || !restoreFile}>
+            <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
+            {restoring ? t("common.loading") : t("maintenance.restoreRun")}
+          </Button>
+        </Card>
+      ) : null}
 
       <Card className="space-y-4">
         <div className="flex items-center gap-2 font-semibold">

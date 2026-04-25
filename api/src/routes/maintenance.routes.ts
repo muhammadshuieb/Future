@@ -1,5 +1,6 @@
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { promises as fs } from "fs";
+import multer from "multer";
 import { z } from "zod";
 import {
   deleteBackupRun,
@@ -10,9 +11,19 @@ import {
   testRcloneConnection,
   updateRcloneSettings,
 } from "../services/backup.service.js";
+import { config } from "../config.js";
+import {
+  getRestoreMaxBytes,
+  importSqlBufferIntoAppDatabase,
+  resolveSchemaExtensionsPath,
+} from "../services/sql-restore.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+const uploadSql = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: getRestoreMaxBytes(), files: 1 },
+});
 router.use(requireAuth);
 router.use(requireRole("admin", "manager"));
 
@@ -122,6 +133,84 @@ router.get("/backups/:id/download", async (req, res) => {
     console.error("maintenance backups download", e);
     res.status(500).json({ error: "backup_download_failed" });
   }
+});
+
+/**
+ * استعادة ملف SQL (مثل radius.sql) ودمجه في قاعدة بيانات المشروع (DATABASE_URL).
+ * يتطلب عميل `mysql` على الخادم أو داخل صورة Docker. للإدمن فقط.
+ */
+router.post(
+  "/restore-sql",
+  (req, res, next) => {
+    if (req.auth?.role !== "admin") {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+    next();
+  },
+  uploadSql.single("file"),
+  async (req, res) => {
+    try {
+      const f = req.file;
+      if (!f?.buffer?.length) {
+        res.status(400).json({ error: "missing_file", detail: "Send multipart field name: file" });
+        return;
+      }
+      const raw = req.body?.applySchemaExtensions;
+      const applySchemaExtensions =
+        raw === true ||
+        raw === "true" ||
+        raw === "1" ||
+        String(raw ?? "true").toLowerCase() === "true";
+      const result = await importSqlBufferIntoAppDatabase(f.buffer, { applySchemaExtensions });
+      if (!result.ok) {
+        const err = result.error;
+        const code =
+          err === "sql_too_large"
+            ? 413
+            : err === "schema_extensions_not_found"
+              ? 503
+              : err.startsWith("mysql_") || err.includes("ENOENT")
+                ? 503
+                : 400;
+        res.status(code).json({
+          error: "restore_sql_failed",
+          detail: err.slice(0, 4000),
+          schema_extensions_path: resolveSchemaExtensionsPath(),
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        bytes: result.detail.bytes,
+        applied_schema_extensions: result.detail.appliedSchemaExtensions,
+        database: config.databaseName,
+      });
+    } catch (e) {
+      console.error("maintenance restore-sql", e);
+      res.status(500).json({ error: "restore_sql_internal" });
+    }
+  }
+);
+
+router.get("/restore-sql/info", (req, res) => {
+  if (req.auth?.role !== "admin") {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  res.json({
+    max_bytes: getRestoreMaxBytes(),
+    schema_extensions_resolved: resolveSchemaExtensionsPath(),
+  });
+});
+
+router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  const m = err as { code?: string } | null;
+  if (m?.code === "LIMIT_FILE_SIZE") {
+    res.status(413).json({ error: "file_too_large" });
+    return;
+  }
+  next(err);
 });
 
 export default router;

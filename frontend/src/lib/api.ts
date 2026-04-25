@@ -28,7 +28,9 @@ export async function apiFetch(
   init: RequestInit & { skipAuth?: boolean } = {}
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && !(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   if (!init.skipAuth) {
     const token = getStaffToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -76,7 +78,9 @@ export function formatStaffApiError(status: number, raw: string, t: (key: string
 export async function userApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = getUserToken();
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && !(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) headers.set("Authorization", `Bearer ${token}`);
   return fetch(`${getApiBase()}${path}`, { ...init, headers });
 }
