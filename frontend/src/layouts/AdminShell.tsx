@@ -181,6 +181,7 @@ export function AdminShell() {
   const nav: NavItem[] = [
     { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, tone: "indigo" },
     { to: "/accounting", labelKey: "nav.accounting", icon: Activity, tone: "emerald" },
+    { to: "/nas", labelKey: "nav.nas", icon: Server, tone: "cyan" },
     { to: "/settings", labelKey: "nav.settings", icon: Settings, tone: "slate" },
   ];
   const maintenanceNav: NavItem[] =
