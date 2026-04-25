@@ -34,6 +34,7 @@ import {
   Tag,
   CreditCard,
   KeyRound,
+  HardDrive,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -187,7 +188,7 @@ export function AdminShell() {
   const maintenanceNav: NavItem[] =
     user?.role === "admin" || user?.role === "manager"
       ? ([
-          { to: "/maintenance", labelKey: "nav.maintenance", icon: Wrench, tone: "orange" },
+          { to: "/maintenance", labelKey: "nav.backups", icon: HardDrive, tone: "orange" },
           { to: "/wireguard", labelKey: "nav.wireguard", icon: KeyRound, tone: "sky" },
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
