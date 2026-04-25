@@ -9,8 +9,8 @@ export function Modal({
   children,
   onClose,
   wide,
-  /** عند false لا يُغلق المربع بالنقر خارج المحتوى (يقلل إغلاقاً بالخطأ أثناء ملء النموذج). */
-  closeOnBackdrop = false,
+  /** عند false لا يُغلق عند النقر خلف النافذة (لحالات مثل أثناء طلب داخل المودال). */
+  closeOnBackdrop = true,
 }: {
   open: boolean;
   title: string;
