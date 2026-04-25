@@ -9,7 +9,9 @@ export function Modal({
   children,
   onClose,
   wide,
-  /** عند false لا يُغلق عند النقر خلف النافذة (لحالات مثل أثناء طلب داخل المودال). */
+  /**
+   * عند true (الافتراضي) يُغلق عند الضغط على الخلفية. مرّر false لتجنب الإغلاق أثناء عمليات مثل قطع الاتصال.
+   */
   closeOnBackdrop = true,
 }: {
   open: boolean;
@@ -42,6 +44,8 @@ export function Modal({
         role="dialog"
         aria-modal
         aria-labelledby="modal-title"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
         className={cn(
           "glass-strong relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-2xl p-6 shadow-2xl animate-fade-in-up",
           wide ? "max-w-2xl" : "max-w-lg"

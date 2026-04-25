@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Users,
   Package,
+  Server,
   Activity,
   Radio,
   Boxes,
@@ -229,7 +230,7 @@ export function AdminShell() {
       <aside
         className={cn(
           "glass fixed inset-y-0 z-50 h-screen w-[min(100%,18rem)] flex-col border-0 border-[hsl(var(--border))]/70 border-e rounded-none md:sticky md:top-0 md:z-0 md:flex md:w-72",
-          // start-0: في LTR يسار، في RTL يمين (مطابقة اتجاه القراءة)
+          // start-0 = يسار في LTR ويمين في RTL (نفس الجهة الظاهرية لقائمة عربية)
           "start-0",
           mobileNavOpen ? "flex" : "hidden md:flex"
         )}

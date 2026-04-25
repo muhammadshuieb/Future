@@ -9,6 +9,7 @@ import { UsersPage } from "./pages/Users";
 import { UserProfilePage } from "./pages/UserProfile";
 import { PackagesPage } from "./pages/Packages";
 import { BillingPage } from "./pages/Billing";
+import { NasPage } from "./pages/Nas";
 import { AccountingPage } from "./pages/Accounting";
 import { ExpenseCategoriesPage } from "./pages/ExpenseCategories";
 import { ExpensesPage } from "./pages/Expenses";
@@ -57,7 +58,7 @@ function AppRoutes() {
         <Route path="users/:id" element={<UserProfilePage />} />
         <Route path="packages" element={<PackagesPage />} />
         <Route path="billing" element={<BillingPage />} />
-        <Route path="nas" element={<Navigate to="/" replace />} />
+        <Route path="nas" element={<NasPage />} />
         <Route path="accounting" element={<AccountingPage />} />
         <Route path="observability" element={<ObservabilityPage />} />
         <Route path="server-logs" element={<ServerLogsPage />} />
