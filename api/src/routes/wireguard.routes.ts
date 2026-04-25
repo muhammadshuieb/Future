@@ -171,10 +171,20 @@ function applyPeerPing(base: PeerConnectionStatus, options: { pingOk: boolean | 
   return base;
 }
 
-async function readPeerConnectionStatuses(): Promise<Map<string, PeerConnectionStatus>> {
+type PeerStatusMaps = {
+  byPublicKey: Map<string, PeerConnectionStatus>;
+  byTunnelIp: Map<string, PeerConnectionStatus>;
+};
+
+/**
+ * يقرأ ‎peer-status.tsv من سيرفر WireGuard (نفس ‎wireguard_runtime volume).
+ * المطابقة حسب ‎public_key؛ وإن اختلف المفتاح (مثلاً بعد تغييره على المايكروتك) نطابق بعنوان النفق ‎/32.
+ */
+async function readPeerConnectionStatuses(): Promise<PeerStatusMaps> {
+  const empty = (): PeerStatusMaps => ({ byPublicKey: new Map(), byTunnelIp: new Map() });
   const [wgFile, pingFile] = await Promise.all([readStatusFile("peer-status"), readStatusFile("peer-ping")]);
   const pingIps = new Set<string>();
-  const pingIsFresh = !!pingFile && Date.now() - pingFile.mtimeMs <= 30_000;
+  const pingIsFresh = !!pingFile && Date.now() - pingFile.mtimeMs <= 60_000;
   if (pingFile?.text) {
     for (const line of pingFile.text.split(/\r?\n/)) {
       const ip = line.trim();
@@ -183,10 +193,12 @@ async function readPeerConnectionStatuses(): Promise<Map<string, PeerConnectionS
   }
 
   if (!wgFile) {
-    return new Map();
+    return empty();
   }
-  const wgStale = Date.now() - wgFile.mtimeMs > 30_000;
-  const statuses = new Map<string, PeerConnectionStatus>();
+  /** ملف ‎tsv يُحدَّث كل ~3s؛ نفسح أطول ليتجنّب «غير معروف» عند تعارض ‎NTP أو ‎I/O. */
+  const wgStale = Date.now() - wgFile.mtimeMs > 90_000;
+  const byPublicKey = new Map<string, PeerConnectionStatus>();
+  const byTunnelIp = new Map<string, PeerConnectionStatus>();
   for (const line of wgFile.text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const parts = line.split("\t");
@@ -222,9 +234,40 @@ async function readPeerConnectionStatuses(): Promise<Map<string, PeerConnectionS
           rx_bytes: rx,
           tx_bytes: tx,
         };
-    statuses.set(publicKey, applyPeerPing(base, { pingOk, wgStale }));
+    const status = applyPeerPing(base, { pingOk, wgStale });
+    const keyNorm = String(publicKey ?? "").trim();
+    if (keyNorm) {
+      byPublicKey.set(keyNorm, status);
+    }
+    if (peerIp) {
+      byTunnelIp.set(peerIp, status);
+    }
   }
-  return statuses;
+  return { byPublicKey, byTunnelIp };
+}
+
+function resolvePeerRowStatus(
+  row: RowDataPacket,
+  maps: PeerStatusMaps
+): PeerConnectionStatus {
+  const pk = String(row.public_key ?? "").trim();
+  if (pk && maps.byPublicKey.has(pk)) {
+    return maps.byPublicKey.get(pk)!;
+  }
+  const tip = String(row.tunnel_ip ?? "")
+    .trim()
+    .replace(/\/\d+$/, "");
+  if (tip && maps.byTunnelIp.has(tip)) {
+    return maps.byTunnelIp.get(tip)!;
+  }
+  return {
+    status: "unknown",
+    latest_handshake_at: null,
+    latest_handshake_seconds_ago: null,
+    endpoint: null,
+    rx_bytes: 0,
+    tx_bytes: 0,
+  };
 }
 
 router.get("/config", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
@@ -274,18 +317,11 @@ router.get("/peers", routePolicy({ allow: ["admin", "manager", "accountant", "vi
        ORDER BY username ASC`,
       [req.auth!.tenantId]
     );
-    const statuses = await readPeerConnectionStatuses();
+    const statusMaps = await readPeerConnectionStatuses();
     res.json({
       peers: rows.map((row) => ({
         ...row,
-        connection: statuses.get(String(row.public_key ?? "").trim()) ?? {
-          status: "unknown",
-          latest_handshake_at: null,
-          latest_handshake_seconds_ago: null,
-          endpoint: null,
-          rx_bytes: 0,
-          tx_bytes: 0,
-        },
+        connection: resolvePeerRowStatus(row, statusMaps),
       })),
     });
   } catch (e) {

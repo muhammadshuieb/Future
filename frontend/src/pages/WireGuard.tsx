@@ -69,6 +69,8 @@ export function WireGuardPage() {
     wireguard_conf: string;
     commands: string;
   } | null>(null);
+  const [configModalNote, setConfigModalNote] = useState<string | null>(null);
+  const [mikrotikModalNote, setMikrotikModalNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,6 +166,7 @@ export function WireGuardPage() {
   }
 
   async function showClientConfig(peer: WireGuardPeer) {
+    setConfigModalNote(null);
     const res = await apiFetch(`/api/wireguard/peers/${peer.id}/config`);
     if (!res.ok) {
       setErr(formatStaffApiError(res.status, await readApiError(res), t));
@@ -172,7 +175,29 @@ export function WireGuardPage() {
     setClientConfig((await res.json()) as { username: string; config: string });
   }
 
+  async function downloadClientConfFile(peer: WireGuardPeer) {
+    setErr(null);
+    const res = await apiFetch(`/api/wireguard/peers/${peer.id}/config`);
+    if (!res.ok) {
+      setErr(formatStaffApiError(res.status, await readApiError(res), t));
+      return;
+    }
+    const data = (await res.json()) as { username: string; config: string };
+    const safe =
+      String(data.username || peer.username)
+        .replace(/[^\w.\-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "wireguard-peer";
+    const blob = new Blob([data.config], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safe}.conf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function showMikroTikCommands(peer: WireGuardPeer) {
+    setMikrotikModalNote(null);
     const res = await apiFetch(`/api/wireguard/peers/${peer.id}/mikrotik-commands`);
     if (!res.ok) {
       setErr(formatStaffApiError(res.status, await readApiError(res), t));
@@ -194,17 +219,17 @@ export function WireGuardPage() {
 
   async function copyClientConfig() {
     if (!clientConfig) return;
-    await copyText(clientConfig.config);
+    await copyText(clientConfig.config, { flash: "config" });
   }
 
   async function copyMikroTikCommands() {
     if (!mikrotikCommands) return;
-    await copyText(mikrotikCommands.commands);
+    await copyText(mikrotikCommands.commands, { flash: "mikrotik" });
   }
 
   async function copyWireGuardConfFile() {
     if (!mikrotikCommands?.wireguard_conf) return;
-    await copyText(mikrotikCommands.wireguard_conf);
+    await copyText(mikrotikCommands.wireguard_conf, { flash: "mikrotik" });
   }
 
   function downloadWireGuardConf() {
@@ -220,8 +245,9 @@ export function WireGuardPage() {
     URL.revokeObjectURL(url);
   }
 
-  async function copyText(text: string) {
+  async function copyText(text: string, options?: { flash: "page" | "config" | "mikrotik" }) {
     setErr(null);
+    const where = options?.flash ?? "page";
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -238,11 +264,28 @@ export function WireGuardPage() {
         document.execCommand("copy");
         textarea.remove();
       }
-      setMsg(t("wireguard.copied"));
+      const line = t("wireguard.copied");
+      if (where === "page") {
+        setConfigModalNote(null);
+        setMikrotikModalNote(null);
+        setMsg(line);
+      } else if (where === "config") {
+        setMsg(null);
+        setMikrotikModalNote(null);
+        setConfigModalNote(line);
+        window.setTimeout(() => setConfigModalNote((cur) => (cur === line ? null : cur)), 2200);
+      } else {
+        setMsg(null);
+        setConfigModalNote(null);
+        setMikrotikModalNote(line);
+        window.setTimeout(() => setMikrotikModalNote((cur) => (cur === line ? null : cur)), 2200);
+      }
     } catch {
       setErr(t("wireguard.copyFailed"));
     }
   }
+
+  const defaultClientAllowedIps = config.wireguard_interface_cidr.replace(/(\.\d+)(\/\d+)$/, ".0$2");
 
   return (
     <div className="space-y-6">
@@ -374,11 +417,20 @@ export function WireGuardPage() {
                       ) : null}
                     </div>
                   </td>
-                  <td className="px-3 py-2 font-mono">{peer.allowed_ips || config.wireguard_interface_cidr}</td>
+                  <td className="px-3 py-2 font-mono">{peer.allowed_ips?.trim() || defaultClientAllowedIps}</td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" variant="outline" onClick={() => void showClientConfig(peer)}>
                         {t("wireguard.showConfig")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void downloadClientConfFile(peer)}
+                        title={t("wireguard.downloadConf")}
+                      >
+                        <Download className="h-4 w-4" />
+                        {t("wireguard.downloadConf")}
                       </Button>
                       <Button type="button" variant="soft" onClick={() => void showMikroTikCommands(peer)}>
                         <Copy className="h-4 w-4" />
@@ -420,24 +472,65 @@ export function WireGuardPage() {
         </form>
       </Modal>
 
-      <Modal open={clientConfig !== null} onClose={() => setClientConfig(null)} title={clientConfig?.username ?? ""} wide>
+      <Modal
+        open={clientConfig !== null}
+        onClose={() => {
+          setClientConfig(null);
+          setConfigModalNote(null);
+        }}
+        title={clientConfig?.username ?? ""}
+        wide
+      >
         <div className="space-y-3">
+          {configModalNote ? (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200">
+              {configModalNote}
+            </div>
+          ) : null}
           <textarea
             className="min-h-80 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent p-3 font-mono text-left text-xs"
             dir="ltr"
             value={clientConfig?.config ?? ""}
             readOnly
           />
-          <Button type="button" onClick={() => void copyClientConfig()}>
-            <Copy className="h-4 w-4" />
-            {t("wireguard.copyConfig")}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={() => void copyClientConfig()}>
+              <Copy className="h-4 w-4" />
+              {t("wireguard.copyConfig")}
+            </Button>
+            {clientConfig ? (
+              <Button
+                type="button"
+                variant="soft"
+                onClick={() => {
+                  if (!clientConfig) return;
+                  const safe =
+                    String(clientConfig.username)
+                      .replace(/[^\w.\-]+/g, "-")
+                      .replace(/^-+|-+$/g, "") || "wireguard-peer";
+                  const blob = new Blob([clientConfig.config], { type: "text/plain;charset=utf-8" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${safe}.conf`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <Download className="h-4 w-4" />
+                {t("wireguard.downloadConf")}
+              </Button>
+            ) : null}
+          </div>
         </div>
       </Modal>
 
       <Modal
         open={mikrotikCommands !== null}
-        onClose={() => setMikrotikCommands(null)}
+        onClose={() => {
+          setMikrotikCommands(null);
+          setMikrotikModalNote(null);
+        }}
         title={
           mikrotikCommands
             ? `${mikrotikCommands.username} — ${t("wireguard.mikrotikCommands")}`
@@ -447,6 +540,11 @@ export function WireGuardPage() {
       >
         <div className="space-y-4">
           <p className="text-xs leading-relaxed opacity-70">{t("wireguard.mikrotikCommandsHint")}</p>
+          {mikrotikModalNote ? (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200">
+              {mikrotikModalNote}
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <div className="text-sm font-semibold">{t("wireguard.confFileSection")}</div>
