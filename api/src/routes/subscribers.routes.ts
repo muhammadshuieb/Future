@@ -11,7 +11,8 @@ import { sendNewSubscriberWhatsApp } from "../services/whatsapp.service.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { defaultExpirationNoonFromNow, extendSubscriptionByDaysNoon } from "../lib/billing.js";
-import { pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
+import { assertRadiusPush, pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
+import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
 import {
   chargeManagerWallet,
@@ -26,6 +27,7 @@ import { resolveSubscriberState } from "../lib/subscriber-state.js";
 const router = Router();
 const radius = new RadiusService(pool);
 const accounting = new AccountingService(pool);
+const coa = new CoaService(pool);
 
 router.use(requireAuth);
 
@@ -470,6 +472,7 @@ const createSubscriberHandler = async (req: Request, res: Response) => {
     framedIp: ip_address ?? null,
     macLock: mac_address ?? null,
     framedPool: poolName ?? null,
+    expirationDate: expiration_date,
   });
   const id = randomUUID();
   const enc = encryptSecret(password);
@@ -602,6 +605,7 @@ router.post(
           errors.push({ username: item.username, error: "invalid_package" });
           continue;
         }
+        const exp = defaultExpirationNoonFromNow(30);
         await radius.createRadiusUser({
           username: item.username,
           password: item.password,
@@ -609,9 +613,9 @@ router.post(
           framedIp: item.ip_address ?? null,
           macLock: item.mac_address ?? null,
           framedPool: item.pool ?? null,
+          expirationDate: exp,
         });
         const id = randomUUID();
-        const exp = defaultExpirationNoonFromNow(30);
         const enc = encryptSecret(item.password);
         const fields: string[] = [];
         const vals: (string | number | Buffer | Date | null)[] = [];
@@ -703,6 +707,7 @@ router.post(
           errors.push({ line: i + 1, error: "invalid_package" });
           continue;
         }
+        const exp = defaultExpirationNoonFromNow(30);
         await radius.createRadiusUser({
           username,
           password,
@@ -710,9 +715,9 @@ router.post(
           framedIp: ip_address || null,
           macLock: mac_address || null,
           framedPool: poolCsv || null,
+          expirationDate: exp,
         });
         const id = randomUUID();
-        const exp = defaultExpirationNoonFromNow(30);
         const enc = encryptSecret(password);
         const fields: string[] = [];
         const vals: (string | number | Buffer | Date | null)[] = [];
@@ -1073,7 +1078,16 @@ router.post(
     `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
     [next, req.params.id, tenant]
   );
-  await pushRadiusForSubscriber(pool, radius, tenant, req.params.id);
+  try {
+    assertRadiusPush(await pushRadiusForSubscriber(pool, radius, tenant, req.params.id));
+  } catch (e) {
+    console.error("[subscribers] renew_paid: radius push failed", e);
+    res.status(502).json({
+      error: "radius_sync_failed",
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
   await writeAuditLog(pool, {
     tenantId: tenant,
     staffId: req.auth!.sub,
@@ -1299,10 +1313,14 @@ router.post(
         res.status(409).json({ error: "already_paid" });
         return;
       }
+      let radiusWarning: string | null = null;
       try {
-        await pushRadiusForSubscriber(pool, radius, tenant, subscriberId);
+        const pr = await pushRadiusForSubscriber(pool, radius, tenant, subscriberId);
+        if (!pr.ok) radiusWarning = pr.reason;
       } catch (error) {
-        console.warn("push radius after package payment failed", error);
+        const msg = error instanceof Error ? error.message : String(error);
+        radiusWarning = msg;
+        console.error("push radius after package payment failed", error);
       }
       await emitEvent(Events.INVOICE_PAID, {
         tenantId: tenant,
@@ -1313,7 +1331,7 @@ router.post(
         currency: tx.currency,
         paidAt: tx.paidAt,
       });
-      res.json({ ok: true, payment_id: tx.paymentId, invoice_id: tx.invoiceId });
+      res.json({ ok: true, payment_id: tx.paymentId, invoice_id: tx.invoiceId, radius_sync: radiusWarning ? "failed" : "ok", radius_reason: radiusWarning });
     } catch (error) {
       if (error instanceof ManagerBalanceError && error.code === "insufficient_balance") {
         res.status(400).json({ error: "insufficient_manager_balance" });
@@ -1442,6 +1460,7 @@ router.patch(
           password = await radius.getCleartextPassword(row.username as string);
         }
         if (password) {
+          const expPatch = new Date(String(row.expiration_date ?? ""));
           await radius.createRadiusUser({
             username: row.username as string,
             password,
@@ -1449,6 +1468,7 @@ router.patch(
             framedIp: row.ip_address as string | null,
             macLock: row.mac_address as string | null,
             framedPool: row.pool as string | null,
+            expirationDate: Number.isNaN(expPatch.getTime()) ? null : expPatch,
           });
         }
       }
@@ -1476,6 +1496,14 @@ const disableByIdHandler = async (req: Request, res: Response) => {
     return;
   }
   const username = subs[0].username as string;
+  try {
+    const rep = await coa.disconnectAllSessions(username, tenant);
+    if (rep && !rep.anyOk) {
+      console.warn(`[subscribers] disable: disconnect incomplete for ${username}`);
+    }
+  } catch (e) {
+    console.error("[subscribers] coa on disable", e);
+  }
   await radius.disableRadiusUser(username);
   await pool.execute(`UPDATE subscribers SET status = 'disabled' WHERE id = ? AND tenant_id = ?`, [
     req.params.id,
@@ -1652,7 +1680,16 @@ router.post(
     `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
     [next, req.params.id, tenant]
   );
-  await pushRadiusForSubscriber(pool, radius, tenant, req.params.id);
+  try {
+    assertRadiusPush(await pushRadiusForSubscriber(pool, radius, tenant, req.params.id));
+  } catch (e) {
+    console.error("[subscribers] renew: radius push failed", e);
+    res.status(502).json({
+      error: "radius_sync_failed",
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
   await writeAuditLog(pool, {
     tenantId: tenant,
     staffId: req.auth!.sub,

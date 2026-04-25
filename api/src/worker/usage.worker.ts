@@ -1,25 +1,66 @@
-import { pathToFileURL } from "url";
+import { Redis } from "ioredis";
 import { config } from "../config.js";
 import { pool, waitForDbReady } from "../lib/db.js";
-import { hasTable } from "../db/schemaGuards.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { RadiusService } from "../services/radius.service.js";
-import { CoaService } from "../services/coa.service.js";
+import { CoaService, type DisconnectAllReport } from "../services/coa.service.js";
 import type { RowDataPacket } from "mysql2";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
+import { withUsageCycleLock } from "../lib/usage-lock.js";
+import { pushRadiusByUsername } from "../lib/subscriber-radius.js";
+
+let redisLock: Redis | null = null;
+function getRedisLock(): Redis {
+  if (!redisLock) {
+    redisLock = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+  }
+  return redisLock;
+}
+
+async function buildSessionOctetMaxExpr(): Promise<string> {
+  const gIn = await hasColumn(pool, "radacct", "acctinputgigawords");
+  const gOut = await hasColumn(pool, "radacct", "acctoutputgigawords");
+  if (gIn && gOut) {
+    return `(COALESCE(r.acctinputoctets,0) + COALESCE(r.acctinputgigawords,0) * 4294967296) + (COALESCE(r.acctoutputoctets,0) + COALESCE(r.acctoutputgigawords,0) * 4294967296)`;
+  }
+  return `COALESCE(r.acctinputoctets, 0) + COALESCE(r.acctoutputoctets, 0)`;
+}
 
 /**
- * Every 60s cycle (used by BullMQ job and optional standalone process):
+ * Every 60s cycle (BullMQ `update-usage` job):
  * 1. Refresh user_usage_live from radacct, sync subscribers.used_bytes
  * 2. Expired subscribers → disableRadiusUser + status disabled
- * 3. Daily quota exceeded → throttle speed + CoA once/day (user_quota_state)
+ * 3. Daily quota exceeded → hard deny in radcheck + CoA + MikroTik (once/day via user_quota_state)
+ * 4. New calendar day: restore package speed from subscribers (push RADIUS) if not enforced today
  */
 export async function runUsageAndExpiryCycle(): Promise<void> {
   const tenantId = config.defaultTenantId;
   const accounting = new AccountingService(pool);
   const radius = new RadiusService(pool);
   const coa = new CoaService(pool);
+
+  const locked = await withUsageCycleLock(getRedisLock(), async () => {
+    await runUsageAndExpiryCycleUnlocked({
+      tenantId,
+      accounting,
+      radius,
+      coa,
+    });
+  });
+  if (!locked.ran) {
+    console.info("[usage-worker] skip cycle: another instance holds the lock");
+  }
+}
+
+async function runUsageAndExpiryCycleUnlocked(opts: {
+  tenantId: string;
+  accounting: AccountingService;
+  radius: RadiusService;
+  coa: CoaService;
+}): Promise<void> {
+  const { tenantId, accounting, radius, coa } = opts;
 
   if (!(await hasTable(pool, "radcheck"))) {
     return;
@@ -51,14 +92,21 @@ export async function runUsageAndExpiryCycle(): Promise<void> {
   );
   for (const row of due) {
     const username = row.username as string;
+    await coa.disconnectAllSessions(username, tenantId).catch((e) =>
+      console.error("[usage-worker] coa on expiry for", username, e)
+    );
     await radius.disableRadiusUser(username);
     await pool.execute(`UPDATE subscribers SET status = 'disabled' WHERE id = ?`, [row.id]);
-    await emitEvent(Events.USER_EXPIRED, {
-      tenantId,
-      subscriberId: String(row.id ?? ""),
-      username,
-      expirationDate: new Date().toISOString(),
-    }).catch(() => {});
+    try {
+      await emitEvent(Events.USER_EXPIRED, {
+        tenantId,
+        subscriberId: String(row.id ?? ""),
+        username,
+        expirationDate: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error("[usage-worker] emit USER_EXPIRED failed", e);
+    }
     try {
       await pool.execute(`UPDATE rm_users SET enableuser = 0 WHERE username = ?`, [username]);
     } catch {
@@ -66,33 +114,51 @@ export async function runUsageAndExpiryCycle(): Promise<void> {
     }
   }
 
-  const [quotaRows] = await pool.query<RowDataPacket[]>(
-    `SELECT
-        s.id,
-        s.username,
-        p.quota_total_bytes,
-        p.mikrotik_rate_limit,
-        COALESCE(
-          SUM(
-            CASE
-              WHEN r.acctstoptime IS NULL AND DATE(r.acctstarttime) = CURDATE()
-                THEN COALESCE(r.acctinputoctets, 0) + COALESCE(r.acctoutputoctets, 0)
-              WHEN r.acctstoptime IS NOT NULL AND DATE(r.acctstoptime) = CURDATE()
-                THEN COALESCE(r.acctinputoctets, 0) + COALESCE(r.acctoutputoctets, 0)
-              ELSE 0
-            END
-          ),
-          0
-        ) AS today_bytes
-     FROM subscribers s
-     JOIN packages p ON p.id = s.package_id
-     LEFT JOIN radacct r
-       ON r.username COLLATE utf8mb4_unicode_ci = s.username COLLATE utf8mb4_unicode_ci
-     WHERE s.tenant_id = ? AND s.status = 'active' AND p.quota_total_bytes > 0
-     GROUP BY s.id, s.username, p.quota_total_bytes, p.mikrotik_rate_limit
-     HAVING today_bytes >= p.quota_total_bytes`,
-    [tenantId]
-  );
+  const octMax = await buildSessionOctetMaxExpr();
+  const quotaSql = `
+    WITH sess AS (
+      SELECT
+        r.username,
+        r.radacctid,
+        MIN(r.acctstarttime) AS acctstarttime,
+        MAX(r.acctstoptime) AS acctstoptime,
+        MAX(${octMax}) AS session_octets
+      FROM radacct r
+      WHERE r.username <> ''
+      GROUP BY r.username, r.radacctid
+    )
+    SELECT
+      s.id,
+      s.username,
+      p.quota_total_bytes,
+      p.mikrotik_rate_limit,
+      COALESCE(
+        SUM(
+          CASE
+            WHEN se.acctstoptime IS NULL THEN
+              se.session_octets * (
+                GREATEST(0, TIMESTAMPDIFF(SECOND, GREATEST(se.acctstarttime, CONCAT(CURDATE(), ' 00:00:00')), NOW()))
+                / NULLIF(GREATEST(1, TIMESTAMPDIFF(SECOND, se.acctstarttime, NOW())), 0)
+              )
+            WHEN se.acctstoptime IS NOT NULL THEN
+              se.session_octets * (
+                GREATEST(0, TIMESTAMPDIFF(SECOND, GREATEST(se.acctstarttime, CONCAT(CURDATE(), ' 00:00:00')), se.acctstoptime))
+                / NULLIF(GREATEST(1, TIMESTAMPDIFF(SECOND, se.acctstarttime, se.acctstoptime)), 0)
+              )
+            ELSE 0
+          END
+        ),
+        0
+      ) AS today_bytes
+    FROM subscribers s
+    JOIN packages p ON p.id = s.package_id
+    LEFT JOIN sess se ON se.username = s.username
+    WHERE s.tenant_id = ? AND s.status = 'active' AND p.quota_total_bytes > 0
+    GROUP BY s.id, s.username, p.quota_total_bytes, p.mikrotik_rate_limit
+    HAVING today_bytes >= p.quota_total_bytes
+  `;
+
+  const [quotaRows] = await pool.query<RowDataPacket[]>(quotaSql, [tenantId]);
   for (const row of quotaRows) {
     const username = row.username as string;
     const [already] = await pool.query<RowDataPacket[]>(
@@ -100,8 +166,24 @@ export async function runUsageAndExpiryCycle(): Promise<void> {
       [tenantId, username]
     );
     if (already[0]) continue;
-    await radius.updateUserSpeed(username, config.quotaThrottleRate);
-    await coa.disconnectAllSessions(username, tenantId);
+    let report: DisconnectAllReport | null = null;
+    try {
+      report = await coa.disconnectAllSessions(username, tenantId);
+    } catch (e) {
+      console.error("[usage-worker] coa before quota hard deny for", username, e);
+    }
+    if (report && !report.anyOk) {
+      console.warn(
+        "[usage-worker] no session disconnect success for",
+        username,
+        JSON.stringify(report.results?.slice(0, 2))
+      );
+    }
+    try {
+      await radius.applyQuotaHardDeny(username);
+    } catch (e) {
+      console.error("[usage-worker] applyQuotaHardDeny failed for", username, e);
+    }
     await pool.execute(
       `INSERT INTO user_quota_state (tenant_id, username, quota_date)
        VALUES (?, ?, CURDATE())
@@ -110,11 +192,10 @@ export async function runUsageAndExpiryCycle(): Promise<void> {
     );
   }
 
-  // Midnight restore: users throttled on previous day go back to package speed.
+  // New day: re-push full RADIUS profile for users throttled on a previous calendar day.
   const [restoreRows] = await pool.query<RowDataPacket[]>(
-    `SELECT s.username, p.mikrotik_rate_limit
+    `SELECT s.username
      FROM subscribers s
-     JOIN packages p ON p.id = s.package_id
      WHERE s.tenant_id = ? AND s.status = 'active'
        AND EXISTS (
          SELECT 1 FROM user_quota_state q
@@ -128,14 +209,20 @@ export async function runUsageAndExpiryCycle(): Promise<void> {
   );
   for (const row of restoreRows) {
     const username = String(row.username ?? "");
-    const normalRate = String(row.mikrotik_rate_limit ?? "").trim();
-    if (!username || !normalRate) continue;
-    await radius.updateUserSpeed(username, normalRate);
-    await coa.disconnectAllSessions(username, tenantId);
-    await pool.execute(`DELETE FROM user_quota_state WHERE tenant_id = ? AND username = ?`, [
-      tenantId,
-      username,
-    ]);
+    if (!username) continue;
+    const push = await pushRadiusByUsername(pool, radius, tenantId, username);
+    if (!push.ok) {
+      console.error("[usage-worker] restore RADIUS after quota day failed for", username, push.reason);
+      continue;
+    }
+    const rep = await coa.disconnectAllSessions(username, tenantId).catch((e) => {
+      console.error("[usage-worker] coa after restore for", username, e);
+      return null;
+    });
+    if (rep && !rep.anyOk) {
+      console.warn("[usage-worker] coa after day-boundary restore: no-ack for", username);
+    }
+    await pool.execute(`DELETE FROM user_quota_state WHERE tenant_id = ? AND username = ?`, [tenantId, username]);
   }
 }
 
@@ -143,9 +230,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * @deprecated Do not use alongside BullMQ `update-usage` (duplicate 60s cycles). Kept for emergency scripts only.
+ */
 export async function mainUsageWorkerLoop(): Promise<void> {
   await waitForDbReady();
-  console.log("[usage-worker] running full RADIUS usage + expiry cycle every 60s");
+  console.warn(
+    "[usage-worker] start:usage-worker is deprecated; use the worker service (BullMQ) for update-usage"
+  );
   for (;;) {
     try {
       await runUsageAndExpiryCycle();
@@ -154,14 +246,4 @@ export async function mainUsageWorkerLoop(): Promise<void> {
     }
     await sleep(60_000);
   }
-}
-
-const isMain =
-  process.argv[1] != null && pathToFileURL(process.argv[1]).href === import.meta.url;
-
-if (isMain) {
-  mainUsageWorkerLoop().catch((e) => {
-    console.error("[usage-worker] fatal", e);
-    process.exit(1);
-  });
 }

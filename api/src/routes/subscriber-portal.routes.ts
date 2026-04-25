@@ -11,6 +11,7 @@ import { RadiusService } from "../services/radius.service.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import type { RowDataPacket } from "mysql2";
+import { loginRateLimiter } from "../middleware/rate-limit.js";
 
 const router = Router();
 const radius = new RadiusService(pool);
@@ -216,7 +217,7 @@ const loginBody = z.object({
   password: z.string().min(1).optional(),
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimiter, async (req, res) => {
   const parsed = loginBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_body" });

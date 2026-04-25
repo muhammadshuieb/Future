@@ -8,6 +8,7 @@ import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js"
 import { AccountingService } from "../services/accounting.service.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
 import { CoaService, type DisconnectResult } from "../services/coa.service.js";
+import { mikrotikKickUsername } from "../services/mikrotik-kick.service.js";
 
 const router = Router();
 const accounting = new AccountingService(pool);
@@ -64,6 +65,13 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
     result = await coa.disconnectUserForTenant(username, nasIp, tenantId, undefined, framedIp);
   }
   if (!result.ok) {
+    const kick = await mikrotikKickUsername({ pool, tenantId, nasIp, username });
+    if (kick.ok) {
+      return {
+        status: "ok",
+        result: { ...result, ok: true, message: `mikrotik:${kick.message}` },
+      };
+    }
     return { status: "failed", result };
   }
   return { status: "ok", result };
@@ -96,27 +104,14 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
   const limitRaw = Number.parseInt(String(req.query.limit ?? "300"), 10);
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, limitRaw)) : 300;
   try {
-    const sessions = await accounting.listOnlineSessions(undefined, limit);
+    const tenant = req.auth!.tenantId;
+    const sessions = await accounting.listOnlineSessions(tenant, undefined, limit);
     if (sessions.length === 0) {
       res.json({ count: 0, sessions: [] });
       return;
     }
 
-    let allowed = new Set<string>();
-    if (await hasTable(pool, "subscribers")) {
-      const usernames = Array.from(new Set(sessions.map((s) => String(s.username ?? "")).filter(Boolean)));
-      if (usernames.length > 0) {
-        const placeholders = usernames.map(() => "?").join(",");
-        const [rows] = await pool.query<RowDataPacket[]>(
-          `SELECT username FROM subscribers WHERE tenant_id = ? AND username IN (${placeholders})`,
-          [req.auth!.tenantId, ...usernames]
-        );
-        allowed = new Set(rows.map((r) => String(r.username ?? "")));
-      }
-    }
-
-    const filtered = allowed.size > 0 ? sessions.filter((s) => allowed.has(String(s.username ?? ""))) : sessions;
-    const mapped = filtered.map((s) => {
+    const mapped = sessions.map((s) => {
       const inOctets = toBigInt(s.acctinputoctets);
       const outOctets = toBigInt(s.acctoutputoctets);
       return {

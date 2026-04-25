@@ -42,7 +42,13 @@ import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
 
 const app = express();
 app.use(helmet());
-app.use(cors());
+app.use(
+  cors(
+    config.corsOrigins === "all"
+      ? { origin: true, credentials: true }
+      : { origin: config.corsOrigins, credentials: true }
+  )
+);
 app.use(express.json({ limit: "4mb" }));
 
 app.get("/", (_req, res) => {
@@ -98,6 +104,7 @@ app.use(
 
 const server = http.createServer(app);
 
+type WsWithTenant = WsClient & { frTenantId?: string };
 const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", (ws, req) => {
   try {
@@ -108,7 +115,8 @@ wss.on("connection", (ws, req) => {
       ws.close(4001, "missing token");
       return;
     }
-    jwt.verify(token, config.jwtSecret) as JwtPayload;
+    const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload & { tenantId?: string };
+    (ws as WsWithTenant).frTenantId = decoded.tenantId ?? config.defaultTenantId;
   } catch {
     ws.close(4002, "unauthorized");
     return;
@@ -121,10 +129,20 @@ subRedis.subscribe(config.eventsChannel, (err?: Error | null) => {
   if (err) console.error("redis subscribe", err);
 });
 subRedis.on("message", (_channel: string, message: string) => {
+  let targetTenant: string | undefined;
+  try {
+    const p = JSON.parse(message) as { tenant_id?: string; tenantId?: string };
+    targetTenant = p.tenant_id ?? p.tenantId;
+  } catch {
+    return;
+  }
   for (const client of wss.clients) {
-    if (client.readyState === WsClient.OPEN) {
-      client.send(message);
+    if (client.readyState !== WsClient.OPEN) continue;
+    const c = client as WsWithTenant;
+    if (targetTenant && c.frTenantId && targetTenant !== c.frTenantId) {
+      continue;
     }
+    client.send(message);
   }
 });
 

@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { getTableColumns } from "../db/schemaGuards.js";
+import { formatRadiusExpirationUtc } from "../lib/radius-attr-format.js";
 
 /** حقول الباقة المستخدمة في radreply — ليست صف RowDataPacket خام من mysql2 */
 export type PackageRow = {
@@ -16,6 +17,8 @@ export type RadiusUserOptions = {
   framedIp?: string | null;
   macLock?: string | null;
   framedPool?: string | null;
+  /** When set, writes `Expiration` into radcheck (FreeRADIUS auth-time check). */
+  expirationDate?: Date | null;
 };
 
 /** Payload for createRadiusUser / enableRadiusUser (DB is source of truth for speed/pool). */
@@ -26,6 +29,7 @@ export type RadiusUserInput = {
   framedIp?: string | null;
   macLock?: string | null;
   framedPool?: string | null;
+  expirationDate?: Date | null;
 };
 
 /**
@@ -35,13 +39,14 @@ export class RadiusService {
   constructor(private readonly pool: Pool) {}
 
   /**
-   * Idempotent: clears prior radcheck/radreply rows for this user, then inserts fresh rows.
+   * Idempotent: clears all prior radcheck/radreply rows for this user, then inserts fresh rows.
    */
   async createRadiusUser(user: RadiusUserInput): Promise<void> {
     await this.createUser(user.username, user.password, user.package, {
       framedIp: user.framedIp ?? undefined,
       macLock: user.macLock ?? undefined,
       framedPool: user.framedPool ?? undefined,
+      expirationDate: user.expirationDate ?? null,
     });
   }
 
@@ -54,10 +59,7 @@ export class RadiusService {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
-      await conn.execute(
-        `DELETE FROM radcheck WHERE username = ? AND attribute IN ('Cleartext-Password', 'Simultaneous-Use')`,
-        [username]
-      );
+      await conn.execute(`DELETE FROM radcheck WHERE username = ?`, [username]);
       await conn.execute(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Cleartext-Password', ':=', ?)`,
         [username, password]
@@ -66,6 +68,15 @@ export class RadiusService {
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)`,
         [username, String(pkg.simultaneous_use ?? 1)]
       );
+      if (opts.expirationDate) {
+        const expVal = formatRadiusExpirationUtc(
+          opts.expirationDate instanceof Date ? opts.expirationDate : new Date(opts.expirationDate)
+        );
+        await conn.execute(
+          `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Expiration', ':=', ?)`,
+          [username, expVal]
+        );
+      }
       await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
       const replies: [string, string][] = [];
       if (pkg.mikrotik_rate_limit) {
@@ -100,6 +111,28 @@ export class RadiusService {
       await conn.beginTransaction();
       await conn.execute(`DELETE FROM radcheck WHERE username = ?`, [username]);
       await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /**
+   * Hard quota / administrative deny: no Cleartext-Password, auth rejected at RADIUS.
+   */
+  async applyQuotaHardDeny(username: string): Promise<void> {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(`DELETE FROM radcheck WHERE username = ?`, [username]);
+      await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
+      await conn.execute(
+        `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
+        [username]
+      );
       await conn.commit();
     } catch (e) {
       await conn.rollback();

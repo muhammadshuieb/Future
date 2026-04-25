@@ -19,6 +19,7 @@ async function pingHost(ip: string): Promise<boolean> {
 
 export type NasHealthEvent = {
   type: "nas_status";
+  tenant_id: string;
   nas_id: string;
   ip: string;
   name: string;
@@ -85,10 +86,7 @@ export class NasHealthService {
       let radiusOk = false;
       if (pingOk) {
         const probe = await this.coa.disconnectUserForTenant(`__health_${Date.now()}`, ip, tenantId);
-        radiusOk =
-          !probe.message.includes("No RADIUS secret") &&
-          probe.message !== "timeout" &&
-          !probe.message.includes("Encode error");
+        radiusOk = probe.ok;
       }
       const online = pingOk && radiusOk;
       const prev = col.has("online_status") ? String(s.online_status ?? "unknown") : "unknown";
@@ -102,6 +100,7 @@ export class NasHealthService {
       const sess = col.has("session_count") ? Number(s.session_count ?? 0) : 0;
       const ev: NasHealthEvent = {
         type: "nas_status",
+        tenant_id: tenantId,
         nas_id: id,
         ip,
         name,

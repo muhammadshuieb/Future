@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
+import { config } from "../config.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 
@@ -616,7 +617,10 @@ export async function normalizeWhatsAppSettingsFromEnv(): Promise<void> {
   if (envSession) updates.push(`session_name = ${pool.escape(envSession)}`);
   if (updates.length === 0) return;
   try {
-    await pool.query(`UPDATE whatsapp_settings SET ${updates.join(", ")}`);
+    await pool.query(
+      `UPDATE whatsapp_settings SET ${updates.join(", ")} WHERE tenant_id = ?`,
+      [config.defaultTenantId]
+    );
   } catch (error) {
     console.warn("[whatsapp] normalize settings skipped", (error as Error).message);
   }

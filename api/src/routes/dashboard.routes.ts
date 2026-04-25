@@ -77,7 +77,21 @@ router.get("/summary", async (req, res) => {
       }
     }
 
-    if (await hasTable(pool, "radacct")) {
+    if (await hasTable(pool, "radacct") && (await hasTable(pool, "subscribers"))) {
+      try {
+        const [o] = await pool.query<RowDataPacket[]>(
+          `SELECT COUNT(DISTINCT r.username) AS c
+           FROM radacct r
+           INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+           WHERE r.acctstoptime IS NULL AND r.username <> ''`,
+          [t]
+        );
+        online_users = Number(o[0]?.c ?? 0);
+      } catch (e) {
+        if (!isMissingColumnError(e)) console.warn("dashboard summary online_users", e);
+        online_users = 0;
+      }
+    } else if (await hasTable(pool, "radacct")) {
       try {
         const [o] = await pool.query<RowDataPacket[]>(
           `SELECT COUNT(DISTINCT username) AS c FROM radacct WHERE acctstoptime IS NULL AND username <> ''`
@@ -85,14 +99,7 @@ router.get("/summary", async (req, res) => {
         online_users = Number(o[0]?.c ?? 0);
       } catch (e) {
         if (!isMissingColumnError(e)) console.warn("dashboard summary online_users", e);
-        try {
-          const [o] = await pool.query<RowDataPacket[]>(
-            `SELECT COUNT(DISTINCT username) AS c FROM radacct WHERE username <> ''`
-          );
-          online_users = Number(o[0]?.c ?? 0);
-        } catch {
-          online_users = 0;
-        }
+        online_users = 0;
       }
     }
 

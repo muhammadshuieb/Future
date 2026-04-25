@@ -297,7 +297,7 @@ async function main() {
           break;
       }
     },
-    { connection }
+    { connection, concurrency: 1 }
   );
 
   worker.on("failed", (job, err) => {

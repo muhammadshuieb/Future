@@ -9,6 +9,7 @@ import type { JwtPayload, Role } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import { parseManagerPermissions, parsePermissionsObject } from "../lib/manager-permissions.js";
 import type { RowDataPacket } from "mysql2";
+import { loginRateLimiter } from "../middleware/rate-limit.js";
 
 const router = Router();
 
@@ -17,7 +18,7 @@ const loginBody = z.object({
   password: z.string().min(1),
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimiter, async (req, res) => {
   const parsed = loginBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_body" });

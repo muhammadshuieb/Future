@@ -15,6 +15,21 @@ type SubscriberRow = RowDataPacket & {
   expiration_date: Date | string;
 };
 
+export class RadiusPushError extends Error {
+  constructor(public readonly reason: string) {
+    super(`radius_push_failed:${reason}`);
+    this.name = "RadiusPushError";
+  }
+}
+
+export function assertRadiusPush(
+  r: { ok: true } | { ok: false; reason: string }
+): asserts r is { ok: true } {
+  if (!r.ok) {
+    throw new RadiusPushError(r.reason);
+  }
+}
+
 export async function loadSubscriberForRadius(
   pool: Pool,
   tenantId: string,
@@ -67,7 +82,23 @@ export async function pushRadiusForSubscriber(
     framedIp: sub.ip_address,
     macLock: sub.mac_address,
     framedPool: sub.pool,
+    expirationDate: exp,
   });
 
   return { ok: true };
+}
+
+/** Restore RADIUS for a user by username (e.g. after daily quota window). */
+export async function pushRadiusByUsername(
+  pool: Pool,
+  radius: RadiusService,
+  tenantId: string,
+  username: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
+    [tenantId, username]
+  );
+  if (!rows[0]) return { ok: false, reason: "not_found" };
+  return pushRadiusForSubscriber(pool, radius, tenantId, String(rows[0].id));
 }

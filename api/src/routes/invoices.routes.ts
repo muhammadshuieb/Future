@@ -182,10 +182,18 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       res.status(409).json({ error: "already_paid" });
       return;
     }
+    let radiusSync: "ok" | "failed" = "ok";
+    let radiusReason: string | null = null;
     try {
-      await pushRadiusForSubscriber(pool, radius, t, tx.subscriberId);
+      const pr = await pushRadiusForSubscriber(pool, radius, t, tx.subscriberId);
+      if (!pr.ok) {
+        radiusSync = "failed";
+        radiusReason = pr.reason;
+      }
     } catch (error) {
-      console.warn("push radius after invoice payment failed", error);
+      radiusSync = "failed";
+      radiusReason = (error as Error).message;
+      console.error("push radius after invoice payment failed", error);
     }
     await emitEvent(Events.INVOICE_PAID, {
       tenantId: t,
@@ -196,7 +204,12 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       currency: tx.currency,
       paidAt: tx.paidAt,
     });
-    res.json({ ok: true, payment_id: tx.paymentId });
+    res.json({
+      ok: true,
+      payment_id: tx.paymentId,
+      radius_sync: radiusSync,
+      radius_reason: radiusReason,
+    });
   } catch (error) {
     if (error instanceof ManagerBalanceError && error.code === "insufficient_balance") {
       res.status(400).json({ error: "insufficient_manager_balance" });

@@ -16,9 +16,18 @@ export class AccountingService {
     return this.refreshLiveUsage(tenantId);
   }
 
+  private async sessionOctetExpression(): Promise<string> {
+    const gIn = await hasColumn(this.pool, "radacct", "acctinputgigawords");
+    const gOut = await hasColumn(this.pool, "radacct", "acctoutputgigawords");
+    if (gIn && gOut) {
+      return `(COALESCE(acctinputoctets,0) + COALESCE(acctinputgigawords,0) * 4294967296) + (COALESCE(acctoutputoctets,0) + COALESCE(acctoutputgigawords,0) * 4294967296)`;
+    }
+    return `COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)`;
+  }
+
   async refreshLiveUsage(tenantId: string): Promise<void> {
     if (!(await hasTable(this.pool, "radacct"))) return;
-    // Per-session max octets (avoids double-counting Interim-Update rows), then sum sessions per user.
+    const expr = await this.sessionOctetExpression();
     await this.pool.query(
       `
       INSERT INTO user_usage_live (tenant_id, username, total_bytes, updated_at)
@@ -31,7 +40,7 @@ export class AccountingService {
         SELECT
           username,
           radacctid,
-          MAX(COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)) AS session_bytes
+          MAX(${expr}) AS session_bytes
         FROM radacct
         WHERE username <> ''
         GROUP BY username, radacctid
@@ -65,6 +74,7 @@ export class AccountingService {
   /** Attribute traffic to the day the session stopped (billing-style daily totals). */
   async rollupDailyForStoppedSessions(tenantId: string, day: string): Promise<void> {
     if (!(await hasTable(this.pool, "radacct"))) return;
+    const expr = await this.sessionOctetExpression();
     await this.pool.query(
       `
       INSERT INTO user_usage_daily (tenant_id, username, day, total_bytes, updated_at)
@@ -72,7 +82,7 @@ export class AccountingService {
         ?,
         username,
         ?,
-        SUM(COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)),
+        SUM(${expr}),
         CURRENT_TIMESTAMP(3)
       FROM radacct
       WHERE username <> ''
@@ -105,11 +115,12 @@ export class AccountingService {
    */
   async getUserUsage(username: string): Promise<{ bytes: bigint; gb: number } | null> {
     if (!(await hasTable(this.pool, "radacct"))) return null;
+    const expr = await this.sessionOctetExpression();
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `
       SELECT COALESCE(SUM(session_bytes), 0) AS total
       FROM (
-        SELECT MAX(COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)) AS session_bytes
+        SELECT MAX(${expr}) AS session_bytes
         FROM radacct
         WHERE username = ? AND username <> ''
         GROUP BY radacctid
@@ -123,19 +134,65 @@ export class AccountingService {
     return { bytes, gb: Math.round(gb * 1_000_000) / 1_000_000 };
   }
 
-  async countActiveSessions(username?: string): Promise<number> {
+  async countActiveSessions(tenantId: string, username?: string): Promise<number> {
     if (!(await hasTable(this.pool, "radacct"))) return 0;
+    if (!(await hasTable(this.pool, "subscribers"))) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        username
+          ? `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL AND username = ?`
+          : `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL`,
+        username ? [username] : []
+      );
+      return Number(rows[0]?.c ?? 0);
+    }
     const [rows] = await this.pool.query<RowDataPacket[]>(
       username
-        ? `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL AND username = ?`
-        : `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL`,
-      username ? [username] : []
+        ? `SELECT COUNT(*) AS c
+           FROM radacct r
+           INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+           WHERE r.acctstoptime IS NULL AND r.username = ?`
+        : `SELECT COUNT(*) AS c
+           FROM radacct r
+           INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+           WHERE r.acctstoptime IS NULL`,
+      username ? [tenantId, username] : [tenantId]
     );
     return Number(rows[0]?.c ?? 0);
   }
 
-  async listOnlineSessions(username?: string, limit = 500): Promise<RowDataPacket[]> {
+  async listOnlineSessions(
+    tenantId: string,
+    username?: string,
+    limit = 500
+  ): Promise<RowDataPacket[]> {
     if (!(await hasTable(this.pool, "radacct"))) return [];
+    if (!(await hasTable(this.pool, "subscribers"))) {
+      return this.legacyListOnlineSessions(username, limit);
+    }
+    const lim = Math.min(5000, Math.max(1, Number(limit) || 500));
+    const sql = `
+      SELECT r.radacctid, r.username, r.nasipaddress, r.acctstarttime, r.acctsessiontime,
+             r.framedipaddress, r.callingstationid, r.acctinputoctets, r.acctoutputoctets
+      FROM radacct r
+      INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+      WHERE r.acctstoptime IS NULL
+      ${username ? "AND r.username = ?" : ""}
+      ORDER BY r.acctstarttime DESC
+      LIMIT ${lim}
+    `;
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      sql,
+      username ? [tenantId, username] : [tenantId]
+    );
+    return rows;
+  }
+
+  /** Fallback when subscribers table is missing. */
+  private async legacyListOnlineSessions(
+    username?: string,
+    limit = 500
+  ): Promise<RowDataPacket[]> {
+    const lim = Math.min(5000, Math.max(1, Number(limit) || 500));
     const sql = `
       SELECT radacctid, username, nasipaddress, acctstarttime, acctsessiontime,
              framedipaddress, callingstationid, acctinputoctets, acctoutputoctets
@@ -143,7 +200,7 @@ export class AccountingService {
       WHERE acctstoptime IS NULL
       ${username ? "AND username = ?" : ""}
       ORDER BY acctstarttime DESC
-      LIMIT ${Number(limit)}
+      LIMIT ${lim}
     `;
     const [rows] = await this.pool.query<RowDataPacket[]>(
       sql,

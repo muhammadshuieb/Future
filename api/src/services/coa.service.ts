@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2";
 import { config } from "../config.js";
 import { hasTable } from "../db/schemaGuards.js";
 import { tryDecryptSecret } from "./crypto.service.js";
+import { mikrotikKickUsername } from "./mikrotik-kick.service.js";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -92,7 +93,7 @@ export class CoaService {
       });
     }
 
-    return this.sendUdp(host, port, encoded, secret);
+    return this.sendUdpWithRetries(host, port, encoded, secret);
   }
 
   async disconnectUserForTenant(
@@ -106,14 +107,14 @@ export class CoaService {
     let port = 3799;
     let secret: string | null = null;
     try {
-      const config = await this.getNasServerCoaConfig(nasIp, tenantId);
-      if (config) {
-        host = config.coaHost;
-        port = config.coaPort;
-        secret = config.secret;
+      const configRow = await this.getNasServerCoaConfig(nasIp, tenantId);
+      if (configRow) {
+        host = configRow.coaHost;
+        port = configRow.coaPort;
+        secret = configRow.secret;
       }
       if (!secret) {
-        secret = await this.getSecretForNasIp(config?.nasIp ?? nasIp);
+        secret = await this.getSecretForNasIp(configRow?.nasIp ?? nasIp);
       }
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
@@ -135,24 +136,65 @@ export class CoaService {
     return this.disconnectUser(username, host, secret, acctSessionId, framedIp, port);
   }
 
-  async disconnectAllSessions(username: string, tenantId: string): Promise<DisconnectResult[]> {
-    if (!(await hasTable(this.pool, "radacct"))) return [];
+  /**
+   * Disconnect all open RADIUS sessions for username. Tries CoA (with retries), then optional MikroTik REST kick per session/NAS.
+   */
+  async disconnectAllSessions(
+    username: string,
+    tenantId: string
+  ): Promise<DisconnectAllReport> {
+    if (!(await hasTable(this.pool, "radacct"))) {
+      return { results: [], anyOk: false, mikrotik: [] };
+    }
     const [sessions] = await this.pool.query<RowDataPacket[]>(
       `SELECT nasipaddress, acctsessionid, framedipaddress FROM radacct
        WHERE username = ? AND acctstoptime IS NULL`,
       [username]
     );
-    const results: DisconnectResult[] = [];
+    const results: SessionDisconnectResult[] = [];
+    const mks: { ok: boolean; message: string }[] = [];
     for (const s of sessions) {
       const nas = s.nasipaddress as string;
       const sid = s.acctsessionid as string;
       const framedIp = s.framedipaddress as string | undefined;
-      results.push(await this.disconnectUserForTenant(username, nas, tenantId, sid, framedIp));
+      const coa = await this.disconnectUserForTenant(username, nas, tenantId, sid, framedIp);
+      let mk: { ok: boolean; message: string } | undefined;
+      if (!coa.ok) {
+        mk = await mikrotikKickUsername({ pool: this.pool, tenantId, nasIp: nas, username });
+        if (mk) mks.push(mk);
+      }
+      results.push({ nas, coa, mikrotik: mk });
     }
-    return results;
+    return {
+      results,
+      anyOk: results.some((r) => r.coa.ok || Boolean(r.mikrotik?.ok)),
+      mikrotik: mks,
+    };
   }
 
-  private sendUdp(
+  private sendUdpWithRetries(
+    host: string,
+    port: number,
+    payload: Buffer,
+    secret: string
+  ): Promise<DisconnectResult> {
+    const attempts = config.coaRetryCount;
+    const delay = config.coaRetryDelayMs;
+    return (async () => {
+      let last: DisconnectResult = { host, port, ok: false, message: "no_attempt" };
+      for (let i = 0; i < attempts; i++) {
+        if (i > 0 && delay > 0) {
+          await new Promise((r) => setTimeout(r, delay));
+        }
+        last = await this.sendUdpOnce(host, port, payload, secret);
+        if (last.ok) return last;
+        if (last.message.startsWith("Encode error")) return last;
+      }
+      return last;
+    })();
+  }
+
+  private sendUdpOnce(
     host: string,
     port: number,
     payload: Buffer,
@@ -205,3 +247,15 @@ export class CoaService {
     });
   }
 }
+
+export type SessionDisconnectResult = {
+  nas: string;
+  coa: DisconnectResult;
+  mikrotik?: { ok: boolean; message: string };
+};
+
+export type DisconnectAllReport = {
+  results: SessionDisconnectResult[];
+  anyOk: boolean;
+  mikrotik: { ok: boolean; message: string }[];
+};
