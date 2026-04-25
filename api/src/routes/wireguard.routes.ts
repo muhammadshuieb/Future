@@ -106,6 +106,35 @@ function defaultAllowedIps(row: RowDataPacket, settings: Awaited<ReturnType<type
   return String(row.allowed_ips ?? "").trim() || settings.wireguard_interface_cidr.replace(/\.\d+\/(\d+)$/, ".0/$1") || "10.20.0.0/24";
 }
 
+/** نفس تنسيق تصدير MikroTik / ملف ‎.conf الافتراضي للعميل (للتنزيل أو لأدوات سطح المكتب). */
+function buildWireGuardClientConfText(params: {
+  privateKey: string;
+  tunnelIp: string;
+  allowedIps: string;
+  settings: Awaited<ReturnType<typeof getSystemSettings>>;
+  endpoint: string;
+}): string {
+  const { privateKey, tunnelIp, allowedIps, settings, endpoint } = params;
+  const lines: string[] = [
+    "[Interface]",
+    `PrivateKey = ${privateKey}`,
+    `Address = ${tunnelIp.includes("/") ? tunnelIp : `${tunnelIp}/32`}`,
+  ];
+  if (String(settings.wireguard_client_dns ?? "").trim()) {
+    lines.push(`DNS = ${settings.wireguard_client_dns}`);
+  }
+  const allowed = String(allowedIps ?? "").trim() || "10.20.0.0/24";
+  lines.push(
+    "",
+    "[Peer]",
+    `PublicKey = ${settings.wireguard_server_public_key}`,
+    `Endpoint = ${endpoint}`,
+    `AllowedIPs = ${allowed}`,
+    `PersistentKeepalive = ${settings.wireguard_persistent_keepalive}`
+  );
+  return `${lines.join("\n")}\n`;
+}
+
 async function readStatusFile(
   name: "peer-status" | "peer-ping"
 ): Promise<{ text: string; mtimeMs: number } | null> {
@@ -401,21 +430,14 @@ router.get("/peers/:id/config", routePolicy({ allow: ["admin", "manager"] }), as
       await syncWireGuardRuntime(req.auth!.tenantId);
     }
     const endpoint = `${resolveEndpointHost(req, settings)}:${settings.wireguard_server_port}`;
-    const lines = [
-      "[Interface]",
-      `PrivateKey = ${privateKey}`,
-      `Address = ${tunnelIp.includes("/") ? tunnelIp : `${tunnelIp}/32`}`,
-    ];
-    if (settings.wireguard_client_dns) lines.push(`DNS = ${settings.wireguard_client_dns}`);
-    lines.push(
-      "",
-      "[Peer]",
-      `PublicKey = ${settings.wireguard_server_public_key}`,
-      `Endpoint = ${endpoint}`,
-      `AllowedIPs = ${String(row.allowed_ips ?? "").trim() || "10.20.0.0/24"}`,
-      `PersistentKeepalive = ${settings.wireguard_persistent_keepalive}`
-    );
-    res.json({ username: String(row.username ?? ""), config: `${lines.join("\n")}\n` });
+    const configText = buildWireGuardClientConfText({
+      privateKey,
+      tunnelIp,
+      allowedIps: defaultAllowedIps(row, settings),
+      settings,
+      endpoint,
+    });
+    res.json({ username: String(row.username ?? ""), config: configText });
   } catch (e) {
     console.error("wireguard peer config get", e);
     res.status(500).json({ error: "wireguard_peer_config_failed" });
@@ -478,9 +500,17 @@ router.get("/peers/:id/mikrotik-commands", routePolicy({ allow: ["admin", "manag
         "disabled=no",
       ].filter(Boolean).join(" "),
     ];
+    const wireguardConf = buildWireGuardClientConfText({
+      privateKey,
+      tunnelIp,
+      allowedIps: defaultAllowedIps(row, settings),
+      settings,
+      endpoint,
+    });
     res.json({
       username: String(row.username ?? ""),
       interfaceName,
+      wireguard_conf: wireguardConf,
       commands: `${lines.join("\n")}\n`,
     });
   } catch (e) {
