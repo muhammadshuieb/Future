@@ -289,11 +289,12 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       );
     }
     if (hasInvoicesTbl) {
+      // فواتير «صادرة» فقط: مسودة draft / ملغاة void لا تمنع الاشتراك (وإلا ينقلب الجميع إلى BLOCKED عند توليد مسودات جماعيّة)
       joins.push(
         `LEFT JOIN (
           SELECT tenant_id, subscriber_id, COUNT(*) AS overdue_count
           FROM invoices
-          WHERE status <> 'paid' AND due_date < CURDATE()
+          WHERE status = 'sent' AND due_date < CURDATE()
           GROUP BY tenant_id, subscriber_id
         ) ov ON ov.tenant_id = s.tenant_id AND ov.subscriber_id = s.id`
       );

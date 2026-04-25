@@ -16,6 +16,7 @@ export type SubscriberStateInput = {
 
 export function resolveSubscriberState(input: SubscriberStateInput): SubscriberState {
   if (input.quotaLimitedToday) return SubscriberState.LIMITED;
+  /** عدد فواتير ‎sent متأخرة (لا تشمل ‎draft ‎/ ‎void) — يملأه مسار ‎subscribers GET. */
   const overdueInvoicesCount = Number(input.overdueInvoicesCount ?? 0);
   if (overdueInvoicesCount > 0) return SubscriberState.BLOCKED;
   if (input.expirationDate) {
