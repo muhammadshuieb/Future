@@ -13,13 +13,7 @@ import {
   updateRcloneSettings,
 } from "../services/backup.service.js";
 import { config } from "../config.js";
-import {
-  getRestoreMaxBytes,
-  getSqlRestoreInfoForApi,
-  importSqlFilePathIntoAppDatabase,
-  recordSqlRestoreRun,
-  resolveSchemaExtensionsPath,
-} from "../services/sql-restore.service.js";
+import * as SqlRestore from "../services/sql-restore.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -28,7 +22,7 @@ const uploadSql = multer({
     destination: (_req, _f, cb) => cb(null, tmpdir()),
     filename: (_req, _f, cb) => cb(null, `fr-upload-${Date.now()}-${process.pid}.sql`),
   }),
-  limits: { fileSize: getRestoreMaxBytes(), files: 1 },
+  limits: { fileSize: SqlRestore.getRestoreMaxBytes(), files: 1 },
 });
 router.use(requireAuth);
 router.use(requireRole("admin", "manager"));
@@ -168,7 +162,7 @@ router.post(
         raw === "true" ||
         raw === "1" ||
         String(raw ?? "true").toLowerCase() === "true";
-      const result = await importSqlFilePathIntoAppDatabase(f.path, { applySchemaExtensions });
+      const result = await SqlRestore.importSqlFilePathIntoAppDatabase(f.path, { applySchemaExtensions });
       const tenantId = req.auth!.tenantId;
       const staffId = req.auth!.sub ?? null;
       const baseName = f.originalname || "upload.sql";
@@ -183,7 +177,7 @@ router.post(
                 ? 503
                 : 400;
         try {
-          await recordSqlRestoreRun({
+          await SqlRestore.recordSqlRestoreRun({
             tenantId,
             staffId,
             fileName: baseName,
@@ -203,13 +197,13 @@ router.post(
           detail: err.slice(0, 4000),
           mysql_output: result.mysql_output?.slice(0, 8000) ?? null,
           target_database: config.db.database,
-          schema_extensions_path: resolveSchemaExtensionsPath(),
+          schema_extensions_path: SqlRestore.resolveSchemaExtensionsPath(),
         });
         return;
       }
       const restoredAt = new Date().toISOString();
       try {
-        await recordSqlRestoreRun({
+        await SqlRestore.recordSqlRestoreRun({
           tenantId,
           staffId,
           fileName: baseName,
@@ -246,7 +240,7 @@ router.get("/restore-sql/info", async (req, res) => {
     return;
   }
   try {
-    const data = await getSqlRestoreInfoForApi(req.auth!.tenantId);
+    const data = await SqlRestore.getSqlRestoreInfoForApi(req.auth!.tenantId);
     res.json(data);
   } catch (e) {
     console.error("restore-sql/info", e);
