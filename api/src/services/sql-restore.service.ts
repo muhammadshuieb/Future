@@ -18,6 +18,34 @@ function mysqlBin(): string {
   return (process.env.MYSQL_CLIENT ?? "mysql").trim() || "mysql";
 }
 
+/** ترميز اسم قاعدة/عمود لاستعماله داخل `USE` أو backticks. */
+function escapeBacktickIdent(name: string): string {
+  return name.replace(/`/g, "``");
+}
+
+/**
+ * يرسل schema_extensions جلسة بقاعدة افتراضية صريحة (`USE ...`) ليعمل `DATABASE()` واستعلامات
+ * `information_schema` — بدونها قد يرتفع COUNT=0 فيُعاد نفس ADD CONSTRAINT (ERROR 1826).
+ * الملف صغير نسبياً فيُقرأ ويُكتب مؤقتاً.
+ */
+async function pipeSchemaExtensionsToMysql(filePath: string): Promise<{
+  ok: true;
+} | { ok: false; error: string; output: string }> {
+  const body = await fs.readFile(filePath, "utf8");
+  if (!body.length) {
+    return { ok: false, error: "schema_extensions_empty", output: "" };
+  }
+  const db = escapeBacktickIdent(config.db.database);
+  const withUse = `USE \`${db}\`;\n${body}`;
+  const tmp = join(tmpdir(), `fr-schema-ext-${Date.now()}-${process.pid}.sql`);
+  await fs.writeFile(tmp, withUse, { mode: 0o600 });
+  try {
+    return await pipeFileToMysql(tmp);
+  } finally {
+    await fs.unlink(tmp).catch(() => undefined);
+  }
+}
+
 /**
  * اكتشاف مسار `sql/schema_extensions.sql` (مستودع + Docker: `/app/sql`).
  */
@@ -148,7 +176,7 @@ export async function importSqlFilePathIntoAppDatabase(
     if (!ext) {
       return { ok: false, error: "schema_extensions_not_found" };
     }
-    const extR = await pipeFileToMysql(ext);
+    const extR = await pipeSchemaExtensionsToMysql(ext);
     if (!extR.ok) {
       return {
         ok: false,

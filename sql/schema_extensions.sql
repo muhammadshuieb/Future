@@ -301,13 +301,14 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   CONSTRAINT `fk_notif_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- FK إلى nas_servers: قد تكون موجودة مسبقاً بعد استعادة radius.sql أو تطبيق سابق
+-- FK إلى nas_servers: قد تكون موجودة مسبقاً (استعادة / تشغيل سابق). الخدمة تسبق الملف بـ USE.
+-- referential_constraints أدق من table_constraints لأنواع MySQL 8.4
 SET @c_fk_nas = (
-  SELECT COUNT(*) FROM information_schema.table_constraints
-  WHERE table_schema = DATABASE()
+  SELECT COUNT(*) FROM information_schema.referential_constraints
+  WHERE constraint_schema = DATABASE()
     AND table_name = 'subscribers'
     AND constraint_name = 'fk_subscribers_nas_server'
-    AND constraint_type = 'FOREIGN KEY'
+    AND referenced_table_name = 'nas_servers'
 );
 SET @q_fk_nas = IF(
   @c_fk_nas = 0,
