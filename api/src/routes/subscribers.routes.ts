@@ -248,7 +248,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       selectParts.push(
         `CASE WHEN EXISTS (
           SELECT 1 FROM radacct r_online
-          WHERE r_online.username = s.username AND r_online.acctstoptime IS NULL
+          WHERE BINARY r_online.username = BINARY s.username AND r_online.acctstoptime IS NULL
           LIMIT 1
         ) THEN 1 ELSE 0 END AS is_online`
       );
@@ -273,7 +273,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       joins.push(
         `LEFT JOIN user_usage_live uul
          ON uul.tenant_id = s.tenant_id
-        AND uul.username = s.username`
+        AND BINARY uul.username = BINARY s.username`
       );
     }
     if (canJoinRadUsage) {
@@ -287,7 +287,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
              ${ruOutputGwExpr} AS sum_output_gw
            FROM radacct
            GROUP BY username
-         ) ru ON ru.username = s.username`
+         ) ru ON BINARY ru.username = BINARY s.username`
       );
     }
     if (hasInvoicesTbl) {
@@ -305,7 +305,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       joins.push(
         `LEFT JOIN user_quota_state qs
          ON qs.tenant_id = s.tenant_id
-        AND qs.username = s.username
+        AND BINARY qs.username = BINARY s.username
         AND qs.quota_date = CURDATE()`
       );
     }

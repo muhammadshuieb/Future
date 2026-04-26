@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { promises as fs } from "fs";
+import { tmpdir } from "os";
 import multer from "multer";
 import { z } from "zod";
 import {
@@ -14,14 +15,17 @@ import {
 import { config } from "../config.js";
 import {
   getRestoreMaxBytes,
-  importSqlBufferIntoAppDatabase,
+  importSqlFilePathIntoAppDatabase,
   resolveSchemaExtensionsPath,
 } from "../services/sql-restore.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 const uploadSql = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: (_req, _f, cb) => cb(null, tmpdir()),
+    filename: (_req, _f, cb) => cb(null, `fr-upload-${Date.now()}-${process.pid}.sql`),
+  }),
   limits: { fileSize: getRestoreMaxBytes(), files: 1 },
 });
 router.use(requireAuth);
@@ -150,19 +154,19 @@ router.post(
   },
   uploadSql.single("file"),
   async (req, res) => {
+    const f = req.file;
+    if (!f?.path) {
+      res.status(400).json({ error: "missing_file", detail: "Send multipart field name: file" });
+      return;
+    }
     try {
-      const f = req.file;
-      if (!f?.buffer?.length) {
-        res.status(400).json({ error: "missing_file", detail: "Send multipart field name: file" });
-        return;
-      }
       const raw = req.body?.applySchemaExtensions;
       const applySchemaExtensions =
         raw === true ||
         raw === "true" ||
         raw === "1" ||
         String(raw ?? "true").toLowerCase() === "true";
-      const result = await importSqlBufferIntoAppDatabase(f.buffer, { applySchemaExtensions });
+      const result = await importSqlFilePathIntoAppDatabase(f.path, { applySchemaExtensions });
       if (!result.ok) {
         const err = result.error;
         const code =
@@ -189,6 +193,8 @@ router.post(
     } catch (e) {
       console.error("maintenance restore-sql", e);
       res.status(500).json({ error: "restore_sql_internal" });
+    } finally {
+      await fs.unlink(f.path).catch(() => undefined);
     }
   }
 );

@@ -188,11 +188,11 @@ async function runProcess(command: string, args: string[], env?: Record<string, 
   return stdout;
 }
 
-async function runMysqldump(filePath: string): Promise<void> {
-  const args = [
-    "--single-transaction",
+function buildMysqldumpArgs(singleTransaction: boolean): string[] {
+  const base: string[] = [
     "--quick",
     "--skip-lock-tables",
+    "--default-character-set=utf8mb4",
     "-h",
     config.db.host,
     "-P",
@@ -201,6 +201,14 @@ async function runMysqldump(filePath: string): Promise<void> {
     config.db.user,
     config.db.database,
   ];
+  if (singleTransaction) {
+    base.unshift("--single-transaction");
+  }
+  return base;
+}
+
+async function runMysqldumpOnce(filePath: string, singleTransaction: boolean): Promise<void> {
+  const args = buildMysqldumpArgs(singleTransaction);
   const child = spawn("mysqldump", args, {
     env: { ...process.env, MYSQL_PWD: config.db.password },
     stdio: ["ignore", "pipe", "pipe"],
@@ -221,6 +229,24 @@ async function runMysqldump(filePath: string): Promise<void> {
   await finished(out);
   if (exitCode !== 0) {
     throw new Error(stderr || `mysqldump_failed_${exitCode}`);
+  }
+}
+
+/**
+ * نسخ احتياطي كامل. عند خطأ 1412 (تعريف الجدول تغيّر أثناء snapshot) نعيد المحاولة بدون --single-transaction.
+ */
+async function runMysqldump(filePath: string): Promise<void> {
+  try {
+    await runMysqldumpOnce(filePath, true);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const is1412 =
+      msg.includes("1412") ||
+      msg.includes("Table definition has changed") ||
+      msg.toLowerCase().includes("retry transaction");
+    if (!is1412) throw e;
+    console.warn("[backup] mysqldump: retrying without --single-transaction (1412 / concurrent DDL)");
+    await runMysqldumpOnce(filePath, false);
   }
 }
 
