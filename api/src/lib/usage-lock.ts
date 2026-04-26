@@ -1,9 +1,20 @@
 import { randomUUID } from "crypto";
-import IORedis from "ioredis";
 import { config } from "../config.js";
 
-/** نوع مثيل اتصال ioredis (يُتجنب TS2709 مع `import type` الافتراضي). */
-type RedisClient = InstanceType<typeof IORedis>;
+/**
+ * الحد الأدنى من واجهة Redis المستخدمة هنا (يتجنب TS2344/TS2709 مع أنواع التصدير الافتراضي لـ ioredis).
+ */
+export type UsageCycleRedisClient = {
+  set(
+    key: string,
+    value: string,
+    expiryMode: "EX",
+    ttlSeconds: number,
+    mode: "NX"
+  ): Promise<"OK" | null>;
+  get(key: string): Promise<string | null>;
+  del(...keys: string[]): Promise<number>;
+};
 
 const LOCK_PREFIX = "fr:usage-cycle:";
 const TTL_SEC = 120;
@@ -12,7 +23,7 @@ const TTL_SEC = 120;
  * Single-flight lock so only one process runs the usage / quota cycle per tenant.
  */
 export async function withUsageCycleLock<T>(
-  redis: RedisClient,
+  redis: UsageCycleRedisClient,
   fn: () => Promise<T>
 ): Promise<{ ran: true; result: T } | { ran: false; reason: "locked" }> {
   const key = `${LOCK_PREFIX}${config.defaultTenantId}`;
