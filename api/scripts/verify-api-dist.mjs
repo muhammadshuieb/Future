@@ -24,10 +24,18 @@ if (!sub.includes("joinNas")) {
   fail("FATAL: subscribers.routes dist missing joinNas guard — rebuild image with current api/src");
 }
 
-const maintPath = "dist/routes/maintenance.routes.js";
-const maint = fs.readFileSync(maintPath, "utf8");
-if (!maint.includes("/restore-sql") || !maint.includes("importSqlFilePathIntoAppDatabase")) {
-  fail("FATAL: maintenance.routes dist missing SQL restore — rebuild image with current api/src");
+const maintRestore = "dist/routes/maintenance-restore-sql.routes.js";
+if (!fs.existsSync(maintRestore)) {
+  fail("FATAL: maintenance-restore-sql.routes dist missing — rebuild image with current api/src");
+}
+const mrs = fs.readFileSync(maintRestore, "utf8");
+if (!mrs.includes("/restore-sql") || !mrs.includes("importSqlFilePathIntoAppDatabase")) {
+  fail("FATAL: maintenance-restore-sql.routes dist missing SQL restore handlers");
+}
+
+const distIndex = fs.readFileSync("dist/index.js", "utf8");
+if (!distIndex.includes("maintenance-restore-sql.routes")) {
+  fail("FATAL: dist/index.js must import maintenance-restore-sql.routes");
 }
 
 console.log("verify-api-dist: ok");
