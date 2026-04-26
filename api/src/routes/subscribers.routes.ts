@@ -221,9 +221,12 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       const radOutput =
         (radCols.has("acctoutputoctets") ? "COALESCE(ru.sum_output_octets,0)" : "0") +
         (radCols.has("acctoutputgigawords") ? " + COALESCE(ru.sum_output_gw,0) * 4294967296" : "");
-      if (joinUsageLive && canJoinRadUsage) {
-        selectParts.push(`COALESCE(uul.total_bytes, (${radInput}) + (${radOutput}), s.used_bytes) AS used_bytes`);
-      } else if (joinUsageLive) {
+      /**
+       * لا نربط قائمة المشتركين بـ subquery على radacct بالكامل (GROUP BY username):
+       * بعد استعادة dump كبير يصبح ذلك مسحًا كاملًا لكل COUNT/LIST ويثقل MySQL لساعات.
+       * عند وجود user_usage_live نعتمد uul + subscribers.used_bytes (يحدّثهما worker).
+       */
+      if (joinUsageLive) {
         selectParts.push(`COALESCE(uul.total_bytes, s.used_bytes) AS used_bytes`);
       } else if (canJoinRadUsage) {
         selectParts.push(`COALESCE(((${radInput}) + (${radOutput})), s.used_bytes) AS used_bytes`);
@@ -276,7 +279,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
         AND BINARY uul.username = BINARY s.username`
       );
     }
-    if (canJoinRadUsage) {
+    if (canJoinRadUsage && !joinUsageLive) {
       joins.push(
         `LEFT JOIN (
            SELECT
