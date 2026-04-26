@@ -24,4 +24,10 @@ if (!sub.includes("joinNas")) {
   fail("FATAL: subscribers.routes dist missing joinNas guard — rebuild image with current api/src");
 }
 
+const maintPath = "dist/routes/maintenance.routes.js";
+const maint = fs.readFileSync(maintPath, "utf8");
+if (!maint.includes("/restore-sql") || !maint.includes("importSqlFilePathIntoAppDatabase")) {
+  fail("FATAL: maintenance.routes dist missing SQL restore — rebuild image with current api/src");
+}
+
 console.log("verify-api-dist: ok");

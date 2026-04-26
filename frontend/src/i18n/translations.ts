@@ -492,6 +492,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "maintenance.restoreNoHistory": "لا يوجد سجل استعادة بعد.",
     "maintenance.restoreMaxSize": "الحد الأقصى لحجم الملف",
     "maintenance.restoreConfirm": "تأكيد: سيتم تنفيذ الـ SQL على قاعدة بيانات المشروع. المتابعة؟",
+    "maintenance.restoreEndpoint404":
+      "خادم الـ API قديم أو غير مُحدَّث: مسار الاستعادة غير مُسجّل. أعد بناء وإعادة تشغيل حاوية api (مثلاً: docker compose build --no-cache api && docker compose up -d api).",
     "maintenance.runNow": "تشغيل نسخة الآن",
     "maintenance.started": "تم تشغيل مهمة النسخ الاحتياطي.",
     "maintenance.status": "الحالة",
@@ -1118,6 +1120,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "maintenance.restoreNoHistory": "No restore history yet.",
     "maintenance.restoreMaxSize": "Max file size",
     "maintenance.restoreConfirm": "This will run the SQL against the app database. Continue?",
+    "maintenance.restoreEndpoint404":
+      "The API server is outdated: the restore route is not registered. Rebuild and restart the API container (for example: docker compose build --no-cache api && docker compose up -d api).",
     "maintenance.runNow": "Run backup now",
     "maintenance.started": "Backup job started.",
     "maintenance.status": "Status",

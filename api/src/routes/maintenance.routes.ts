@@ -14,6 +14,7 @@ import {
 } from "../services/backup.service.js";
 import { config } from "../config.js";
 import {
+  getRestoreMaxBytes,
   getSqlRestoreInfoForApi,
   importSqlFilePathIntoAppDatabase,
   recordSqlRestoreRun,

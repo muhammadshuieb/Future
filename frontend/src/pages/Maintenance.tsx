@@ -255,7 +255,11 @@ export function MaintenancePage() {
       try {
         j = text ? (JSON.parse(text) as typeof j) : {};
       } catch {
-        setError(text.slice(0, 500) || res.statusText);
+        if (res.status === 404 && /Cannot POST\s+\/api\/maintenance\/restore-sql/i.test(text)) {
+          setError(t("maintenance.restoreEndpoint404"));
+        } else {
+          setError(text.slice(0, 500) || res.statusText);
+        }
         return;
       }
       if (!res.ok) {
