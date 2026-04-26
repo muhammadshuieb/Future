@@ -70,9 +70,22 @@ export function MaintenancePage() {
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [applySchemaExtensions, setApplySchemaExtensions] = useState(true);
   const [restoring, setRestoring] = useState(false);
-  const [restoreInfo, setRestoreInfo] = useState<{ max_bytes: number; schema_extensions_resolved: string | null } | null>(
-    null
-  );
+  const [restoreInfo, setRestoreInfo] = useState<{
+    max_bytes: number;
+    schema_extensions_resolved: string | null;
+    target_database: string;
+    last_success: {
+      file_name: string;
+      created_at: string;
+      target_database: string;
+    } | null;
+    last_failed: {
+      file_name: string;
+      created_at: string;
+      error_message: string | null;
+      mysql_output_excerpt?: string | null;
+    } | null;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,19 +116,36 @@ export function MaintenancePage() {
     void load();
   }, [load, user?.role]);
 
-  useEffect(() => {
+  const loadRestoreInfo = useCallback(async () => {
     if (user?.role !== "admin") {
       setRestoreInfo(null);
       return;
     }
-    void (async () => {
-      const res = await apiFetch("/api/maintenance/restore-sql/info");
-      if (res.ok) {
-        const j = (await res.json()) as { max_bytes: number; schema_extensions_resolved: string | null };
-        setRestoreInfo(j);
-      }
-    })();
+    const res = await apiFetch("/api/maintenance/restore-sql/info");
+    if (res.ok) {
+      const j = (await res.json()) as {
+        max_bytes: number;
+        schema_extensions_resolved: string | null;
+        target_database: string;
+        last_success: {
+          file_name: string;
+          created_at: string;
+          target_database: string;
+        } | null;
+        last_failed: {
+          file_name: string;
+          created_at: string;
+          error_message: string | null;
+          mysql_output_excerpt?: string | null;
+        } | null;
+      };
+      setRestoreInfo(j);
+    }
   }, [user?.role]);
+
+  useEffect(() => {
+    void loadRestoreInfo();
+  }, [loadRestoreInfo]);
 
   if (!(user?.role === "admin" || user?.role === "manager")) {
     return <p className="text-sm opacity-70">{t("api.error_403")}</p>;
@@ -211,12 +241,48 @@ export function MaintenancePage() {
       fd.append("file", restoreFile);
       fd.append("applySchemaExtensions", applySchemaExtensions ? "true" : "false");
       const res = await apiFetch("/api/maintenance/restore-sql", { method: "POST", body: fd });
-      if (!res.ok) {
-        setError(await readApiError(res));
+      const text = await res.text();
+      let j: {
+        ok?: boolean;
+        detail?: string;
+        error?: string;
+        mysql_output?: string | null;
+        target_database?: string;
+        restored_at?: string;
+        bytes?: number;
+        database?: string;
+      } = {};
+      try {
+        j = text ? (JSON.parse(text) as typeof j) : {};
+      } catch {
+        setError(text.slice(0, 500) || res.statusText);
         return;
       }
-      setInfo(t("maintenance.restoreSuccess"));
-      setRestoreFile(null);
+      if (!res.ok) {
+        const parts = [
+          j.error === "restore_sql_failed" ? t("maintenance.restoreFailed") : j.error ?? "",
+          j.detail ?? "",
+          j.mysql_output ? `\n--- mysql ---\n${j.mysql_output}` : "",
+          j.target_database ? `\nDB: ${j.target_database}` : "",
+        ].filter(Boolean);
+        setError(parts.join("\n").trim() || (await readApiError(res)));
+        await loadRestoreInfo();
+        return;
+      }
+      if (j.ok) {
+        const db = j.target_database ?? j.database ?? "?";
+        const at = j.restored_at ? fmtDate(j.restored_at) : fmtDate(new Date().toISOString());
+        const bytes = fmtBytes(j.bytes ?? restoreFile.size);
+        const detail = t("maintenance.restoreSuccessDetail")
+          .replace("{db}", db)
+          .replace("{at}", at)
+          .replace("{bytes}", bytes);
+        setInfo(`${t("maintenance.restoreSuccess")} ${detail}`);
+        setRestoreFile(null);
+        await loadRestoreInfo();
+      } else {
+        setError(t("maintenance.restoreFailed"));
+      }
     } finally {
       setRestoring(false);
     }
@@ -285,9 +351,40 @@ export function MaintenancePage() {
           </div>
           <p className="text-sm opacity-80">{t("maintenance.restoreHint")}</p>
           {restoreInfo ? (
-            <p className="text-xs opacity-70">
-              {t("maintenance.restoreMaxSize")}: {fmtBytes(restoreInfo.max_bytes)}
-            </p>
+            <div className="space-y-2 text-xs opacity-80">
+              <p>
+                <span className="font-medium text-[hsl(var(--foreground))]">{t("maintenance.restoreTargetDb")}:</span>{" "}
+                <code className="rounded bg-[hsl(var(--muted))] px-1 py-0.5">{restoreInfo.target_database}</code>
+              </p>
+              <p>
+                {t("maintenance.restoreMaxSize")}: {fmtBytes(restoreInfo.max_bytes)}
+              </p>
+              {restoreInfo.last_success ? (
+                <p className="text-emerald-400/90">
+                  ✓ {t("maintenance.restoreLastSuccess")}: {restoreInfo.last_success.file_name} — {fmtDate(restoreInfo.last_success.created_at)}
+                </p>
+              ) : (
+                <p className="opacity-60">{t("maintenance.restoreNoHistory")}</p>
+              )}
+              {restoreInfo.last_failed ? (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-2 text-red-200/90">
+                  <div className="font-medium">✗ {t("maintenance.restoreLastFailed")}</div>
+                  <div>
+                    {restoreInfo.last_failed.file_name} — {fmtDate(restoreInfo.last_failed.created_at)}
+                  </div>
+                  {restoreInfo.last_failed.error_message ? (
+                    <div className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] opacity-90">
+                      {restoreInfo.last_failed.error_message}
+                    </div>
+                  ) : null}
+                  {restoreInfo.last_failed.mysql_output_excerpt ? (
+                    <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] opacity-80">
+                      {restoreInfo.last_failed.mysql_output_excerpt}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           ) : null}
           <div>
             <label className="block text-sm font-medium">{t("maintenance.restorePickFile")}</label>

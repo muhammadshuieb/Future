@@ -14,8 +14,9 @@ import {
 } from "../services/backup.service.js";
 import { config } from "../config.js";
 import {
-  getRestoreMaxBytes,
+  getSqlRestoreInfoForApi,
   importSqlFilePathIntoAppDatabase,
+  recordSqlRestoreRun,
   resolveSchemaExtensionsPath,
 } from "../services/sql-restore.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -167,6 +168,9 @@ router.post(
         raw === "1" ||
         String(raw ?? "true").toLowerCase() === "true";
       const result = await importSqlFilePathIntoAppDatabase(f.path, { applySchemaExtensions });
+      const tenantId = req.auth!.tenantId;
+      const staffId = req.auth!.sub ?? null;
+      const baseName = f.originalname || "upload.sql";
       if (!result.ok) {
         const err = result.error;
         const code =
@@ -177,18 +181,54 @@ router.post(
               : err.startsWith("mysql_") || err.includes("ENOENT")
                 ? 503
                 : 400;
+        try {
+          await recordSqlRestoreRun({
+            tenantId,
+            staffId,
+            fileName: baseName,
+            fileSizeBytes: f.size,
+            success: false,
+            errorMessage: err.slice(0, 2000),
+            targetDatabase: config.db.database,
+            applySchemaExtensions,
+            mysqlOutputExcerpt: result.mysql_output?.slice(0, 4000) ?? null,
+          });
+        } catch (logErr) {
+          console.error("recordSqlRestoreRun failed", logErr);
+        }
         res.status(code).json({
+          ok: false,
           error: "restore_sql_failed",
           detail: err.slice(0, 4000),
+          mysql_output: result.mysql_output?.slice(0, 8000) ?? null,
+          target_database: config.db.database,
           schema_extensions_path: resolveSchemaExtensionsPath(),
         });
         return;
       }
+      const restoredAt = new Date().toISOString();
+      try {
+        await recordSqlRestoreRun({
+          tenantId,
+          staffId,
+          fileName: baseName,
+          fileSizeBytes: f.size,
+          success: true,
+          errorMessage: null,
+          targetDatabase: config.db.database,
+          applySchemaExtensions,
+          mysqlOutputExcerpt: null,
+        });
+      } catch (logErr) {
+        console.error("recordSqlRestoreRun failed", logErr);
+      }
       res.json({
         ok: true,
+        restored_at: restoredAt,
         bytes: result.detail.bytes,
         applied_schema_extensions: result.detail.appliedSchemaExtensions,
         database: config.databaseName,
+        target_database: config.db.database,
       });
     } catch (e) {
       console.error("maintenance restore-sql", e);
@@ -199,15 +239,18 @@ router.post(
   }
 );
 
-router.get("/restore-sql/info", (req, res) => {
+router.get("/restore-sql/info", async (req, res) => {
   if (req.auth?.role !== "admin") {
     res.status(403).json({ error: "forbidden" });
     return;
   }
-  res.json({
-    max_bytes: getRestoreMaxBytes(),
-    schema_extensions_resolved: resolveSchemaExtensionsPath(),
-  });
+  try {
+    const data = await getSqlRestoreInfoForApi(req.auth!.tenantId);
+    res.json(data);
+  } catch (e) {
+    console.error("restore-sql/info", e);
+    res.status(500).json({ error: "restore_info_failed" });
+  }
 });
 
 router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
