@@ -301,7 +301,21 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   CONSTRAINT `fk_notif_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-ALTER TABLE `subscribers`
-  ADD CONSTRAINT `fk_subscribers_nas_server` FOREIGN KEY (`nas_server_id`) REFERENCES `nas_servers` (`id`) ON DELETE SET NULL;
+-- FK إلى nas_servers: قد تكون موجودة مسبقاً بعد استعادة radius.sql أو تطبيق سابق
+SET @c_fk_nas = (
+  SELECT COUNT(*) FROM information_schema.table_constraints
+  WHERE table_schema = DATABASE()
+    AND table_name = 'subscribers'
+    AND constraint_name = 'fk_subscribers_nas_server'
+    AND constraint_type = 'FOREIGN KEY'
+);
+SET @q_fk_nas = IF(
+  @c_fk_nas = 0,
+  'ALTER TABLE `subscribers` ADD CONSTRAINT `fk_subscribers_nas_server` FOREIGN KEY (`nas_server_id`) REFERENCES `nas_servers` (`id`) ON DELETE SET NULL',
+  'SELECT 1'
+);
+PREPARE stmt_fk_nas FROM @q_fk_nas;
+EXECUTE stmt_fk_nas;
+DEALLOCATE PREPARE stmt_fk_nas;
 
 SET FOREIGN_KEY_CHECKS = 1;
