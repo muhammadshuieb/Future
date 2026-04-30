@@ -9,10 +9,10 @@
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
     "worker": "tsx watch src/workers/index.ts",
-    "sync:subscribers": "tsx src/scripts/sync-radcheck-subscribers.ts",
     "validate:dma-schema": "tsx src/scripts/validate-dma-schema.ts",
     "verify:rm-restore": "tsx src/scripts/verify-rm-restore.ts",
-    "import:dma": "tsx src/scripts/import-dma-subscribers.ts",
+    "verify:dma-enforcement": "tsx src/scripts/verify-dma-enforcement.ts",
+    "verify:dma-enforcement:dist": "node dist/scripts/verify-dma-enforcement.js",
     "seed:staff": "tsx src/scripts/seed-staff.ts"
   },
   "dependencies": {
@@ -22,6 +22,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.0",
+    "hash.js": "^1.1.7",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",

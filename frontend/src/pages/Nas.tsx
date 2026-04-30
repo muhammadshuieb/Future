@@ -32,6 +32,8 @@ export function NasPage() {
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
   const [secret, setSecret] = useState("");
+  const [showSecretInput, setShowSecretInput] = useState(false);
+  const [secretInputLoading, setSecretInputLoading] = useState(false);
   const [password, setPassword] = useState("");
   const [nasType, setNasType] = useState("mikrotik");
   const [mikrotikApiEnabled, setMikrotikApiEnabled] = useState(false);
@@ -112,6 +114,8 @@ export function NasPage() {
     setName("");
     setIp("");
     setSecret("");
+    setShowSecretInput(false);
+    setSecretInputLoading(false);
     setPassword("");
     setNasType("mikrotik");
     setMikrotikApiEnabled(false);
@@ -126,6 +130,8 @@ export function NasPage() {
     setName(String(n.name ?? ""));
     setIp(String(n.ip ?? ""));
     setSecret("");
+    setShowSecretInput(false);
+    setSecretInputLoading(false);
     setPassword("");
     setNasType(String(n.type ?? "mikrotik"));
     setMikrotikApiEnabled(Boolean(n.mikrotik_api_enabled));
@@ -187,6 +193,26 @@ export function NasPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function onToggleSecretInputVisibility() {
+    if (showSecretInput) {
+      setShowSecretInput(false);
+      return;
+    }
+    if (modal === "edit" && editId && !secret.trim()) {
+      setSecretInputLoading(true);
+      try {
+        const r = await apiFetch(`/api/nas/${editId}/secret`);
+        if (r.ok) {
+          const j = (await r.json()) as { secret?: string };
+          setSecret(j.secret ?? "");
+        }
+      } finally {
+        setSecretInputLoading(false);
+      }
+    }
+    setShowSecretInput(true);
   }
 
   return (
@@ -321,14 +347,29 @@ export function NasPage() {
           <TextField label={t("nas.name")} value={name} onChange={(e) => setName(e.target.value)} required />
           <TextField label={t("nas.ip")} value={ip} onChange={(e) => setIp(e.target.value)} required />
           <TextField label={t("nas.type")} value={nasType} onChange={(e) => setNasType(e.target.value)} />
-          <TextField
-            label={t("nas.secret")}
-            type="password"
-            value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-            required={modal === "create"}
-            hint={modal === "edit" ? t("nas.secretHint") : undefined}
-          />
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))]/80">{t("nas.secret")}</label>
+            <div className="relative">
+              <input
+                className="w-full rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]/60 px-3 py-2.5 pe-10 text-sm outline-none transition placeholder:text-[hsl(var(--foreground))]/40 focus:border-[hsl(var(--primary))]/60 focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+                type={showSecretInput ? "text" : "password"}
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                required={modal === "create"}
+              />
+              <button
+                type="button"
+                onClick={() => void onToggleSecretInputVisibility()}
+                disabled={secretInputLoading}
+                className="absolute end-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]/70"
+                aria-label={showSecretInput ? t("common.hide") : t("common.show")}
+                title={showSecretInput ? t("common.hide") : t("common.show")}
+              >
+                {showSecretInput ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            {modal === "edit" ? <p className="text-[11px] opacity-60">{t("nas.secretHint")}</p> : null}
+          </div>
           <TextField
             label={t("nas.password")}
             type="password"

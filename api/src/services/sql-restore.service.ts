@@ -7,6 +7,9 @@ import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
+import { invalidateTableExistenceCache } from "../db/table-exists.js";
+import { hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
+import { syncStaffUsersFromRmManagers } from "./rm-legacy-staff.service.js";
 
 /** حد أقصى ~2GB؛ يضبط عبر RESTORE_MAX_SQL_BYTES ويتوافق مع client_max_body_size في nginx */
 const MAX_BYTES = Math.min(
@@ -18,36 +21,8 @@ function mysqlBin(): string {
   return (process.env.MYSQL_CLIENT ?? "mysql").trim() || "mysql";
 }
 
-/** ترميز اسم قاعدة/عمود لاستعماله داخل `USE` أو backticks. */
-function escapeBacktickIdent(name: string): string {
-  return name.replace(/`/g, "``");
-}
-
 /**
- * يرسل schema_extensions جلسة بقاعدة افتراضية صريحة (`USE ...`) ليعمل `DATABASE()` واستعلامات
- * `information_schema` — بدونها قد يرتفع COUNT=0 فيُعاد نفس ADD CONSTRAINT (ERROR 1826).
- * الملف صغير نسبياً فيُقرأ ويُكتب مؤقتاً.
- */
-async function pipeSchemaExtensionsToMysql(filePath: string): Promise<{
-  ok: true;
-} | { ok: false; error: string; output: string }> {
-  const body = await fs.readFile(filePath, "utf8");
-  if (!body.length) {
-    return { ok: false, error: "schema_extensions_empty", output: "" };
-  }
-  const db = escapeBacktickIdent(config.db.database);
-  const withUse = `USE \`${db}\`;\n${body}`;
-  const tmp = join(tmpdir(), `fr-schema-ext-${Date.now()}-${process.pid}.sql`);
-  await fs.writeFile(tmp, withUse, { mode: 0o600 });
-  try {
-    return await pipeFileToMysql(tmp);
-  } finally {
-    await fs.unlink(tmp).catch(() => undefined);
-  }
-}
-
-/**
- * اكتشاف مسار `sql/schema_extensions.sql` (مستودع + Docker: `/app/sql`).
+ * اكتشاف مسار `sql/schema_extensions.sql` (للعرض فقط — الاستعادة لا تعيد تشغيله).
  */
 export function resolveSchemaExtensionsPath(): string | null {
   const fromEnv = process.env.FUTURERADIUS_SQL_DIR?.trim();
@@ -66,10 +41,6 @@ export function resolveSchemaExtensionsPath(): string | null {
   return null;
 }
 
-/**
- * مخرجات عميل MySQL: غالباً تُسجّل أخطاء SQL حتى مع exit=0 (حسب إعدادات).
- * كذلك: إن احتوى الـ dump على `USE` لقاعدة أخرى دون -o قد يُستورد خارج القاعدة المضبوطة.
- */
 function mysqlClientOutputIndicatesError(combined: string, exitCode: number): string | null {
   if (exitCode !== 0) {
     return combined.trim() || `mysql_exited_with_${exitCode}`;
@@ -93,7 +64,6 @@ async function pipeFileToMysql(sqlPath: string): Promise<{ ok: true } | { ok: fa
     "-u",
     config.db.user,
     "--default-character-set=utf8mb4",
-    /** ينفّذ فقط الجمل الخاصة بقاعدة `DATABASE_URL` (يتجاهل `USE` لقاعدة أخرى داخل الـ dump) */
     "-o",
     config.db.database,
   ];
@@ -144,16 +114,47 @@ async function readFirstBytes(path: string, n: number): Promise<Buffer> {
   }
 }
 
-/**
- * تطبيق ملف .sql من مسار على القرص (يُفضّل للملفات الضخمة — لا يُحمّل الملف في RAM).
- */
+async function runPostRestoreAnalyze(): Promise<void> {
+  const targets = ["radacct", "rm_users", "rm_services", "radcheck", "radreply"] as const;
+  const existing: string[] = [];
+  for (const table of targets) {
+    try {
+      if (await hasTable(pool, table)) existing.push(table);
+    } catch {
+      // best effort only
+    }
+  }
+  if (existing.length === 0) return;
+  try {
+    await pool.query(`ANALYZE TABLE ${existing.map((t) => `\`${t}\``).join(", ")}`);
+  } catch (error) {
+    // Do not fail restore if ANALYZE has a transient lock/permission issue.
+    console.warn("[restore] post-restore ANALYZE skipped", error);
+  }
+}
+
+async function runPostRestoreManagerSync(): Promise<void> {
+  try {
+    const out = await syncStaffUsersFromRmManagers(pool, config.defaultTenantId);
+    if (out.synced > 0) {
+      console.log(`[restore] synced ${out.synced} manager/admin rows from rm_managers`);
+    }
+  } catch (error) {
+    // Keep restore successful even if legacy-manager sync fails.
+    console.warn("[restore] post-restore manager sync skipped", error);
+  }
+}
+
 export type SqlImportResult =
-  | { ok: true; detail: { bytes: number; appliedSchemaExtensions: boolean } }
+  | {
+      ok: true;
+      detail: { bytes: number };
+    }
   | { ok: false; error: string; mysql_output?: string };
 
 export async function importSqlFilePathIntoAppDatabase(
   sqlFilePath: string,
-  options: { applySchemaExtensions: boolean }
+  _options: { applySchemaExtensions: boolean }
 ): Promise<SqlImportResult> {
   const st = await fs.stat(sqlFilePath);
   if (st.size < 8) {
@@ -170,29 +171,13 @@ export async function importSqlFilePathIntoAppDatabase(
   if (!main.ok) {
     return { ok: false, error: main.error, mysql_output: main.output };
   }
-  let appliedSchemaExtensions = false;
-  if (options.applySchemaExtensions) {
-    const ext = resolveSchemaExtensionsPath();
-    if (!ext) {
-      return { ok: false, error: "schema_extensions_not_found" };
-    }
-    const extR = await pipeSchemaExtensionsToMysql(ext);
-    if (!extR.ok) {
-      return {
-        ok: false,
-        error: `schema_extensions_failed: ${extR.error}`,
-        mysql_output: extR.output,
-      };
-    }
-    appliedSchemaExtensions = true;
-  }
-  return { ok: true, detail: { bytes: st.size, appliedSchemaExtensions } };
+  invalidateTableExistenceCache();
+  invalidateColumnCache();
+  await runPostRestoreManagerSync();
+  await runPostRestoreAnalyze();
+  return { ok: true, detail: { bytes: st.size } };
 }
 
-/**
- * تطبيق نسخة .sql (مثل `radius.phpMyAdmin` dump) على قاعدة الاتصال الحالية.
- * @returns خطأ نصي أو null عند النجاح
- */
 export async function importSqlBufferIntoAppDatabase(
   buffer: Buffer,
   options: { applySchemaExtensions: boolean }
@@ -229,7 +214,6 @@ export type SqlRestoreRunRow = {
   target_database: string;
   apply_schema_extensions: boolean;
   created_at: string;
-  /** يُملأ لعمليات فاشلة فقط */
   mysql_output_excerpt?: string | null;
 };
 
@@ -330,7 +314,10 @@ export async function getSqlRestoreInfoForApi(tenantId: string): Promise<{
     [tenantId]
   );
   const map = (r: RowDataPacket): SqlRestoreRunRow => {
-    const ex = r.mysql_output_excerpt != null && String(r.mysql_output_excerpt).trim() ? String(r.mysql_output_excerpt) : null;
+    const ex =
+      r.mysql_output_excerpt != null && String(r.mysql_output_excerpt).trim()
+        ? String(r.mysql_output_excerpt)
+        : null;
     return {
       id: r.id as string,
       file_name: r.file_name as string,

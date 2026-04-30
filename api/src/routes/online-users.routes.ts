@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { hasTable } from "../db/schemaGuards.js";
+import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
 import { AccountingService } from "../services/accounting.service.js";
@@ -36,10 +37,28 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
   }
 
   const username = String(row.username ?? "");
-  if (await hasTable(pool, "subscribers")) {
+  if (config.dmaMode) {
+    if (await hasTable(pool, "rm_users")) {
+      const [owned] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+        [username]
+      );
+      if (!owned[0]) {
+        return { status: "not_found" };
+      }
+    }
+  } else if (await hasTable(pool, "subscribers")) {
     const [owned] = await pool.query<RowDataPacket[]>(
       `SELECT id FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
       [tenantId, username]
+    );
+    if (!owned[0]) {
+      return { status: "not_found" };
+    }
+  } else if (await hasTable(pool, "rm_users")) {
+    const [owned] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+      [username]
     );
     if (!owned[0]) {
       return { status: "not_found" };

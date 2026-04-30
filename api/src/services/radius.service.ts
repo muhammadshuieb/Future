@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
-import { getTableColumns } from "../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../db/schemaGuards.js";
+import { config } from "../config.js";
 import { formatRadiusExpirationUtc } from "../lib/radius-attr-format.js";
 
 /** حقول الباقة المستخدمة في radreply — ليست صف RowDataPacket خام من mysql2 */
@@ -191,36 +192,65 @@ export class RadiusService {
   }
 
   async getPackage(tenantId: string, packageId: string): Promise<PackageRow | null> {
-    const col = await getTableColumns(this.pool, "packages");
-    const want = [
-      "id",
-      "mikrotik_rate_limit",
-      "framed_ip_address",
-      "mikrotik_address_list",
-      "default_framed_pool",
-      "simultaneous_use",
-      "quota_total_bytes",
-    ];
-    const sel = want.filter((c) => col.has(c));
-    if (!sel.includes("id")) {
-      return null;
+    if (!config.dmaMode && (await hasTable(this.pool, "packages"))) {
+      const col = await getTableColumns(this.pool, "packages");
+      const want = [
+        "id",
+        "mikrotik_rate_limit",
+        "framed_ip_address",
+        "mikrotik_address_list",
+        "default_framed_pool",
+        "simultaneous_use",
+        "quota_total_bytes",
+      ];
+      const sel = want.filter((c) => col.has(c));
+      if (sel.includes("id")) {
+        let sql = `SELECT ${sel.join(", ")} FROM packages WHERE tenant_id = ? AND id = ?`;
+        const params: unknown[] = [tenantId, packageId];
+        if (col.has("active")) {
+          sql += ` AND active = 1`;
+        }
+        sql += ` LIMIT 1`;
+        const [rows] = await this.pool.query<RowDataPacket[]>(sql, params);
+        const r = rows[0];
+        if (r) {
+          return {
+            id: String(r.id),
+            mikrotik_rate_limit: r.mikrotik_rate_limit != null ? String(r.mikrotik_rate_limit) : null,
+            framed_ip_address: r.framed_ip_address != null ? String(r.framed_ip_address) : null,
+            mikrotik_address_list: r.mikrotik_address_list != null ? String(r.mikrotik_address_list) : null,
+            default_framed_pool: r.default_framed_pool != null ? String(r.default_framed_pool) : null,
+            simultaneous_use: Number(r.simultaneous_use ?? 1),
+          };
+        }
+      }
     }
-    let sql = `SELECT ${sel.join(", ")} FROM packages WHERE tenant_id = ? AND id = ?`;
-    const params: unknown[] = [tenantId, packageId];
-    if (col.has("active")) {
-      sql += ` AND active = 1`;
-    }
-    sql += ` LIMIT 1`;
-    const [rows] = await this.pool.query<RowDataPacket[]>(sql, params);
+
+    if (!(await hasTable(this.pool, "rm_services"))) return null;
+    const srvid = parseInt(String(packageId).trim(), 10);
+    if (!Number.isFinite(srvid)) return null;
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT srvid, downrate, uprate, poolname FROM rm_services WHERE srvid = ? LIMIT 1`,
+      [srvid]
+    );
     const r = rows[0];
     if (!r) return null;
+    const down = Number(r.downrate ?? 0);
+    const up = Number(r.uprate ?? 0);
+    let mikrotik_rate_limit: string | null = null;
+    if (down > 0 || up > 0) {
+      const dm = Math.max(0, Math.round(down / 1048576));
+      const um = Math.max(0, Math.round(up / 1048576));
+      mikrotik_rate_limit = `${dm}M/${um}M`;
+    }
+    const poolname = r.poolname != null ? String(r.poolname).trim() : "";
     return {
-      id: String(r.id),
-      mikrotik_rate_limit: r.mikrotik_rate_limit != null ? String(r.mikrotik_rate_limit) : null,
-      framed_ip_address: r.framed_ip_address != null ? String(r.framed_ip_address) : null,
-      mikrotik_address_list: r.mikrotik_address_list != null ? String(r.mikrotik_address_list) : null,
-      default_framed_pool: r.default_framed_pool != null ? String(r.default_framed_pool) : null,
-      simultaneous_use: Number(r.simultaneous_use ?? 1),
+      id: String(r.srvid),
+      mikrotik_rate_limit,
+      framed_ip_address: null,
+      mikrotik_address_list: null,
+      default_framed_pool: poolname.length > 0 ? poolname : null,
+      simultaneous_use: 1,
     };
   }
 

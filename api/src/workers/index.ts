@@ -6,10 +6,9 @@ import { pool, waitForDbReady } from "../db/pool.js";
 import { installLogger, markDbReady, log } from "../services/logger.service.js";
 
 installLogger({ source: "worker" });
-import { importSubscribersFromDma } from "../dma/importSubscribersFromDma.js";
 import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
-import { runDatabaseBackup } from "../services/backup.service.js";
+import { maybeRunScheduledBackup } from "../services/backup.service.js";
 import {
   sendOperationalAlertWhatsApp,
   resolveWhatsAppSessionOwnerPhone,
@@ -124,7 +123,11 @@ async function sendCriticalOpsAlerts(tenantId: string): Promise<void> {
 }
 
 async function generateMonthlyInvoices(): Promise<void> {
+  if (config.dmaMode) return;
   const tenantId = config.defaultTenantId;
+  if (!(await hasTable(pool, "subscribers")) || !(await hasTable(pool, "packages"))) {
+    return;
+  }
   const [packs] = await pool.query<RowDataPacket[]>(
     `SELECT s.id AS subscriber_id, p.price, p.billing_period_days, p.currency
      FROM subscribers s
@@ -160,18 +163,14 @@ async function generateMonthlyInvoices(): Promise<void> {
   }
 }
 
-async function syncSubscribersFromRadcheck(): Promise<void> {
-  await importSubscribersFromDma(pool, {
-    tenantId: config.defaultTenantId,
-    validateSchema: false,
-    dryRun: false,
-  });
-}
-
 async function bootstrapRepeatables() {
   const everyMin = 60_000;
+  const updateUsageEvery = Math.max(
+    60_000,
+    parseInt(process.env.UPDATE_USAGE_EVERY_MS ?? "60000", 10) || 60_000
+  );
   const everyDay = 86_400_000;
-  const timezone = process.env.APP_TIMEZONE ?? "Asia/Damascus";
+  const timezone = config.appTimezone;
   const replaceRepeatablesByName = async (name: string) => {
     try {
       const jobs = await jobQueue.getRepeatableJobs();
@@ -184,6 +183,11 @@ async function bootstrapRepeatables() {
       console.warn("replace repeatable jobs", name, e);
     }
   };
+  if (config.dmaMode) {
+    // Keep update-usage in DMA_MODE: it now runs lightweight expiry/quota enforcement
+    // without heavy user_usage_live rebuild.
+    await replaceRepeatablesByName("whatsapp-usage-alerts");
+  }
   const add = async (name: string, every: number) => {
     try {
       await jobQueue.add(name, {}, { repeat: { every }, jobId: name });
@@ -198,15 +202,18 @@ async function bootstrapRepeatables() {
       console.warn("repeat cron job", name, e);
     }
   };
-  await add("update-usage", everyMin);
+  await add("update-usage", updateUsageEvery);
   await add("nas-health", everyMin);
-  await add("sync-subscribers", everyMin * 60);
   await add("generate-invoices", everyDay);
-  await add("daily-backup", everyDay);
+  await replaceRepeatablesByName("daily-backup");
+  await replaceRepeatablesByName("backup-scheduler");
+  await add("backup-scheduler", 5 * 60 * 1000);
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
-  await add("whatsapp-usage-alerts", everyMin * 30);
+  if (!config.dmaMode) {
+    await add("whatsapp-usage-alerts", everyMin * 30);
+  }
   await replaceRepeatablesByName("whatsapp-expiry-reminders");
   await replaceRepeatablesByName("whatsapp-payment-due-reminders");
   await addCron("whatsapp-expiry-reminders", "0 12 * * *");
@@ -245,14 +252,8 @@ async function main() {
         case "generate-invoices":
           await generateMonthlyInvoices();
           break;
-        case "sync-subscribers":
-          await syncSubscribersFromRadcheck();
-          break;
-        case "daily-backup":
-          await runDatabaseBackup({
-            tenantId,
-            triggeredBy: "system",
-          });
+        case "backup-scheduler":
+          await maybeRunScheduledBackup(tenantId, config.appTimezone);
           break;
         case "whatsapp-expiry-reminders":
           await sendExpiryReminders(tenantId);

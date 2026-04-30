@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Link2, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
-import { TextField } from "../components/ui/TextField";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
 
@@ -31,6 +30,13 @@ type RcloneStatus = {
   remote_path: string | null;
   last_error: string | null;
   last_check_at: string | null;
+  google_oauth_available: boolean;
+  schedule_enabled: boolean;
+  schedule_mode: "daily" | "twice_daily";
+  schedule_time_1: string;
+  schedule_time_2: string | null;
+  schedule_timezone: string;
+  retention_days: number;
 };
 
 function fmtBytes(n: number | null): string {
@@ -61,14 +67,19 @@ export function MaintenancePage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [rcloneStatus, setRcloneStatus] = useState<RcloneStatus | null>(null);
-  const [rcloneEnabled, setRcloneEnabled] = useState(false);
-  const [rcloneRemoteName, setRcloneRemoteName] = useState("");
-  const [rcloneRemotePath, setRcloneRemotePath] = useState("");
-  const [rcloneConfigText, setRcloneConfigText] = useState("");
-  const [savingRclone, setSavingRclone] = useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleMode, setScheduleMode] = useState<"daily" | "twice_daily">("daily");
+  const [scheduleTime1, setScheduleTime1] = useState("03:00");
+  const [scheduleTime2, setScheduleTime2] = useState("15:00");
+  const [retentionDays, setRetentionDays] = useState(7);
+  const [savingSchedule, setSavingSchedule] = useState(false);
   const [testingRclone, setTestingRclone] = useState(false);
+  const [pasteTokenJson, setPasteTokenJson] = useState("");
+  const [savingPasteToken, setSavingPasteToken] = useState(false);
+  const oauthReturnHandled = useRef(false);
+  const [selectedBackupIds, setSelectedBackupIds] = useState<string[]>([]);
+  const [deletingMany, setDeletingMany] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
-  const [applySchemaExtensions, setApplySchemaExtensions] = useState(true);
   const [restoring, setRestoring] = useState(false);
   const [restoreInfo, setRestoreInfo] = useState<{
     max_bytes: number;
@@ -102,10 +113,13 @@ export function MaintenancePage() {
       if (g.ok) {
         const gj = (await g.json()) as { status: RcloneStatus };
         setRcloneStatus(gj.status);
-        setRcloneEnabled(Boolean(gj.status.enabled));
-        setRcloneRemoteName(gj.status.remote_name ?? "");
-        setRcloneRemotePath(gj.status.remote_path ?? "");
+        setScheduleEnabled(Boolean(gj.status.schedule_enabled));
+        setScheduleMode(gj.status.schedule_mode === "twice_daily" ? "twice_daily" : "daily");
+        setScheduleTime1((gj.status.schedule_time_1 || "03:00").slice(0, 5));
+        setScheduleTime2((gj.status.schedule_time_2 || "15:00").slice(0, 5));
+        setRetentionDays(Number(gj.status.retention_days || 7));
       }
+      setSelectedBackupIds([]);
     } finally {
       setLoading(false);
     }
@@ -115,6 +129,26 @@ export function MaintenancePage() {
     if (!(user?.role === "admin" || user?.role === "manager")) return;
     void load();
   }, [load, user?.role]);
+
+  useEffect(() => {
+    if (oauthReturnHandled.current) return;
+    const q = window.location.search;
+    if (!q.includes("gdrive=")) return;
+    oauthReturnHandled.current = true;
+    const p = new URLSearchParams(q);
+    const g = p.get("gdrive");
+    const clean = () => {
+      window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+    };
+    if (g === "connected") {
+      setInfo(t("maintenance.gdriveConnected"));
+      clean();
+      void load();
+    } else if (g) {
+      setError(t("maintenance.gdriveError").replace("{code}", g));
+      clean();
+    }
+  }, [load, t]);
 
   const loadRestoreInfo = useCallback(async () => {
     if (user?.role !== "admin") {
@@ -197,34 +231,6 @@ export function MaintenancePage() {
     await load();
   }
 
-  async function saveRcloneConfig() {
-    setSavingRclone(true);
-    setError(null);
-    setInfo(null);
-    try {
-      const body = {
-        enabled: rcloneEnabled,
-        remoteName: rcloneRemoteName || null,
-        remotePath: rcloneRemotePath || null,
-        configText: rcloneConfigText.trim() ? rcloneConfigText.trim() : undefined,
-      };
-      const res = await apiFetch("/api/maintenance/rclone", {
-        method: "PUT",
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        setError(await readApiError(res));
-        return;
-      }
-      const json = (await res.json()) as { status: RcloneStatus };
-      setRcloneStatus(json.status);
-      setRcloneConfigText("");
-      setInfo(t("maintenance.rcloneSaved"));
-    } finally {
-      setSavingRclone(false);
-    }
-  }
-
   async function runSqlRestore() {
     if (!restoreFile) {
       setError(t("maintenance.restorePickFile"));
@@ -239,7 +245,7 @@ export function MaintenancePage() {
     try {
       const fd = new FormData();
       fd.append("file", restoreFile);
-      fd.append("applySchemaExtensions", applySchemaExtensions ? "true" : "false");
+      fd.append("applySchemaExtensions", "false");
       const res = await apiFetch("/api/maintenance/restore-sql", { method: "POST", body: fd });
       const text = await res.text();
       let j: {
@@ -251,6 +257,8 @@ export function MaintenancePage() {
         restored_at?: string;
         bytes?: number;
         database?: string;
+        dma_subscriber_sync?: { usernamesConsidered: number; created: number; updated: number } | null;
+        applied_schema_extensions?: boolean;
       } = {};
       try {
         j = text ? (JSON.parse(text) as typeof j) : {};
@@ -281,7 +289,14 @@ export function MaintenancePage() {
           .replace("{db}", db)
           .replace("{at}", at)
           .replace("{bytes}", bytes);
-        setInfo(`${t("maintenance.restoreSuccess")} ${detail}`);
+        const sync =
+          j.dma_subscriber_sync != null
+            ? `\n${t("maintenance.restoreDmaSyncSummary")
+                .replace("{n}", String(j.dma_subscriber_sync.usernamesConsidered))
+                .replace("{c}", String(j.dma_subscriber_sync.created))
+                .replace("{u}", String(j.dma_subscriber_sync.updated))}`
+            : "";
+        setInfo(`${t("maintenance.restoreSuccess")} ${detail}${sync}`);
         setRestoreFile(null);
         await loadRestoreInfo();
       } else {
@@ -289,6 +304,27 @@ export function MaintenancePage() {
       }
     } finally {
       setRestoring(false);
+    }
+  }
+
+  async function openGoogleDriveConnect() {
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/rclone/google/authorize-url");
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      const json = (await res.json()) as { url?: string };
+      if (!json.url) {
+        setError(t("maintenance.gdriveUrlMissing"));
+        return;
+      }
+      window.open(json.url, "_blank", "noopener,noreferrer");
+      setInfo(t("maintenance.gdrivePopupHint"));
+    } catch {
+      setError(t("maintenance.gdriveUrlMissing"));
     }
   }
 
@@ -311,6 +347,115 @@ export function MaintenancePage() {
     } finally {
       setTestingRclone(false);
     }
+  }
+
+  async function pasteGoogleTokenFromCli() {
+    if (!pasteTokenJson.trim()) {
+      setError(t("maintenance.gdrivePasteTokenEmpty"));
+      return;
+    }
+    setSavingPasteToken(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/rclone/google/paste-token", {
+        method: "POST",
+        body: JSON.stringify({ tokenJson: pasteTokenJson.trim() }),
+      });
+      const raw = await res.text();
+      if (!res.ok) {
+        let errCode = "";
+        try {
+          errCode = (JSON.parse(raw) as { error?: string }).error ?? "";
+        } catch {
+          errCode = "";
+        }
+        if (errCode === "invalid_token_json") {
+          setError(t("maintenance.gdrivePasteTokenInvalid"));
+        } else {
+          setError(raw.trim().slice(0, 400) || res.statusText);
+        }
+        return;
+      }
+      const json = JSON.parse(raw) as { status: RcloneStatus };
+      setRcloneStatus(json.status);
+      setPasteTokenJson("");
+      setInfo(t("maintenance.gdrivePasteTokenOk"));
+      await load();
+    } finally {
+      setSavingPasteToken(false);
+    }
+  }
+
+  async function saveBackupSchedule() {
+    setSavingSchedule(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/backup-schedule", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: scheduleEnabled,
+          mode: scheduleMode,
+          time1: scheduleTime1,
+          time2: scheduleMode === "twice_daily" ? scheduleTime2 : null,
+          retentionDays,
+        }),
+      });
+      const raw = await res.text();
+      if (!res.ok) {
+        let errCode = "";
+        try {
+          errCode = (JSON.parse(raw) as { error?: string }).error ?? "";
+        } catch {
+          errCode = "";
+        }
+        if (res.status === 400 && errCode === "backup_schedule_times_too_close") {
+          setError(t("maintenance.backupScheduleTimesTooClose"));
+        } else {
+          setError(raw.trim().slice(0, 400) || res.statusText);
+        }
+        return;
+      }
+      setInfo(t("maintenance.scheduleSaved"));
+      await load();
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
+  async function deleteSelectedBackups() {
+    if (selectedBackupIds.length === 0) return;
+    if (!window.confirm(t("maintenance.deleteSelectedConfirm").replace("{count}", String(selectedBackupIds.length)))) return;
+    setDeletingMany(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/backups/delete-many", {
+        method: "POST",
+        body: JSON.stringify({ ids: selectedBackupIds }),
+      });
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      setInfo(t("maintenance.deletedSelected").replace("{count}", String(selectedBackupIds.length)));
+      await load();
+    } finally {
+      setDeletingMany(false);
+    }
+  }
+
+  function toggleSelectAll() {
+    if (selectedBackupIds.length === items.length) {
+      setSelectedBackupIds([]);
+      return;
+    }
+    setSelectedBackupIds(items.map((i) => i.id));
+  }
+
+  function toggleSelectOne(id: string) {
+    setSelectedBackupIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   const statusLabel = (status: BackupItem["status"]) => {
@@ -404,14 +549,9 @@ export function MaintenancePage() {
               </div>
             ) : null}
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={applySchemaExtensions}
-              onChange={(e) => setApplySchemaExtensions(e.target.checked)}
-            />
-            {t("maintenance.restoreApplyExtensions")}
-          </label>
+          <p className="text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">
+            {t("maintenance.restoreAutoFollowup")}
+          </p>
           <Button type="button" onClick={() => void runSqlRestore()} disabled={restoring || !restoreFile}>
             <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
             {restoring ? t("common.loading") : t("maintenance.restoreRun")}
@@ -422,32 +562,43 @@ export function MaintenancePage() {
       <Card className="space-y-4">
         <div className="flex items-center gap-2 font-semibold">
           <Link2 className="h-4 w-4" />
-          {t("maintenance.rcloneTitle")}
+          {t("maintenance.gdriveCardTitle")}
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={rcloneEnabled} onChange={(e) => setRcloneEnabled(e.target.checked)} />
-          {t("maintenance.rcloneEnable")}
-        </label>
-        <TextField
-          label={t("maintenance.rcloneRemote")}
-          value={rcloneRemoteName}
-          onChange={(e) => setRcloneRemoteName(e.target.value)}
-          placeholder="gdrive"
-        />
-        <TextField
-          label={t("maintenance.rclonePath")}
-          value={rcloneRemotePath}
-          onChange={(e) => setRcloneRemotePath(e.target.value)}
-          placeholder="future-radius/backups"
-        />
-        <div>
-          <label className="mb-1 block text-sm">{t("maintenance.rcloneConfig")}</label>
+        <div className="space-y-2 rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/20 p-3 text-sm">
+          <div className="font-semibold">{t("maintenance.connectGuideTitle")}</div>
+          <ol className="list-decimal space-y-1 ps-5 text-xs opacity-90">
+            <li>{t("maintenance.connectGuideStep1")}</li>
+            <li>{t("maintenance.connectGuideStep2")}</li>
+            <li>{t("maintenance.connectGuideStep3")}</li>
+            <li>{t("maintenance.connectGuideStep4")}</li>
+          </ol>
+        </div>
+        {rcloneStatus?.google_oauth_available ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => void openGoogleDriveConnect()}>
+                {t("maintenance.gdriveConnectButton")}
+              </Button>
+            </div>
+            <p className="text-xs opacity-70">{t("maintenance.gdriveConnectSub")}</p>
+          </div>
+        ) : null}
+        <div className="space-y-2 rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/10 p-3">
+          <label className="block text-xs font-medium opacity-85">{t("maintenance.gdrivePasteTokenLabel")}</label>
           <textarea
-            className="min-h-28 w-full rounded-xl border border-[hsl(var(--border))] bg-transparent px-3 py-2 text-sm"
-            value={rcloneConfigText}
-            onChange={(e) => setRcloneConfigText(e.target.value)}
-            placeholder={t("maintenance.rcloneConfigHint")}
+            className="h-28 w-full rounded-lg border border-[hsl(var(--border))] bg-transparent px-2 py-1.5 text-xs font-mono"
+            value={pasteTokenJson}
+            onChange={(e) => setPasteTokenJson(e.target.value)}
+            placeholder={t("maintenance.gdrivePasteTokenPlaceholder")}
           />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => void pasteGoogleTokenFromCli()} disabled={savingPasteToken}>
+              {savingPasteToken ? t("common.loading") : t("maintenance.gdrivePasteTokenSubmit")}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void testRcloneConfig()} disabled={testingRclone}>
+              {testingRclone ? t("common.loading") : t("maintenance.rcloneTest")}
+            </Button>
+          </div>
         </div>
         {rcloneStatus ? (
           <div className="text-sm opacity-80">
@@ -462,27 +613,120 @@ export function MaintenancePage() {
             {rcloneStatus.last_error ? <div className="text-xs text-red-300">{rcloneStatus.last_error}</div> : null}
           </div>
         ) : null}
-        <div className="flex gap-2">
-          <Button type="button" onClick={() => void saveRcloneConfig()} disabled={savingRclone}>
-            {savingRclone ? t("common.loading") : t("common.save")}
-          </Button>
-          <Button type="button" variant="outline" onClick={() => void testRcloneConfig()} disabled={testingRclone}>
-            {testingRclone ? t("common.loading") : t("maintenance.rcloneTest")}
+
+        <div className="border-t border-[hsl(var(--border))]/60 pt-4">
+          <div className="mb-2 font-semibold">{t("maintenance.scheduleTitle")}</div>
+          <p className="mb-3 text-sm opacity-80">{t("maintenance.scheduleHint")}</p>
+          <label className="mb-3 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={scheduleEnabled}
+              onChange={(e) => setScheduleEnabled(e.target.checked)}
+            />
+            {t("maintenance.scheduleEnable")}
+          </label>
+          <div className="mb-3 flex flex-wrap gap-4 text-sm">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="sched-mode"
+                checked={scheduleMode === "daily"}
+                onChange={() => setScheduleMode("daily")}
+              />
+              {t("maintenance.scheduleDaily")}
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="sched-mode"
+                checked={scheduleMode === "twice_daily"}
+                onChange={() => setScheduleMode("twice_daily")}
+              />
+              {t("maintenance.scheduleTwice")}
+            </label>
+          </div>
+          <div className="mb-3 flex flex-wrap items-end gap-4">
+            <div>
+              <label className="mb-1 block text-xs opacity-80">{t("maintenance.scheduleTime1")}</label>
+              <input
+                type="time"
+                className="rounded-lg border border-[hsl(var(--border))] bg-transparent px-2 py-1.5 text-sm"
+                value={scheduleTime1.length === 5 ? scheduleTime1 : "03:00"}
+                onChange={(e) => setScheduleTime1(e.target.value)}
+              />
+            </div>
+            {scheduleMode === "twice_daily" ? (
+              <div>
+                <label className="mb-1 block text-xs opacity-80">{t("maintenance.scheduleTime2")}</label>
+                <input
+                  type="time"
+                  className="rounded-lg border border-[hsl(var(--border))] bg-transparent px-2 py-1.5 text-sm"
+                  value={scheduleTime2.length === 5 ? scheduleTime2 : "15:00"}
+                  onChange={(e) => setScheduleTime2(e.target.value)}
+                />
+              </div>
+            ) : null}
+          </div>
+          <div className="mb-3 max-w-xs">
+            <label className="mb-1 block text-xs opacity-80">{t("maintenance.retentionDays")}</label>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              className="w-full rounded-lg border border-[hsl(var(--border))] bg-transparent px-2 py-1.5 text-sm"
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(Math.min(365, Math.max(1, Number(e.target.value || 7))))}
+            />
+            <p className="mt-1 text-xs opacity-70">{t("maintenance.retentionHint")}</p>
+          </div>
+          {rcloneStatus ? (
+            <p className="mb-3 text-xs opacity-70">
+              {t("maintenance.scheduleTimezone")}: {rcloneStatus.schedule_timezone}
+            </p>
+          ) : null}
+          <Button type="button" onClick={() => void saveBackupSchedule()} disabled={savingSchedule}>
+            {savingSchedule ? t("common.loading") : t("maintenance.scheduleSave")}
           </Button>
         </div>
       </Card>
 
       <Card className="overflow-hidden p-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[hsl(var(--border))]/70 px-4 py-3">
+          <div className="text-sm opacity-80">
+            {t("maintenance.selectedBackups").replace("{count}", String(selectedBackupIds.length))}
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => toggleSelectAll()} disabled={items.length === 0}>
+              {selectedBackupIds.length === items.length && items.length > 0
+                ? t("maintenance.unselectAll")
+                : t("maintenance.selectAll")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void deleteSelectedBackups()}
+              disabled={selectedBackupIds.length === 0 || deletingMany}
+            >
+              {deletingMany ? t("common.loading") : t("maintenance.deleteSelected")}
+            </Button>
+          </div>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase opacity-70">
+                <th className="px-4 py-3 text-left">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selectedBackupIds.length === items.length}
+                    onChange={() => toggleSelectAll()}
+                  />
+                </th>
                 <th className="px-4 py-3 text-left">{t("maintenance.status")}</th>
                 <th className="px-4 py-3 text-left">{t("maintenance.startedAt")}</th>
                 <th className="px-4 py-3 text-left">{t("maintenance.file")}</th>
                 <th className="px-4 py-3 text-left">{t("maintenance.size")}</th>
                 <th className="px-4 py-3 text-left">{t("maintenance.local")}</th>
-                <th className="px-4 py-3 text-left">{t("maintenance.drive")}</th>
                 <th className="px-4 py-3 text-left">{t("maintenance.cleanup")}</th>
                 <th className="px-4 py-3 text-right">{t("common.actions")}</th>
               </tr>
@@ -490,7 +734,19 @@ export function MaintenancePage() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id} className="border-b border-[hsl(var(--border))]/50">
-                  <td className={`px-4 py-3 font-semibold ${statusClass(item.status)}`}>{statusLabel(item.status)}</td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedBackupIds.includes(item.id)}
+                      onChange={() => toggleSelectOne(item.id)}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className={`font-semibold ${statusClass(item.status)}`}>{statusLabel(item.status)}</div>
+                    <div className="text-xs opacity-75">
+                      {t("maintenance.drive")}: {item.drive_uploaded ? t("maintenance.uploaded") : t("maintenance.notUploaded")}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">{fmtDate(item.started_at)}</td>
                   <td className="px-4 py-3">
                     <div>{item.file_name || "-"}</div>
@@ -498,7 +754,6 @@ export function MaintenancePage() {
                   </td>
                   <td className="px-4 py-3">{fmtBytes(item.file_size_bytes)}</td>
                   <td className="px-4 py-3">{item.can_download ? t("maintenance.available") : "-"}</td>
-                  <td className="px-4 py-3">{item.drive_uploaded ? t("maintenance.uploaded") : t("maintenance.notUploaded")}</td>
                   <td className="px-4 py-3">
                     {item.local_deleted_count + item.drive_deleted_count > 0
                       ? `${item.local_deleted_count} / ${item.drive_deleted_count}`

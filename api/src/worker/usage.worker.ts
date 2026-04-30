@@ -1,7 +1,7 @@
 import { Redis } from "ioredis";
 import { config } from "../config.js";
 import { pool, waitForDbReady } from "../lib/db.js";
-import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import { hasColumn, hasTable, isRadiusManagerSubscribersPrimary } from "../db/schemaGuards.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { RadiusService } from "../services/radius.service.js";
 import { CoaService, type DisconnectAllReport } from "../services/coa.service.js";
@@ -12,6 +12,7 @@ import { withUsageCycleLock } from "../lib/usage-lock.js";
 import { pushRadiusByUsername } from "../lib/subscriber-radius.js";
 
 let redisLock: Redis | null = null;
+let usageRefreshCycleCounter = 0;
 function getRedisLock(): Redis {
   if (!redisLock) {
     redisLock = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
@@ -61,10 +62,177 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
   coa: CoaService;
 }): Promise<void> {
   const { tenantId, accounting, radius, coa } = opts;
+  let expiredDisabledCount = 0;
+  let quotaDeniedCount = 0;
 
   if (!(await hasTable(pool, "radcheck"))) {
     return;
   }
+
+  /* Radius Manager–only DB: skip full radacct → user_usage_live aggregation (very heavy on large radacct). */
+  if (await isRadiusManagerSubscribersPrimary(pool, tenantId)) {
+    if (!(await hasTable(pool, "user_quota_state"))) {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS user_quota_state (
+          tenant_id CHAR(36) NOT NULL,
+          username VARCHAR(64) NOT NULL,
+          quota_date DATE NOT NULL,
+          enforced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (tenant_id, username, quota_date),
+          KEY idx_uqs_tenant_date (tenant_id, quota_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    }
+    // Fast bulk expiry enforcement for large restored RM datasets.
+    // 1) Immediately block auth by removing radcheck/radreply for expired enabled users.
+    // 2) Mark rm_users.enableuser=0 in one statement.
+    // 3) Best-effort CoA disconnect only for a limited batch to avoid long stalls.
+    if (await hasTable(pool, "radcheck")) {
+      await pool.query(
+        `DELETE rc FROM radcheck rc
+         INNER JOIN rm_users u ON u.username = rc.username
+         WHERE u.expiration IS NOT NULL
+           AND u.expiration < NOW()`
+      );
+    }
+    if (await hasTable(pool, "radreply")) {
+      await pool.query(
+        `DELETE rr FROM radreply rr
+         INNER JOIN rm_users u ON u.username = rr.username
+         WHERE u.expiration IS NOT NULL
+           AND u.expiration < NOW()`
+      );
+    }
+    await pool.query(
+      `UPDATE rm_users
+       SET enableuser = 0
+       WHERE COALESCE(enableuser, 0) = 1
+         AND expiration IS NOT NULL
+         AND expiration < NOW()`
+    );
+    const [expiredCountRows] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS c
+       FROM rm_users
+       WHERE COALESCE(enableuser, 0) = 0
+         AND expiration IS NOT NULL
+         AND expiration < NOW()`
+    );
+    expiredDisabledCount = Number(expiredCountRows[0]?.c ?? 0);
+    const [dueRmKick] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM rm_users
+       WHERE COALESCE(enableuser, 0) = 0
+         AND expiration IS NOT NULL
+         AND expiration < NOW()
+       ORDER BY expiration ASC
+       LIMIT 200`
+    );
+    for (const row of dueRmKick) {
+      const username = String(row.username ?? "");
+      if (!username) continue;
+      await coa.disconnectAllSessions(username, tenantId).catch((e) =>
+        console.error("[usage-worker] dma coa on expiry for", username, e)
+      );
+      try {
+        await emitEvent(Events.USER_EXPIRED, {
+          tenantId,
+          subscriberId: username,
+          username,
+          expirationDate: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.error("[usage-worker] emit USER_EXPIRED failed", e);
+      }
+    }
+
+    // DMA/RM quota enforcement: if today's usage reaches rm_services.combquota, hard deny + disable user.
+    // This prevents exhausted accounts from authenticating even when stale sessions exist.
+    if (await hasTable(pool, "radacct")) {
+      const octMax = await buildSessionOctetMaxExpr();
+      const quotaRmSql = `
+        WITH sess AS (
+          SELECT
+            r.username,
+            r.radacctid,
+            MIN(r.acctstarttime) AS acctstarttime,
+            MAX(r.acctstoptime) AS acctstoptime,
+            MAX(${octMax}) AS session_octets
+          FROM radacct r
+          WHERE r.username <> ''
+            AND (
+              r.acctstoptime IS NULL
+              OR r.acctstoptime >= CURDATE()
+              OR r.acctstarttime >= CURDATE()
+            )
+          GROUP BY r.username, r.radacctid
+        )
+        SELECT
+          u.username,
+          svc.combquota AS quota_total_bytes,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN se.acctstoptime IS NULL THEN
+                  se.session_octets * (
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, GREATEST(se.acctstarttime, CONCAT(CURDATE(), ' 00:00:00')), NOW()))
+                    / NULLIF(GREATEST(1, TIMESTAMPDIFF(SECOND, se.acctstarttime, NOW())), 0)
+                  )
+                WHEN se.acctstoptime IS NOT NULL THEN
+                  se.session_octets * (
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, GREATEST(se.acctstarttime, CONCAT(CURDATE(), ' 00:00:00')), se.acctstoptime))
+                    / NULLIF(GREATEST(1, TIMESTAMPDIFF(SECOND, se.acctstarttime, se.acctstoptime)), 0)
+                  )
+                ELSE 0
+              END
+            ),
+            0
+          ) AS today_bytes
+        FROM rm_users u
+        JOIN rm_services svc ON svc.srvid = u.srvid
+        LEFT JOIN sess se ON se.username = u.username
+        WHERE COALESCE(u.enableuser, 0) = 1
+          AND COALESCE(svc.combquota, 0) > 0
+        GROUP BY u.username, svc.combquota
+        HAVING today_bytes >= svc.combquota
+      `;
+      const [quotaRmRows] = await pool.query<RowDataPacket[]>(quotaRmSql);
+      for (const row of quotaRmRows) {
+        const username = String(row.username ?? "");
+        if (!username) continue;
+        const [already] = await pool.query<RowDataPacket[]>(
+          `SELECT username FROM user_quota_state WHERE tenant_id = ? AND username = ? AND quota_date = CURDATE() LIMIT 1`,
+          [tenantId, username]
+        );
+        if (already[0]) continue;
+        await coa.disconnectAllSessions(username, tenantId).catch((e) =>
+          console.error("[usage-worker] dma coa on quota for", username, e)
+        );
+        await radius.applyQuotaHardDeny(username).catch((e) =>
+          console.error("[usage-worker] dma applyQuotaHardDeny for", username, e)
+        );
+        try {
+          await pool.execute(`UPDATE rm_users SET enableuser = 0 WHERE username = ?`, [username]);
+        } catch {
+          /* ignore */
+        }
+        await pool.execute(
+          `INSERT INTO user_quota_state (tenant_id, username, quota_date)
+           VALUES (?, ?, CURDATE())
+           ON DUPLICATE KEY UPDATE enforced_at = CURRENT_TIMESTAMP`,
+          [tenantId, username]
+        );
+        quotaDeniedCount += 1;
+      }
+    }
+    console.info(
+      `[usage-worker][dma] cycle summary: expired_disabled=${expiredDisabledCount} quota_denied_today=${quotaDeniedCount}`
+    );
+    return;
+  }
+
+  if (!(await hasTable(pool, "subscribers"))) {
+    return;
+  }
+
   if (!(await hasTable(pool, "user_quota_state"))) {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_quota_state (
@@ -78,11 +246,19 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     `);
   }
 
-  await accounting.refreshUsageCache(tenantId);
-  try {
-    await accounting.syncSubscribersUsedBytes(tenantId);
-  } catch (e) {
-    console.error("[usage-worker] syncSubscribersUsedBytes", e);
+  const refreshEveryCycles = Math.max(
+    1,
+    Number.parseInt(process.env.USAGE_CACHE_REFRESH_EVERY_CYCLES ?? "5", 10) || 5
+  );
+  usageRefreshCycleCounter = (usageRefreshCycleCounter + 1) % refreshEveryCycles;
+  const shouldRefreshUsageCache = usageRefreshCycleCounter === 0;
+  if (shouldRefreshUsageCache) {
+    await accounting.refreshUsageCache(tenantId);
+    try {
+      await accounting.syncSubscribersUsedBytes(tenantId);
+    } catch (e) {
+      console.error("[usage-worker] syncSubscribersUsedBytes", e);
+    }
   }
 
   const [due] = await pool.query<RowDataPacket[]>(
@@ -112,6 +288,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     } catch {
       /* rm_users optional */
     }
+    expiredDisabledCount += 1;
   }
 
   const octMax = await buildSessionOctetMaxExpr();
@@ -125,6 +302,11 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
         MAX(${octMax}) AS session_octets
       FROM radacct r
       WHERE r.username <> ''
+        AND (
+          r.acctstoptime IS NULL
+          OR r.acctstoptime >= CURDATE()
+          OR r.acctstarttime >= CURDATE()
+        )
       GROUP BY r.username, r.radacctid
     )
     SELECT
@@ -190,6 +372,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
        ON DUPLICATE KEY UPDATE enforced_at = CURRENT_TIMESTAMP`,
       [tenantId, username]
     );
+    quotaDeniedCount += 1;
   }
 
   // New day: re-push full RADIUS profile for users throttled on a previous calendar day.
@@ -224,6 +407,9 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     }
     await pool.execute(`DELETE FROM user_quota_state WHERE tenant_id = ? AND username = ?`, [tenantId, username]);
   }
+  console.info(
+    `[usage-worker] cycle summary: expired_disabled=${expiredDisabledCount} quota_denied_today=${quotaDeniedCount} restored_next_day=${restoreRows.length}`
+  );
 }
 
 function sleep(ms: number): Promise<void> {

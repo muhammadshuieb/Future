@@ -33,6 +33,7 @@ export class CoaService {
   }
 
   private async getNasServerCoaConfig(nasIp: string, tenantId: string): Promise<NasServerCoaConfig | null> {
+    if (config.dmaMode) return null;
     if (!(await hasTable(this.pool, "nas_servers"))) return null;
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT ip, wireguard_tunnel_ip, coa_port, secret_encrypted

@@ -1,13 +1,26 @@
 import mysql from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
+import type { Pool } from "mysql2/promise";
 import { config } from "../config.js";
+import { assertDmaSqlSafe } from "../dma/dma-sql-guard.js";
 
 export type DbRow = RowDataPacket;
 
+function guardSqlArg(first: unknown): void {
+  if (typeof first === "string") {
+    assertDmaSqlSafe(first);
+    return;
+  }
+  if (first && typeof first === "object" && "sql" in first) {
+    assertDmaSqlSafe(String((first as { sql: unknown }).sql));
+  }
+}
+
 /**
  * Shared MySQL pool (connection reuse). Single source for mysql2/promise.
+ * When DMA_MODE is on, query/execute are guarded against hybrid tables (subscribers, packages, nas_servers).
  */
-export const pool = mysql.createPool({
+const rawPool = mysql.createPool({
   ...config.db,
   waitForConnections: true,
   connectionLimit: 10,
@@ -16,6 +29,20 @@ export const pool = mysql.createPool({
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
 });
+
+const origQuery = rawPool.query.bind(rawPool);
+(rawPool as Pool).query = ((sql: unknown, ...rest: unknown[]) => {
+  guardSqlArg(sql);
+  return (origQuery as (a: unknown, ...r: unknown[]) => unknown)(sql, ...rest);
+}) as Pool["query"];
+
+const origExecute = rawPool.execute.bind(rawPool);
+(rawPool as Pool).execute = ((sql: unknown, ...rest: unknown[]) => {
+  guardSqlArg(sql);
+  return (origExecute as (a: unknown, ...r: unknown[]) => unknown)(sql, ...rest);
+}) as Pool["execute"];
+
+export const pool = rawPool;
 
 // mysql2 Pool typings omit EventEmitter "error"; runtime still emits on connection loss.
 (pool as import("node:events").EventEmitter).on("error", (err: unknown) => {

@@ -1,8 +1,9 @@
 /**
- * عقد توافق قاعدة بيانات Radius Manager (DMA) + FreeRADIUS
- * مُستخرَج من ملف المرجع: radius.sql (نفس تنسيق phpMyAdmin / DMA Softlab).
+ * عقد توافق قاعدة بيانات Radius Manager (DMA) + جداول RADIUS القديمة في التصدير.
+ * مصدر الحقيقة لشكل الجداول داخل المستودع: `sql/radius-dma-baseline.sql`
+ * (نسخة مطابقة لتصدير phpMyAdmin / DMA — سابقاً radius.sql على سطح المكتب).
  *
- * أي مستورد مستقبلي لملف SQL بنفس أسماء الجداول/الأعمدة الحرجة يبقى متوافقاً مع منطق الاستيراد.
+ * أي استعادة SQL بنفس أسماء الجداول/الأعمدة الحرجة تبقى متوافقة مع منطق الاستيراد والتحقق.
  */
 
 /**
@@ -14,7 +15,7 @@ export const DMA_DATABASE_NAME = "radius" as const;
 
 /** ملاحظة: جدول `rm_payments` شائع في نسخ DMA لكنه غير موجود في نسخة radius.sql المرجعية المستخدمة هنا؛ عند ظهوره في نسختك أضف فحوصاً منفصلة. */
 
-/** يُستخدم للتحقق من أن القاعدة تحوي كل جداول ملف radius.sql المرجعي */
+/** يُستخدم للتحقق من أن القاعدة تحوي كل جداول sql/radius-dma-baseline.sql */
 export const DMA_REFERENCE_DUMP_TABLES: readonly string[] = [
   "nas",
   "radacct",
@@ -91,4 +92,7 @@ export const DMA_MINIMUM_COLUMNS: Record<string, readonly string[]> = {
   rm_services: ["srvid", "srvname", "combquota", "dlquota", "ulquota", "enableservice"],
 };
 
-export const CONTRACT_VERSION = "1.0.0-radius-sql-dma-reference";
+/** Optional in some DMA / conntrack exports (not in `radius-dma-baseline.sql`); queried when present. */
+export const DMA_OPTIONAL_TABLES = ["rm_cumulate", "rm_conntrack"] as const;
+
+export const CONTRACT_VERSION = "1.2.0-dma-native-optional-cumulate-conntrack";

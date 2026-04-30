@@ -17,7 +17,11 @@ export type UsageCycleRedisClient = {
 };
 
 const LOCK_PREFIX = "fr:usage-cycle:";
-const TTL_SEC = 120;
+/** Long cycles (large radacct refresh) must not outlive the key or a second worker tick can overlap and peg CPU. */
+const TTL_SEC = Math.min(
+  14_400,
+  Math.max(300, parseInt(process.env.USAGE_CYCLE_LOCK_TTL_SEC ?? "3600", 10) || 3600)
+);
 
 /**
  * Single-flight lock so only one process runs the usage / quota cycle per tenant.

@@ -1,7 +1,21 @@
 import fs from "fs";
 import path from "path";
+import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { invalidateColumnCache } from "../db/schemaGuards.js";
+import { config } from "../config.js";
+
+async function radiusManagerSchemaPresent(): Promise<boolean> {
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS c FROM information_schema.tables
+       WHERE table_schema = DATABASE() AND table_name = 'rm_users'`
+    );
+    return Number(rows[0]?.c ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Directory containing SQL migration files (ordered by filename prefix).
@@ -144,6 +158,16 @@ export async function applyAllMigrations(): Promise<{
   skipped: number;
   benign: number;
 }> {
+  if (config.dmaMode) {
+    console.log("[migrations] DMA_MODE enabled — skipping sql/migrations (DMA schema is the only source of truth)");
+    return { ran: 0, failed: 0, skipped: 0, benign: 0 };
+  }
+  if (await radiusManagerSchemaPresent()) {
+    console.log(
+      "[migrations] rm_users exists — skipping sql/migrations (database follows Radius Manager / radius.sql)"
+    );
+    return { ran: 0, failed: 0, skipped: 0, benign: 0 };
+  }
   const dir = resolveMigrationsDir();
   if (!dir) {
     console.warn("[migrations] no sql/migrations directory found — skipping");

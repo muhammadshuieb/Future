@@ -3,7 +3,7 @@
 
 sql {
     dialect = "mysql"
-    driver = "rlm_sql_${dialect}"
+    driver = "rlm_sql_mysql"
 
     server = "${MYSQL_HOST}"
     port = 3306
@@ -32,15 +32,26 @@ sql {
     connect_timeout = 5
 
     pool {
-        start = 5
-        min = 5
-        max = 20
-        spare = 5
+        start = 2
+        min = 2
+        max = 16
+        spare = 2
         uses = 0
         retry_delay = 30
         lifetime = 0
         idle_timeout = 60
     }
 
-    $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+    $INCLUDE ${modconfdir}/sql/main/${dialect}/queries.conf
+
+    # FreeRADIUS 3.2 reads NAS clients via "generate_sql_clients.query" from queries.conf.
+    # Radius Manager's `nas` table has no `server` column, so override explicitly here.
+    client_query = "\
+        SELECT id, nasname, shortname, type, secret, NULL AS server \
+        FROM nas"
+    generate_sql_clients {
+        query = "\
+            SELECT id, nasname, shortname, type, secret, NULL AS server \
+            FROM nas"
+    }
 }

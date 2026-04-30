@@ -1,7 +1,7 @@
 -- =============================================================================
--- انسخ هنا محتوى ملف التصدير الكامل من phpMyAdmin (نفس محتوى radius.sql السابق).
--- لا تترك هذا الملف مجلداً: المسار الصحيح هو ملف واحد باسم dma-radius-dump.sql
--- بعد اللصق: docker compose build --no-cache mysql && docker compose up -d
+-- تم نقل قاعدة DMA الافتراضية إلى: sql/radius-dma-baseline.sql
+-- (نفس محتوى radius.sql المرجعي — تصدير phpMyAdmin / Radius Manager).
+-- صورة MySQL تنسخ ذلك الملف إلى /opt/futureradius/01-dma-dump.sql عند البناء.
+-- لتحديث المرجع: استبدل sql/radius-dma-baseline.sql ثم: docker compose build mysql
 -- =============================================================================
-SET NAMES utf8mb4;
 SELECT 1;

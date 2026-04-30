@@ -1,6 +1,6 @@
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
-import { getTableColumns } from "../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { encryptSecret, tryDecryptSecret } from "./crypto.service.js";
 
 export type SystemSettingsView = {
@@ -12,6 +12,8 @@ export type SystemSettingsView = {
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
+  billing_currency: "USD" | "SYP" | "TRY";
+  disconnection_method: "nas" | "remote";
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -24,6 +26,37 @@ export type SystemSettingsView = {
   wireguard_server_private_key: string;
   wireguard_server_private_key_set: boolean;
 };
+
+type RmBillingSettings = {
+  billing_currency: "USD" | "SYP" | "TRY";
+  disconnection_method: "nas" | "remote";
+};
+
+function normalizeRmCurrency(raw: unknown): "USD" | "SYP" | "TRY" {
+  const value = String(raw ?? "").trim().toUpperCase();
+  if (value === "TRY" || value === "TR" || value === "TL") return "TRY";
+  if (value === "SYP" || value === "SYR" || value === "SP") return "SYP";
+  return "USD";
+}
+
+function normalizeRmDisconnectionMethod(raw: unknown): "nas" | "remote" {
+  const n = Number(raw ?? 1);
+  return n === 0 ? "nas" : "remote";
+}
+
+async function getRmBillingSettings(): Promise<RmBillingSettings> {
+  if (!(await hasTable(pool, "rm_settings"))) {
+    return { billing_currency: "USD", disconnection_method: "remote" };
+  }
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT currency, disconnmethod FROM rm_settings LIMIT 1`
+  );
+  const row = rows[0] ?? {};
+  return {
+    billing_currency: normalizeRmCurrency(row.currency),
+    disconnection_method: normalizeRmDisconnectionMethod(row.disconnmethod),
+  };
+}
 
 export async function ensureSystemSettings(tenantId: string): Promise<void> {
   await pool.query(`
@@ -88,6 +121,8 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     disconnect_on_update: col.has("disconnect_on_update")
       ? Boolean(Number(row.disconnect_on_update ?? 1))
       : true,
+    billing_currency: "USD",
+    disconnection_method: "remote",
     subscription_license_note: col.has("subscription_license_note")
       ? String(row.subscription_license_note ?? "")
       : "",
@@ -127,7 +162,9 @@ export async function getSystemSettings(tenantId: string): Promise<SystemSetting
     `SELECT * FROM system_settings WHERE tenant_id = ? LIMIT 1`,
     [tenantId]
   );
-  return rowToView(rows[0] ?? {}, col);
+  const base = rowToView(rows[0] ?? {}, col);
+  const rm = await getRmBillingSettings();
+  return { ...base, ...rm };
 }
 
 export type SystemSettingsInput = {
@@ -139,6 +176,8 @@ export type SystemSettingsInput = {
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
+  billing_currency: "USD" | "SYP" | "TRY";
+  disconnection_method: "nas" | "remote";
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -237,5 +276,16 @@ export async function updateSystemSettings(
     ...baseVals,
     tenantId,
   ]);
+  if (await hasTable(pool, "rm_settings")) {
+    await pool.query(
+      `UPDATE rm_settings
+       SET currency = ?, disconnmethod = ?
+       LIMIT 1`,
+      [
+        normalizeRmCurrency(input.billing_currency),
+        input.disconnection_method === "nas" ? 0 : 1,
+      ]
+    );
+  }
   return getSystemSettings(tenantId);
 }

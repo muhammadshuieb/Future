@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
 import { RadiusService } from "../services/radius.service.js";
@@ -18,7 +19,7 @@ import type { RowDataPacket } from "mysql2";
 
 const router = Router();
 const radius = new RadiusService(pool);
-const currencySchema = z.enum(["USD", "SYP"]);
+const currencySchema = z.enum(["USD", "SYP", "TRY"]);
 
 router.use(requireAuth);
 
@@ -48,6 +49,10 @@ const invBody = z.object({
 });
 
 router.post("/generate-monthly", requireRole("admin", "manager", "accountant"), async (req, res) => {
+  if (config.dmaMode) {
+    res.status(410).json({ error: "gone", reason: "dma_mode" });
+    return;
+  }
   if (req.auth!.role === "manager" && !requestHasManagerPermission(req, "manage_invoices")) {
     res.status(403).json({ error: "forbidden", detail: "missing_manager_permission" });
     return;
@@ -95,6 +100,10 @@ const markPaidBody = z.object({
 });
 
 router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), async (req, res) => {
+  if (config.dmaMode) {
+    res.status(410).json({ error: "gone", reason: "dma_mode" });
+    return;
+  }
   if (req.auth!.role === "manager" && !requestHasManagerPermission(req, "manage_invoices")) {
     res.status(403).json({ error: "forbidden", detail: "missing_manager_permission" });
     return;

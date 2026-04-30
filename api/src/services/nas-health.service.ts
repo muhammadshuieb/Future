@@ -3,6 +3,7 @@ import { promisify } from "util";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
+import { config } from "../config.js";
 import { CoaService } from "./coa.service.js";
 import { randomUUID } from "crypto";
 
@@ -37,6 +38,7 @@ export class NasHealthService {
   ) {}
 
   async refreshSessionsCounts(tenantId: string): Promise<void> {
+    if (config.dmaMode) return;
     if (!(await hasTable(this.pool, "radacct"))) return;
     if (!(await hasTable(this.pool, "nas_servers"))) return;
     const col = await getTableColumns(this.pool, "nas_servers");
@@ -62,6 +64,7 @@ export class NasHealthService {
   }
 
   async probeAll(tenantId: string): Promise<NasHealthEvent[]> {
+    if (config.dmaMode) return [];
     if (!(await hasTable(this.pool, "nas_servers"))) return [];
     const col = await getTableColumns(this.pool, "nas_servers");
     const canWriteHealth =

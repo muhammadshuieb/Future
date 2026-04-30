@@ -1,5 +1,5 @@
 /**
- * يتحقق أن قاعدة البيانات المستوردة مطابقة لعقد DMA المرجعي (نفس بنية radius.sql).
+ * يتحقق أن قاعدة البيانات المستوردة مطابقة لعقد DMA المرجعي (نفس بنية sql/radius-dma-baseline.sql).
  */
 import { pool } from "../db/pool.js";
 import { validateDmaDatabase } from "../dma/validateDmaDatabase.js";

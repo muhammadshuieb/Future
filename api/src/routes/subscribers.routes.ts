@@ -2,7 +2,13 @@ import { Router, type Request, type Response } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { getTableColumns, hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
+import {
+  getTableColumns,
+  hasTable,
+  hasColumn,
+  invalidateColumnCache,
+  isRadiusManagerSubscribersPrimary,
+} from "../db/schemaGuards.js";
 import { requireAuth } from "../middleware/auth.js";
 import { routePolicy } from "../middleware/policy.js";
 import { RadiusService } from "../services/radius.service.js";
@@ -23,6 +29,7 @@ import { withTransaction } from "../db/transaction.js";
 import { writeAuditLog } from "../services/audit-log.service.js";
 import type { RowDataPacket } from "mysql2";
 import { resolveSubscriberState } from "../lib/subscriber-state.js";
+import { insertRmUserRow } from "../lib/rm-users-insert.js";
 
 const router = Router();
 const radius = new RadiusService(pool);
@@ -30,6 +37,34 @@ const accounting = new AccountingService(pool);
 const coa = new CoaService(pool);
 
 router.use(requireAuth);
+
+/** Portal `subscribers` row storage is active (not empty-table + rm_users–only mode). */
+async function usePortalSubscribersData(tenantId: string): Promise<boolean> {
+  return (await hasTable(pool, "subscribers")) && !(await isRadiusManagerSubscribersPrimary(pool, tenantId));
+}
+
+/** Subscriber `id` is UUID in legacy mode, or `rm_users.username` in Radius Manager–only databases. */
+async function resolveUsernameForSubscriberId(tenantId: string, id: string): Promise<string | null> {
+  if (await usePortalSubscribersData(tenantId)) {
+    const [subs] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [id, tenantId]
+    );
+    if (subs[0]?.username != null && String(subs[0].username).trim()) {
+      return String(subs[0].username);
+    }
+  }
+  if (await hasTable(pool, "rm_users")) {
+    const [rm] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+      [id]
+    );
+    if (rm[0]?.username != null && String(rm[0].username).trim()) {
+      return String(rm[0].username);
+    }
+  }
+  return null;
+}
 
 function pickExistingColumns(cols: Set<string>, names: string[]): string[] {
   return names.filter((name) => cols.has(name));
@@ -98,7 +133,10 @@ async function deleteSubscriberData(tenantId: string, subscriberId: string, user
       await conn.execute(`DELETE FROM rm_users WHERE username = ?`, [username]);
     }
     if (available.get("subscribers")) {
-      await conn.execute(`DELETE FROM subscribers WHERE id = ? AND tenant_id = ?`, [subscriberId, tenantId]);
+      await conn.execute(`DELETE FROM subscribers WHERE id = ? AND tenant_id = ?`, [
+        subscriberId,
+        tenantId,
+      ]);
     }
     await conn.commit();
   } catch (e) {
@@ -129,6 +167,8 @@ const subscribersQuerySchema = z.object({
     ])
     .default("username"),
   sort_dir: z.enum(["asc", "desc"]).default("asc"),
+  account_type: z.enum(["all", "subscriptions", "cards"]).default("subscriptions"),
+  status_filter: z.enum(["all", "active", "expired", "disabled"]).default("all"),
 });
 
 router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
@@ -143,8 +183,130 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
   const perPage = queryParsed.data.per_page;
   const sortKey = queryParsed.data.sort_key;
   const sortDir = queryParsed.data.sort_dir.toUpperCase() === "DESC" ? "DESC" : "ASC";
+  const accountType = queryParsed.data.account_type;
+  const statusFilter = queryParsed.data.status_filter;
   const offset = (page - 1) * perPage;
+  const activeSessionFreshHours = Math.max(
+    1,
+    Math.min(24 * 30, Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "72", 10) || 72)
+  );
   try {
+    if (await isRadiusManagerSubscribersPrimary(pool, tenant)) {
+      const hasSvc = await hasTable(pool, "rm_services");
+      const svcCols = hasSvc ? await getTableColumns(pool, "rm_services") : new Set<string>();
+      const hasRadacctTbl = await hasTable(pool, "radacct");
+      const where: string[] = ["1=1"];
+      const paramsRm: unknown[] = [];
+      if (q) {
+        const like = `%${q}%`;
+        where.push(
+          `(u.username LIKE ? OR u.firstname LIKE ? OR u.lastname LIKE ? OR u.phone LIKE ? OR u.mobile LIKE ? OR u.email LIKE ? OR u.comment LIKE ? OR u.address LIKE ?)`
+        );
+        for (let i = 0; i < 8; i++) paramsRm.push(like);
+      }
+      // Prepaid cards are managed in rm_cards pages, never in /users list.
+      where.push("u.acctype <> 1");
+      if (hasSvc && svcCols.has("srvtype")) {
+        // Extra guard: some legacy rows can be card accounts with wrong acctype.
+        where.push("COALESCE(svc.srvtype, 0) <> 1");
+      }
+      if (await hasTable(pool, "rm_cards")) {
+        where.push("NOT EXISTS (SELECT 1 FROM rm_cards c WHERE BINARY c.cardnum = BINARY u.username)");
+      }
+      if (statusFilter === "active") {
+        where.push("u.enableuser = 1 AND u.expiration >= CURDATE()");
+      } else if (statusFilter === "expired") {
+        where.push("u.expiration < CURDATE()");
+      } else if (statusFilter === "disabled") {
+        where.push("u.enableuser = 0");
+      }
+      const sortExprByKey: Record<string, string> = {
+        username: "u.username",
+        full_name: "CONCAT(COALESCE(u.firstname,''),COALESCE(u.lastname,''),u.username)",
+        phone: "COALESCE(NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(u.mobile), ''), '')",
+        status: "u.enableuser",
+        package_name: hasSvc ? "svc.srvname" : "CAST(u.srvid AS CHAR)",
+        nas_network: "u.username",
+        region_name: "u.username",
+        created_by: "u.owner",
+        created_at: "u.createdon",
+        start_date: "u.createdon",
+        expiration_date: "u.expiration",
+      };
+      const sortExpr = sortExprByKey[sortKey] ?? "u.username";
+      const joinSvc = hasSvc ? "LEFT JOIN rm_services svc ON svc.srvid = u.srvid" : "";
+      const selectParts = [
+        "u.username AS id",
+        "u.username",
+        "CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status",
+        "CAST(u.srvid AS CHAR) AS package_id",
+        hasSvc ? "svc.srvname AS package_name" : "CAST(u.srvid AS CHAR) AS package_name",
+        "NULL AS nas_server_id",
+        "NULL AS nas_name",
+        "NULL AS nas_ip",
+        "u.createdon AS created_at",
+        "u.createdon AS start_date",
+        "u.expiration AS expiration_date",
+        "NULLIF(TRIM(u.staticipcpe), '') AS ip_address",
+        "NULLIF(TRIM(u.mac), '') AS mac_address",
+        "NULL AS pool",
+        "u.comment AS notes",
+        "u.firstname AS first_name",
+        "u.lastname AS last_name",
+        "NULL AS nickname",
+        "COALESCE(NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(u.mobile), '')) AS phone",
+        "u.address AS address",
+        "NULL AS region_name",
+        "0 AS used_bytes",
+        "NULL AS quota_total_bytes",
+        "NULL AS overdue_invoices_count",
+        "0 AS quota_limited_today",
+        "u.owner AS creator_name",
+        "NULL AS creator_email",
+        "CASE WHEN u.acctype = 1 THEN 'card' ELSE 'subscription' END AS account_type",
+      ];
+      if (hasRadacctTbl) {
+        const hasAcctUpdate = await hasColumn(pool, "radacct", "acctupdatetime");
+        const activeWhere = hasAcctUpdate
+          ? `r_online.acctstoptime IS NULL
+             AND (
+               (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR))
+               OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)
+             )`
+          : `r_online.acctstoptime IS NULL
+             AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)`;
+        selectParts.push(
+          `CASE WHEN EXISTS (
+             SELECT 1 FROM radacct r_online
+             WHERE BINARY r_online.username = BINARY u.username
+               AND ${activeWhere}
+             LIMIT 1
+           ) THEN 1 ELSE 0 END AS is_online`
+        );
+      } else {
+        selectParts.push("0 AS is_online");
+      }
+      const fromSql = ` FROM rm_users u ${joinSvc} WHERE ${where.join(" AND ")}`;
+      const [countRows] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS c${fromSql}`, paramsRm);
+      const total = Number(countRows[0]?.c ?? 0);
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ${selectParts.join(", ")}${fromSql} ORDER BY ${sortExpr} ${sortDir} LIMIT ? OFFSET ?`,
+        [...paramsRm, perPage, offset]
+      );
+      const enriched = rows.map((row) => {
+        const state = resolveSubscriberState({
+          status: String(row.status ?? ""),
+          expirationDate: row.expiration_date ? String(row.expiration_date) : null,
+          quotaTotalBytes: 0,
+          usedBytes: Number(row.used_bytes ?? 0),
+          quotaLimitedToday: false,
+          overdueInvoicesCount: 0,
+        });
+        return { ...row, state };
+      });
+      res.json({ items: enriched, meta: { page, per_page: perPage, total } });
+      return;
+    }
     if (!(await hasTable(pool, "subscribers"))) {
       res.json({ items: [] });
       return;
@@ -248,10 +410,20 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       selectParts.push(`su.email AS creator_email`);
     }
     if (hasRadacctTbl && subCols.has("username")) {
+      const hasAcctUpdate = await hasColumn(pool, "radacct", "acctupdatetime");
+      const activeWhere = hasAcctUpdate
+        ? `r_online.acctstoptime IS NULL
+           AND (
+             (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR))
+             OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)
+           )`
+        : `r_online.acctstoptime IS NULL
+           AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)`;
       selectParts.push(
         `CASE WHEN EXISTS (
           SELECT 1 FROM radacct r_online
-          WHERE BINARY r_online.username = BINARY s.username AND r_online.acctstoptime IS NULL
+          WHERE BINARY r_online.username = BINARY s.username
+            AND ${activeWhere}
           LIMIT 1
         ) THEN 1 ELSE 0 END AS is_online`
       );
@@ -314,6 +486,23 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     }
     const where: string[] = [`s.tenant_id = ?`];
     const params: unknown[] = [tenant];
+    if (statusFilter === "active") {
+      where.push(`COALESCE(s.status, 'active') = 'active' AND (s.expiration_date IS NULL OR s.expiration_date >= CURDATE())`);
+    } else if (statusFilter === "expired") {
+      where.push(`s.expiration_date IS NOT NULL AND s.expiration_date < CURDATE()`);
+    } else if (statusFilter === "disabled") {
+      where.push(`LOWER(TRIM(COALESCE(s.status, ''))) = 'disabled'`);
+    }
+    if (subCols.has("account_type")) {
+      // Keep /users page strictly for subscription accounts.
+      where.push(`COALESCE(s.account_type, 'subscription') <> 'card'`);
+    }
+    if (joinPkg && pkgCols.has("account_type")) {
+      where.push(`LOWER(TRIM(COALESCE(p.account_type, 'subscriptions'))) NOT IN ('card','cards')`);
+    }
+    if (await hasTable(pool, "rm_cards") && subCols.has("username")) {
+      where.push(`NOT EXISTS (SELECT 1 FROM rm_cards c WHERE BINARY c.cardnum = BINARY s.username)`);
+    }
     if (q) {
       const like = `%${q}%`;
       const searchParts: string[] = [];
@@ -387,15 +576,26 @@ router.get(
   routePolicy({ allow: ["admin", "manager"], managerPermission: "manage_subscribers" }),
   async (req: Request, res: Response) => {
     const tenant = req.auth!.tenantId;
-    const [subs] = await pool.query<RowDataPacket[]>(
-      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!subs[0]) {
+    let username: string | undefined;
+    if (await usePortalSubscribersData(tenant)) {
+      const [subs] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [req.params.id, tenant]
+      );
+      username = subs[0]?.username != null ? String(subs[0].username) : undefined;
+    }
+    if (!username && (await hasTable(pool, "rm_users"))) {
+      const [rm] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+        [req.params.id]
+      );
+      username = rm[0]?.username != null ? String(rm[0].username) : undefined;
+    }
+    if (!username) {
       res.status(404).json({ error: "not_found" });
       return;
     }
-    const password = await radius.getCleartextPassword(String(subs[0].username));
+    const password = await radius.getCleartextPassword(username);
     if (!password) {
       res.status(404).json({ error: "password_unavailable" });
       return;
@@ -407,7 +607,8 @@ router.get(
 const createBody = z.object({
   username: z.string().min(1).max(64),
   password: z.string().min(1),
-  package_id: z.string().uuid(),
+  /** Legacy UUID packages row, or Radius Manager `rm_services.srvid` as decimal string. */
+  package_id: z.string().min(1).max(64),
   expiration_date: z.string().optional(),
   start_date: z.string().optional(),
   first_name: z.string().max(128).optional(),
@@ -477,83 +678,141 @@ const createSubscriberHandler = async (req: Request, res: Response) => {
     framedPool: poolName ?? null,
     expirationDate: expiration_date,
   });
-  const id = randomUUID();
-  const enc = encryptSecret(password);
   invalidateColumnCache();
-  const subCol = await getTableColumns(pool, "subscribers");
-  const fields: string[] = [];
-  const vals: (string | number | Buffer | Date | null)[] = [];
-  const push = (f: string, v: string | number | Buffer | Date | null) => {
-    if (subCol.has(f)) {
-      fields.push(f);
-      vals.push(v);
+  let subscriberIdForEvents: string;
+  if (await usePortalSubscribersData(tenant)) {
+    const id = randomUUID();
+    const enc = encryptSecret(password);
+    const subCol = await getTableColumns(pool, "subscribers");
+    const fields: string[] = [];
+    const vals: (string | number | Buffer | Date | null)[] = [];
+    const push = (f: string, v: string | number | Buffer | Date | null) => {
+      if (subCol.has(f)) {
+        fields.push(f);
+        vals.push(v);
+      }
+    };
+    push("id", id);
+    push("tenant_id", tenant);
+    push("username", username);
+    push("status", "active");
+    push("package_id", package_id);
+    push("expiration_date", expiration_date);
+    push("start_date", start_date);
+    push("created_by", staff);
+    push("first_name", first_name ?? null);
+    push("last_name", last_name ?? null);
+    push("nickname", nickname ?? null);
+    push("phone", phone ?? null);
+    push("address", address ?? null);
+    push("region_id", region_id ?? null);
+    push("notes", notes ?? null);
+    push("ip_address", ip_address ?? null);
+    push("mac_address", mac_address ?? null);
+    push("pool", poolName ?? null);
+    push("nas_server_id", nas_server_id ?? null);
+    push("radius_password_encrypted", enc);
+    if (fields.length < 3) {
+      res.status(500).json({
+        error: "subscribers_schema",
+        detail: "subscribers table is missing required columns",
+      });
+      return;
     }
-  };
-  push("id", id);
-  push("tenant_id", tenant);
-  push("username", username);
-  push("status", "active");
-  push("package_id", package_id);
-  push("expiration_date", expiration_date);
-  push("start_date", start_date);
-  push("created_by", staff);
-  push("first_name", first_name ?? null);
-  push("last_name", last_name ?? null);
-  push("nickname", nickname ?? null);
-  push("phone", phone ?? null);
-  push("address", address ?? null);
-  push("region_id", region_id ?? null);
-  push("notes", notes ?? null);
-  push("ip_address", ip_address ?? null);
-  push("mac_address", mac_address ?? null);
-  push("pool", poolName ?? null);
-  push("nas_server_id", nas_server_id ?? null);
-  push("radius_password_encrypted", enc);
-  if (fields.length < 3) {
-    res.status(500).json({
-      error: "subscribers_schema",
-      detail: "subscribers table is missing required columns",
-    });
-    return;
-  }
-  await pool.execute(
-    `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
-    vals as (string | number | Buffer | Date | null)[]
-  );
-  try {
-    const [pkgRows] = await pool.query<RowDataPacket[]>(
-      `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
-      [tenant, package_id]
+    await pool.execute(
+      `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
+      vals as (string | number | Buffer | Date | null)[]
     );
-    const info = pkgRows[0] ?? {};
-    await sendNewSubscriberWhatsApp({
-      tenantId: tenant,
-      subscriberId: id,
-      phone,
-      username,
-      fullName: [first_name, last_name].filter(Boolean).join(" ").trim() || username,
-      password,
-      packageName: String(info.name ?? ""),
-      speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
-      expirationDate: expiration_date,
-    });
-  } catch (e) {
-    console.warn("whatsapp new subscriber notification failed", e);
+    subscriberIdForEvents = id;
+    try {
+      const [pkgRows] = await pool.query<RowDataPacket[]>(
+        `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
+        [tenant, package_id]
+      );
+      const info = pkgRows[0] ?? {};
+      await sendNewSubscriberWhatsApp({
+        tenantId: tenant,
+        subscriberId: id,
+        phone,
+        username,
+        fullName: [first_name, last_name].filter(Boolean).join(" ").trim() || username,
+        password,
+        packageName: String(info.name ?? ""),
+        speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
+        expirationDate: expiration_date,
+      });
+    } catch (e) {
+      console.warn("whatsapp new subscriber notification failed", e);
+    }
+  } else {
+    const srvid = parseInt(String(package_id).trim(), 10);
+    if (!Number.isFinite(srvid)) {
+      res.status(400).json({ error: "invalid_package" });
+      return;
+    }
+    try {
+      await insertRmUserRow(pool, {
+        username,
+        cleartextPassword: password,
+        srvid,
+        expiration: expiration_date,
+        firstname: first_name,
+        lastname: last_name,
+        phone,
+        address,
+        mac: mac_address,
+        comment: notes ?? "",
+        staticipcpe: ip_address,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (String(msg).toLowerCase().includes("duplicate")) {
+        res.status(409).json({ error: "username_taken" });
+        return;
+      }
+      console.error("rm_users insert failed", e);
+      res.status(500).json({ error: "db_error", detail: msg });
+      return;
+    }
+    subscriberIdForEvents = username;
+    let pkgLabel = "";
+    if (await hasTable(pool, "rm_services")) {
+      const [pn] = await pool.query<RowDataPacket[]>(
+        `SELECT srvname FROM rm_services WHERE srvid = ? LIMIT 1`,
+        [srvid]
+      );
+      pkgLabel = String(pn[0]?.srvname ?? "");
+    }
+    try {
+      await sendNewSubscriberWhatsApp({
+        tenantId: tenant,
+        subscriberId: subscriberIdForEvents,
+        phone,
+        username,
+        fullName: [first_name, last_name].filter(Boolean).join(" ").trim() || username,
+        password,
+        packageName: pkgLabel,
+        speed: String(pkg.mikrotik_rate_limit ?? ""),
+        expirationDate: expiration_date,
+      });
+    } catch (e) {
+      console.warn("whatsapp new subscriber notification failed", e);
+    }
   }
   await writeAuditLog(pool, {
     tenantId: tenant,
     staffId: staff,
     action: "create",
     entityType: "subscriber",
-    entityId: id,
+    entityId: subscriberIdForEvents,
     payload: { username, package_id },
   });
   await emitEvent(Events.USER_CREATED, {
     tenantId: tenant,
-    subscriberId: id,
+    subscriberId: subscriberIdForEvents,
     username,
   }).catch(() => {});
-  res.status(201).json({ id, username });
+  res.status(201).json({ id: subscriberIdForEvents, username });
 };
 
 router.post(
@@ -575,7 +834,8 @@ const bulkBody = z.object({
       z.object({
         username: z.string().min(1).max(64),
         password: z.string().min(1),
-        package_id: z.string().uuid(),
+        package_id: z.string().min(1).max(64),
+        account_type: z.enum(["subscription", "card"]).optional(),
         ip_address: z.string().optional(),
         mac_address: z.string().optional(),
         pool: z.string().optional(),
@@ -600,7 +860,8 @@ router.post(
     const created: { id: string; username: string }[] = [];
     const errors: { username: string; error: string }[] = [];
     invalidateColumnCache();
-    const subColBulk = await getTableColumns(pool, "subscribers");
+    const useSubscribersBulk = await usePortalSubscribersData(tenant);
+    const subColBulk = useSubscribersBulk ? await getTableColumns(pool, "subscribers") : null;
     for (const item of parsed.data.items) {
       try {
         const pkg = await radius.getPackage(tenant, item.package_id);
@@ -618,57 +879,77 @@ router.post(
           framedPool: item.pool ?? null,
           expirationDate: exp,
         });
-        const id = randomUUID();
-        const enc = encryptSecret(item.password);
-        const fields: string[] = [];
-        const vals: (string | number | Buffer | Date | null)[] = [];
-        const push = (f: string, v: string | number | Buffer | Date | null) => {
-          if (subColBulk.has(f)) {
-            fields.push(f);
-            vals.push(v);
+        if (useSubscribersBulk && subColBulk) {
+          const id = randomUUID();
+          const enc = encryptSecret(item.password);
+          const fields: string[] = [];
+          const vals: (string | number | Buffer | Date | null)[] = [];
+          const push = (f: string, v: string | number | Buffer | Date | null) => {
+            if (subColBulk.has(f)) {
+              fields.push(f);
+              vals.push(v);
+            }
+          };
+          push("id", id);
+          push("tenant_id", tenant);
+          push("username", item.username);
+          push("status", "active");
+          push("account_type", item.account_type === "card" ? "card" : "subscription");
+          push("package_id", item.package_id);
+          push("expiration_date", exp);
+          push("start_date", new Date());
+          push("created_by", staff);
+          push("ip_address", item.ip_address ?? null);
+          push("mac_address", item.mac_address ?? null);
+          push("pool", item.pool ?? null);
+          push("nas_server_id", item.nas_server_id ?? null);
+          push("radius_password_encrypted", enc);
+          if (fields.length < 3) {
+            errors.push({ username: item.username, error: "subscribers_schema" });
+            continue;
           }
-        };
-        push("id", id);
-        push("tenant_id", tenant);
-        push("username", item.username);
-        push("status", "active");
-        push("package_id", item.package_id);
-        push("expiration_date", exp);
-        push("start_date", new Date()); // CURRENT_TIMESTAMP(3) equivalent via driver
-        push("created_by", staff);
-        push("ip_address", item.ip_address ?? null);
-        push("mac_address", item.mac_address ?? null);
-        push("pool", item.pool ?? null);
-        push("nas_server_id", item.nas_server_id ?? null);
-        push("radius_password_encrypted", enc);
-        if (fields.length < 3) {
-          errors.push({ username: item.username, error: "subscribers_schema" });
-          continue;
-        }
-        await pool.execute(
-          `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
-          vals
-        );
-        try {
-          const [pkgRows] = await pool.query<RowDataPacket[]>(
-            `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
-            [tenant, item.package_id]
+          await pool.execute(
+            `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
+            vals
           );
-          const info = pkgRows[0] ?? {};
-          await sendNewSubscriberWhatsApp({
-            tenantId: tenant,
-            subscriberId: id,
-            phone: null,
+          try {
+            const [pkgRows] = await pool.query<RowDataPacket[]>(
+              `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
+              [tenant, item.package_id]
+            );
+            const info = pkgRows[0] ?? {};
+            await sendNewSubscriberWhatsApp({
+              tenantId: tenant,
+              subscriberId: id,
+              phone: null,
+              username: item.username,
+              password: item.password,
+              packageName: String(info.name ?? ""),
+              speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
+              expirationDate: exp,
+            });
+          } catch (e) {
+            console.warn("whatsapp bulk new subscriber notification failed", e);
+          }
+          created.push({ id, username: item.username });
+        } else {
+          const srvid = parseInt(String(item.package_id).trim(), 10);
+          if (!Number.isFinite(srvid)) {
+            errors.push({ username: item.username, error: "invalid_package" });
+            continue;
+          }
+          await insertRmUserRow(pool, {
             username: item.username,
-            password: item.password,
-            packageName: String(info.name ?? ""),
-            speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
-            expirationDate: exp,
+            cleartextPassword: item.password,
+            srvid,
+            expiration: exp,
+            accountType: item.account_type === "card" ? "card" : "subscription",
+            mac: item.mac_address,
+            staticipcpe: item.ip_address,
+            comment: "",
           });
-        } catch (e) {
-          console.warn("whatsapp bulk new subscriber notification failed", e);
+          created.push({ id: item.username, username: item.username });
         }
-        created.push({ id, username: item.username });
       } catch (e) {
         errors.push({ username: item.username, error: String(e) });
       }
@@ -696,7 +977,8 @@ router.post(
     const created: { id: string; username: string }[] = [];
     const errors: { line: number; error: string }[] = [];
     invalidateColumnCache();
-    const subColCsv = await getTableColumns(pool, "subscribers");
+    const useSubscribersCsv = await usePortalSubscribersData(tenant);
+    const subColCsv = useSubscribersCsv ? await getTableColumns(pool, "subscribers") : null;
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(",").map((c: string) => c.trim());
       const [username, password, package_id, ip_address, mac_address, poolCsv] = cols;
@@ -720,56 +1002,74 @@ router.post(
           framedPool: poolCsv || null,
           expirationDate: exp,
         });
-        const id = randomUUID();
-        const enc = encryptSecret(password);
-        const fields: string[] = [];
-        const vals: (string | number | Buffer | Date | null)[] = [];
-        const push = (f: string, v: string | number | Buffer | Date | null) => {
-          if (subColCsv.has(f)) {
-            fields.push(f);
-            vals.push(v);
+        if (useSubscribersCsv && subColCsv) {
+          const id = randomUUID();
+          const enc = encryptSecret(password);
+          const fields: string[] = [];
+          const vals: (string | number | Buffer | Date | null)[] = [];
+          const push = (f: string, v: string | number | Buffer | Date | null) => {
+            if (subColCsv.has(f)) {
+              fields.push(f);
+              vals.push(v);
+            }
+          };
+          push("id", id);
+          push("tenant_id", tenant);
+          push("username", username);
+          push("status", "active");
+          push("package_id", package_id);
+          push("expiration_date", exp);
+          push("start_date", new Date());
+          push("created_by", staff);
+          push("ip_address", ip_address || null);
+          push("mac_address", mac_address || null);
+          push("pool", poolCsv || null);
+          push("radius_password_encrypted", enc);
+          if (fields.length < 3) {
+            errors.push({ line: i + 1, error: "subscribers_schema" });
+            continue;
           }
-        };
-        push("id", id);
-        push("tenant_id", tenant);
-        push("username", username);
-        push("status", "active");
-        push("package_id", package_id);
-        push("expiration_date", exp);
-        push("start_date", new Date());
-        push("created_by", staff);
-        push("ip_address", ip_address || null);
-        push("mac_address", mac_address || null);
-        push("pool", poolCsv || null);
-        push("radius_password_encrypted", enc);
-        if (fields.length < 3) {
-          errors.push({ line: i + 1, error: "subscribers_schema" });
-          continue;
-        }
-        await pool.execute(
-          `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
-          vals
-        );
-        try {
-          const [pkgRows] = await pool.query<RowDataPacket[]>(
-            `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
-            [tenant, package_id]
+          await pool.execute(
+            `INSERT INTO subscribers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
+            vals
           );
-          const info = pkgRows[0] ?? {};
-          await sendNewSubscriberWhatsApp({
-            tenantId: tenant,
-            subscriberId: id,
-            phone: null,
+          try {
+            const [pkgRows] = await pool.query<RowDataPacket[]>(
+              `SELECT name, mikrotik_rate_limit FROM packages WHERE tenant_id = ? AND id = ? LIMIT 1`,
+              [tenant, package_id]
+            );
+            const info = pkgRows[0] ?? {};
+            await sendNewSubscriberWhatsApp({
+              tenantId: tenant,
+              subscriberId: id,
+              phone: null,
+              username,
+              password,
+              packageName: String(info.name ?? ""),
+              speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
+              expirationDate: exp,
+            });
+          } catch (e) {
+            console.warn("whatsapp csv new subscriber notification failed", e);
+          }
+          created.push({ id, username });
+        } else {
+          const srvid = parseInt(String(package_id).trim(), 10);
+          if (!Number.isFinite(srvid)) {
+            errors.push({ line: i + 1, error: "invalid_package" });
+            continue;
+          }
+          await insertRmUserRow(pool, {
             username,
-            password,
-            packageName: String(info.name ?? ""),
-            speed: String(info.mikrotik_rate_limit ?? pkg.mikrotik_rate_limit ?? ""),
-            expirationDate: exp,
+            cleartextPassword: password,
+            srvid,
+            expiration: exp,
+            mac: mac_address,
+            staticipcpe: ip_address,
+            comment: "",
           });
-        } catch (e) {
-          console.warn("whatsapp csv new subscriber notification failed", e);
+          created.push({ id: username, username });
         }
-        created.push({ id, username });
       } catch (e) {
         errors.push({ line: i + 1, error: String(e) });
       }
@@ -783,15 +1083,11 @@ router.get(
   routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }),
   async (req, res) => {
     const tenant = req.auth!.tenantId;
-    const [subs] = await pool.query<RowDataPacket[]>(
-      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!subs[0]) {
+    const username = await resolveUsernameForSubscriberId(tenant, req.params.id);
+    if (!username) {
       res.status(404).json({ error: "not_found" });
       return;
     }
-    const username = subs[0].username as string;
     const radacct = await accounting.getUserUsage(username);
     const cached = await accounting.getUsageForUser(tenant, username);
     res.json({
@@ -829,15 +1125,11 @@ router.get(
       return;
     }
     const tenant = req.auth!.tenantId;
-    const [subs] = await pool.query<RowDataPacket[]>(
-      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!subs[0]) {
+    const username = await resolveUsernameForSubscriberId(tenant, req.params.id);
+    if (!username) {
       res.status(404).json({ error: "not_found" });
       return;
     }
-    const username = String(subs[0].username ?? "");
     if (!(await hasTable(pool, "radacct"))) {
       res.json({
         username,
@@ -1044,14 +1336,32 @@ router.post(
     return;
   }
   const tenant = req.auth!.tenantId;
-  const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT s.id, s.expiration_date, p.price, p.currency
-     FROM subscribers s
-     LEFT JOIN packages p ON p.id = s.package_id
-     WHERE s.id = ? AND s.tenant_id = ?
-     LIMIT 1`,
-    [req.params.id, tenant]
-  );
+  let subs: RowDataPacket[] = [];
+  if (await usePortalSubscribersData(tenant)) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT s.id, s.expiration_date, p.price, p.currency
+       FROM subscribers s
+       LEFT JOIN packages p ON p.id = s.package_id
+       WHERE s.id = ? AND s.tenant_id = ?
+       LIMIT 1`,
+      [req.params.id, tenant]
+    );
+    subs = r as RowDataPacket[];
+  }
+  if (!subs[0] && (await hasTable(pool, "rm_users"))) {
+    const hasSrv = await hasTable(pool, "rm_services");
+    const [r] = await pool.query<RowDataPacket[]>(
+      hasSrv
+        ? `SELECT u.username AS id, u.expiration AS expiration_date, p.unitprice AS price, 'USD' AS currency
+           FROM rm_users u
+           LEFT JOIN rm_services p ON p.srvid = u.srvid
+           WHERE u.username = ? LIMIT 1`
+        : `SELECT u.username AS id, u.expiration AS expiration_date, 0 AS price, 'USD' AS currency
+           FROM rm_users u WHERE u.username = ? LIMIT 1`,
+      [req.params.id]
+    );
+    subs = r as RowDataPacket[];
+  }
   if (!subs[0]) {
     res.status(404).json({ error: "not_found" });
     return;
@@ -1077,10 +1387,17 @@ router.post(
     }
   }
   const next = extendSubscriptionByDaysNoon(current, parsed.data.extend_days ?? 30);
-  await pool.execute(
-    `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
-    [next, req.params.id, tenant]
-  );
+  if (await usePortalSubscribersData(tenant)) {
+    await pool.execute(
+      `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
+      [next, req.params.id, tenant]
+    );
+  } else {
+    await pool.execute(`UPDATE rm_users SET expiration = ?, enableuser = 1 WHERE username = ?`, [
+      next,
+      req.params.id,
+    ]);
+  }
   try {
     assertRadiusPush(await pushRadiusForSubscriber(pool, radius, tenant, req.params.id));
   } catch (e) {
@@ -1357,7 +1674,7 @@ const patchBody = z.object({
   phone: z.string().max(32).nullable().optional(),
   address: z.string().max(255).nullable().optional(),
   region_id: z.string().uuid().nullable().optional(),
-  package_id: z.string().uuid().optional(),
+  package_id: z.string().min(1).max(64).optional(),
 });
 
 router.patch(
@@ -1370,6 +1687,88 @@ router.patch(
       return;
     }
     const tenant = req.auth!.tenantId;
+    const b = parsed.data;
+    if (await isRadiusManagerSubscribersPrimary(pool, tenant)) {
+      const [rm0] = await pool.query<RowDataPacket[]>(
+        `SELECT username, srvid, enableuser, expiration, staticipcpe, mac FROM rm_users WHERE username = ? LIMIT 1`,
+        [req.params.id]
+      );
+      if (!rm0[0]) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const u = req.params.id;
+      const setsRm: string[] = [];
+      const valsRm: unknown[] = [];
+      if (b.phone !== undefined) {
+        setsRm.push("phone = ?");
+        valsRm.push(b.phone ?? "");
+      }
+      if (b.address !== undefined) {
+        setsRm.push("address = ?");
+        valsRm.push(b.address ?? "");
+      }
+      if (b.first_name !== undefined) {
+        setsRm.push("firstname = ?");
+        valsRm.push(b.first_name ?? "");
+      }
+      if (b.last_name !== undefined) {
+        setsRm.push("lastname = ?");
+        valsRm.push(b.last_name ?? "");
+      }
+      if (b.mac_address !== undefined) {
+        setsRm.push("mac = ?");
+        valsRm.push(b.mac_address ?? "");
+      }
+      if (b.ip_address !== undefined) {
+        setsRm.push("staticipcpe = ?");
+        valsRm.push(b.ip_address ?? "");
+      }
+      if (b.package_id !== undefined) {
+        const srv = parseInt(String(b.package_id).trim(), 10);
+        if (Number.isFinite(srv)) {
+          setsRm.push("srvid = ?");
+          valsRm.push(srv);
+        }
+      }
+      if (setsRm.length) {
+        await pool.query(`UPDATE rm_users SET ${setsRm.join(", ")} WHERE username = ?`, [...valsRm, u]);
+      }
+      const [rm1] = await pool.query<RowDataPacket[]>(
+        `SELECT username, srvid, enableuser, expiration, staticipcpe, mac FROM rm_users WHERE username = ? LIMIT 1`,
+        [u]
+      );
+      const row = rm1[0];
+      if (row && Number(row.enableuser) === 1) {
+        const pkgId = String(row.srvid ?? "");
+        const pkg = await radius.getPackage(tenant, pkgId);
+        if (pkg) {
+          const password = await radius.getCleartextPassword(String(row.username));
+          if (password) {
+            const expPatch = new Date(String(row.expiration ?? ""));
+            await radius.createRadiusUser({
+              username: String(row.username),
+              password,
+              package: pkg,
+              framedIp: row.staticipcpe != null ? String(row.staticipcpe) : null,
+              macLock: row.mac != null ? String(row.mac) : null,
+              framedPool: b.pool ?? null,
+              expirationDate: Number.isNaN(expPatch.getTime()) ? null : expPatch,
+            });
+          }
+        }
+      }
+      await writeAuditLog(pool, {
+        tenantId: tenant,
+        staffId: req.auth!.sub,
+        action: "update",
+        entityType: "subscriber",
+        entityId: req.params.id,
+        payload: parsed.data,
+      });
+      res.json({ ok: true });
+      return;
+    }
     const [subs] = await pool.query<RowDataPacket[]>(
       `SELECT * FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
       [req.params.id, tenant]
@@ -1378,7 +1777,6 @@ router.patch(
       res.status(404).json({ error: "not_found" });
       return;
     }
-    const b = parsed.data;
     invalidateColumnCache();
     const subCols = await getTableColumns(pool, "subscribers");
     const sets: string[] = [];
@@ -1490,15 +1888,25 @@ router.patch(
 
 const disableByIdHandler = async (req: Request, res: Response) => {
   const tenant = req.auth!.tenantId;
-  const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-    [req.params.id, tenant]
-  );
-  if (!subs[0]) {
+  let username: string | undefined;
+  if (await hasTable(pool, "subscribers")) {
+    const [subs] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, tenant]
+    );
+    username = subs[0]?.username != null ? String(subs[0].username) : undefined;
+  }
+  if (!username && (await hasTable(pool, "rm_users"))) {
+    const [rm] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+      [req.params.id]
+    );
+    username = rm[0]?.username != null ? String(rm[0].username) : undefined;
+  }
+  if (!username) {
     res.status(404).json({ error: "not_found" });
     return;
   }
-  const username = subs[0].username as string;
   try {
     const rep = await coa.disconnectAllSessions(username, tenant);
     if (rep && !rep.anyOk) {
@@ -1508,10 +1916,12 @@ const disableByIdHandler = async (req: Request, res: Response) => {
     console.error("[subscribers] coa on disable", e);
   }
   await radius.disableRadiusUser(username);
-  await pool.execute(`UPDATE subscribers SET status = 'disabled' WHERE id = ? AND tenant_id = ?`, [
-    req.params.id,
-    tenant,
-  ]);
+  if (await usePortalSubscribersData(tenant)) {
+    await pool.execute(`UPDATE subscribers SET status = 'disabled' WHERE id = ? AND tenant_id = ?`, [
+      req.params.id,
+      tenant,
+    ]);
+  }
   try {
     await pool.execute(`UPDATE rm_users SET enableuser = 0 WHERE username = ?`, [username]);
   } catch {
@@ -1532,7 +1942,7 @@ router.post(
   async (req: Request, res: Response) => {
     const parsed = z
       .object({
-        ids: z.array(z.string().uuid()).min(1).max(500),
+        ids: z.array(z.string().min(1).max(64)).min(1).max(500),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -1542,16 +1952,30 @@ router.post(
     const tenant = req.auth!.tenantId;
     const deleted: string[] = [];
     const missing: string[] = [];
+    const useSubscribersBulkDel = await usePortalSubscribersData(tenant);
     for (const id of parsed.data.ids) {
-      const [subs] = await pool.query<RowDataPacket[]>(
-        `SELECT id, username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-        [id, tenant]
-      );
-      if (!subs[0]) {
-        missing.push(id);
-        continue;
+      let subscriberId = id;
+      let username: string | null = null;
+      if (useSubscribersBulkDel) {
+        const [subs] = await pool.query<RowDataPacket[]>(
+          `SELECT id, username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+          [id, tenant]
+        );
+        if (!subs[0]) {
+          missing.push(id);
+          continue;
+        }
+        subscriberId = String(subs[0].id);
+        username = String(subs[0].username);
+      } else {
+        username = await resolveUsernameForSubscriberId(tenant, id);
+        if (!username) {
+          missing.push(id);
+          continue;
+        }
+        subscriberId = username;
       }
-      await deleteSubscriberData(tenant, String(subs[0].id), String(subs[0].username));
+      await deleteSubscriberData(tenant, subscriberId, username);
       deleted.push(id);
     }
     await writeAuditLog(pool, {
@@ -1570,22 +1994,35 @@ router.delete(
   routePolicy({ allow: ["admin", "manager"], managerPermission: "manage_subscribers" }),
   async (req: Request, res: Response) => {
     const tenant = req.auth!.tenantId;
-    const [subs] = await pool.query<RowDataPacket[]>(
-      `SELECT id, username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!subs[0]) {
-      res.status(404).json({ error: "not_found" });
-      return;
+    let subscriberId = req.params.id;
+    let username: string | null = null;
+    if (await usePortalSubscribersData(tenant)) {
+      const [subs] = await pool.query<RowDataPacket[]>(
+        `SELECT id, username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [req.params.id, tenant]
+      );
+      if (!subs[0]) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      subscriberId = String(subs[0].id);
+      username = String(subs[0].username);
+    } else {
+      username = await resolveUsernameForSubscriberId(tenant, req.params.id);
+      if (!username) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      subscriberId = username;
     }
-    await deleteSubscriberData(tenant, String(subs[0].id), String(subs[0].username));
+    await deleteSubscriberData(tenant, subscriberId, username);
     await writeAuditLog(pool, {
       tenantId: tenant,
       staffId: req.auth!.sub,
       action: "delete",
       entityType: "subscriber",
       entityId: req.params.id,
-      payload: { username: String(subs[0].username) },
+      payload: { username: String(username) },
     });
     res.json({ ok: true });
   }
@@ -1607,19 +2044,16 @@ router.post(
     res.status(400).json({ error: r.reason });
     return;
   }
-  await pool.execute(`UPDATE subscribers SET status = 'active' WHERE id = ? AND tenant_id = ?`, [
-    req.params.id,
-    tenant,
-  ]);
+  if (await usePortalSubscribersData(tenant)) {
+    await pool.execute(`UPDATE subscribers SET status = 'active' WHERE id = ? AND tenant_id = ?`, [
+      req.params.id,
+      tenant,
+    ]);
+  }
   try {
-    const [subs] = await pool.query<RowDataPacket[]>(
-      `SELECT username FROM subscribers WHERE id = ? LIMIT 1`,
-      [req.params.id]
-    );
-    if (subs[0]) {
-      await pool.execute(`UPDATE rm_users SET enableuser = 1 WHERE username = ?`, [
-        subs[0].username as string,
-      ]);
+    const un = await resolveUsernameForSubscriberId(tenant, req.params.id);
+    if (un) {
+      await pool.execute(`UPDATE rm_users SET enableuser = 1 WHERE username = ?`, [un]);
     }
   } catch {
     /* ignore */
@@ -1647,13 +2081,31 @@ router.post(
     return;
   }
   const tenant = req.auth!.tenantId;
-  const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT s.id, s.expiration_date, p.price, p.currency
-     FROM subscribers s
-     LEFT JOIN packages p ON p.id = s.package_id
-     WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
-    [req.params.id, tenant]
-  );
+  let subs: RowDataPacket[] = [];
+  if (await usePortalSubscribersData(tenant)) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT s.id, s.expiration_date, p.price, p.currency
+       FROM subscribers s
+       LEFT JOIN packages p ON p.id = s.package_id
+       WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
+      [req.params.id, tenant]
+    );
+    subs = r as RowDataPacket[];
+  }
+  if (!subs[0] && (await hasTable(pool, "rm_users"))) {
+    const hasSrv = await hasTable(pool, "rm_services");
+    const [r] = await pool.query<RowDataPacket[]>(
+      hasSrv
+        ? `SELECT u.username AS id, u.expiration AS expiration_date, p.unitprice AS price, 'USD' AS currency
+           FROM rm_users u
+           LEFT JOIN rm_services p ON p.srvid = u.srvid
+           WHERE u.username = ? LIMIT 1`
+        : `SELECT u.username AS id, u.expiration AS expiration_date, 0 AS price, 'USD' AS currency
+           FROM rm_users u WHERE u.username = ? LIMIT 1`,
+      [req.params.id]
+    );
+    subs = r as RowDataPacket[];
+  }
   if (!subs[0]) {
     res.status(404).json({ error: "not_found" });
     return;
@@ -1679,10 +2131,17 @@ router.post(
     }
   }
   const next = extendSubscriptionByDaysNoon(current, parsed.data.extend_days ?? 30);
-  await pool.execute(
-    `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
-    [next, req.params.id, tenant]
-  );
+  if (await usePortalSubscribersData(tenant)) {
+    await pool.execute(
+      `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
+      [next, req.params.id, tenant]
+    );
+  } else {
+    await pool.execute(`UPDATE rm_users SET expiration = ?, enableuser = 1 WHERE username = ?`, [
+      next,
+      req.params.id,
+    ]);
+  }
   try {
     assertRadiusPush(await pushRadiusForSubscriber(pool, radius, tenant, req.params.id));
   } catch (e) {

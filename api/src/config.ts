@@ -43,7 +43,17 @@ function parseCorsOrigins(): string[] | "all" {
 
 const parsedUrl = parseDatabaseUrl(process.env.DATABASE_URL ?? defaultDatabaseUrl);
 
+const dmaModeRaw = String(process.env.DMA_MODE ?? "")
+  .trim()
+  .toLowerCase();
+const dmaMode = dmaModeRaw === "1" || dmaModeRaw === "true" || dmaModeRaw === "yes";
+
 export const config = {
+  /**
+   * Pure Radius Manager (DMA) mode: no sql/migrations, no usage sync into parallel tables,
+   * restore is raw SQL import only. Portal and dashboard read rm_*, rad*, and nas tables directly.
+   */
+  dmaMode,
   nodeEnv,
   /** Current schema from DATABASE_URL (actual connection). */
   databaseName: parsedUrl.database,
@@ -67,4 +77,18 @@ export const config = {
   /** Comma-separated origins, or omit / * for permissive dev (still tighten in prod via CORS_ORIGINS) */
   corsOrigins: parseCorsOrigins(),
   db: parsedUrl,
+  /**
+   * Public URL of this API (scheme + host + optional port). Used for Google OAuth redirect_uri.
+   * Example: https://panel.example.com or http://localhost:3000
+   */
+  publicAppUrl: (process.env.PUBLIC_APP_URL ?? "").trim() || `http://localhost:${parseInt(process.env.PORT ?? "3000", 10)}`,
+  /** Where the browser returns after Google OAuth (Vite dev server or production panel). */
+  publicFrontendUrl: (process.env.PUBLIC_FRONTEND_URL ?? "").trim() || "http://localhost:5173",
+  /** Web OAuth client for “Connect Google Drive” backup upload (Google Cloud Console). */
+  googleBackupOAuth: {
+    clientId: (process.env.GOOGLE_BACKUP_CLIENT_ID ?? "").trim(),
+    clientSecret: (process.env.GOOGLE_BACKUP_CLIENT_SECRET ?? "").trim(),
+  },
+  /** IANA timezone for scheduled backups (worker + UI display). */
+  appTimezone: (process.env.APP_TIMEZONE ?? "Asia/Damascus").trim() || "Asia/Damascus",
 };

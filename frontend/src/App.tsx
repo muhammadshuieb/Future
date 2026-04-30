@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
 import { LocaleProvider } from "./context/LocaleContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { FinancePeriodProvider } from "./context/FinancePeriodContext";
 import { AdminShell } from "./layouts/AdminShell";
 import { LoginPage } from "./pages/Login";
 import { DashboardPage } from "./pages/Dashboard";
@@ -29,7 +30,10 @@ import { ObservabilityPage } from "./pages/Observability";
 import { ServerLogsPage } from "./pages/ServerLogs";
 import { SubscriberPublicPortalPage } from "./pages/SubscriberPublicPortal";
 import { CardBatchPage } from "./pages/CardBatch";
+import { PrepaidCardsListPage } from "./pages/PrepaidCardsList";
 import { WireGuardPage } from "./pages/WireGuard";
+import { FinanceDashboardPage } from "./pages/FinanceDashboard";
+import { UpdatesPage } from "./pages/Updates";
 
 function ProtectedAdmin({ children }: { children: React.ReactElement }) {
   const { user } = useAuth();
@@ -53,7 +57,10 @@ function AppRoutes() {
         }
       >
         <Route index element={<DashboardPage />} />
+        <Route path="finance-dashboard" element={<FinanceDashboardPage />} />
         <Route path="users" element={<UsersPage />} />
+        <Route path="users/prepaid-cards" element={<CardBatchPage />} />
+        <Route path="users/prepaid-cards-list" element={<PrepaidCardsListPage />} />
         <Route path="subscriber-zones" element={<SubscriberZonesPage />} />
         <Route path="users/:id" element={<UserProfilePage />} />
         <Route path="packages" element={<PackagesPage />} />
@@ -65,12 +72,13 @@ function AppRoutes() {
         <Route path="online-users" element={<OnlineUsersPage />} />
         <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />
         <Route path="inventory/categories" element={<ExpenseCategoriesPage />} />
-        <Route path="inventory/cards" element={<CardBatchPage />} />
+        <Route path="inventory/cards" element={<Navigate to="/users/prepaid-cards" replace />} />
         <Route path="inventory/expenses" element={<ExpensesPage />} />
         <Route path="staff" element={<StaffUsersPage />} />
         <Route path="staff/roles-permissions" element={<RolesPermissionsPage />} />
         <Route path="staff/audit" element={<AuditLogsPage />} />
         <Route path="maintenance" element={<MaintenancePage />} />
+        <Route path="maintenance/updates" element={<UpdatesPage />} />
         <Route path="wireguard" element={<WireGuardPage />} />
         <Route path="whatsapp" element={<Navigate to="/whatsapp/connection" replace />} />
         <Route path="whatsapp/connection" element={<WhatsAppConnectionPage />} />
@@ -89,9 +97,11 @@ export default function App() {
     <ThemeProvider>
       <LocaleProvider>
         <AuthProvider>
-          <BrowserRouter>
-            <AppRoutes />
-          </BrowserRouter>
+          <FinancePeriodProvider>
+            <BrowserRouter>
+              <AppRoutes />
+            </BrowserRouter>
+          </FinancePeriodProvider>
         </AuthProvider>
       </LocaleProvider>
     </ThemeProvider>

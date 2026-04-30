@@ -35,6 +35,7 @@ import {
   CreditCard,
   KeyRound,
   HardDrive,
+  ArrowUpCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -140,21 +141,27 @@ export function AdminShell() {
   const canManageWhatsApp = user?.role === "admin" || user?.role === "manager";
   const isSubscribersRoute =
     location.pathname.startsWith("/users") ||
+    location.pathname.startsWith("/users/prepaid-cards") ||
+    location.pathname.startsWith("/users/prepaid-cards-list") ||
     location.pathname.startsWith("/packages") ||
-    location.pathname.startsWith("/billing") ||
     location.pathname.startsWith("/subscriber-zones") ||
     location.pathname.startsWith("/online-users");
   const isStaffRoute = location.pathname.startsWith("/staff");
-  const isInventoryRoute = location.pathname.startsWith("/inventory");
+  const isFinanceRoute =
+    location.pathname.startsWith("/finance-dashboard") ||
+    location.pathname.startsWith("/accounting") ||
+    location.pathname.startsWith("/billing") ||
+    location.pathname.startsWith("/inventory");
   const isWhatsAppRoute = location.pathname.startsWith("/whatsapp");
   const isMaintenanceRoute =
     location.pathname.startsWith("/maintenance") ||
+    location.pathname.startsWith("/maintenance/updates") ||
     location.pathname.startsWith("/wireguard") ||
     location.pathname.startsWith("/observability") ||
     location.pathname.startsWith("/server-logs");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
-  const [inventoryOpen, setInventoryOpen] = useState(isInventoryRoute);
+  const [financeOpen, setFinanceOpen] = useState(isFinanceRoute);
   const [whatsAppOpen, setWhatsAppOpen] = useState(isWhatsAppRoute);
   const [maintenanceOpen, setMaintenanceOpen] = useState(isMaintenanceRoute);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -169,8 +176,8 @@ export function AdminShell() {
     if (isStaffRoute) setStaffOpen(true);
   }, [isStaffRoute]);
   useEffect(() => {
-    if (isInventoryRoute) setInventoryOpen(true);
-  }, [isInventoryRoute]);
+    if (isFinanceRoute) setFinanceOpen(true);
+  }, [isFinanceRoute]);
   useEffect(() => {
     if (isMaintenanceRoute) setMaintenanceOpen(true);
   }, [isMaintenanceRoute]);
@@ -181,7 +188,6 @@ export function AdminShell() {
 
   const nav: NavItem[] = [
     { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, tone: "indigo" },
-    { to: "/accounting", labelKey: "nav.accounting", icon: Activity, tone: "emerald" },
     { to: "/nas", labelKey: "nav.nas", icon: Server, tone: "cyan" },
     { to: "/settings", labelKey: "nav.settings", icon: Settings, tone: "slate" },
   ];
@@ -189,6 +195,7 @@ export function AdminShell() {
     user?.role === "admin" || user?.role === "manager"
       ? ([
           { to: "/maintenance", labelKey: "nav.backups", icon: HardDrive, tone: "orange" },
+          { to: "/maintenance/updates", labelKey: "nav.updates", icon: ArrowUpCircle, tone: "emerald" },
           { to: "/wireguard", labelKey: "nav.wireguard", icon: KeyRound, tone: "sky" },
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
@@ -205,15 +212,19 @@ export function AdminShell() {
     { to: "/staff/roles-permissions", labelKey: "nav.rolesPermissions", icon: UserCog, tone: "amber" },
     { to: "/staff/audit", labelKey: "nav.auditLogs", icon: ClipboardList, tone: "teal" },
   ];
-  const inventoryNav: NavItem[] = [
-    { to: "/inventory/categories", labelKey: "nav.expenseCategories", icon: Tag, tone: "yellow" },
-    { to: "/inventory/cards", labelKey: "nav.cardBatch", icon: CreditCard, tone: "fuchsia" },
+  const financeNav: NavItem[] = [
+    { to: "/finance-dashboard", labelKey: "nav.financeDashboard", icon: Activity, tone: "emerald" },
+    { to: "/billing", labelKey: "nav.invoicesItem", icon: ReceiptText, tone: "emerald" },
+    { to: "/accounting", labelKey: "nav.accounting", icon: Radio, tone: "green" },
     { to: "/inventory/expenses", labelKey: "nav.expenses", icon: Boxes, tone: "orange" },
+    { to: "/inventory/categories", labelKey: "nav.expenseCategories", icon: Tag, tone: "yellow" },
   ];
   const subscribersNav: NavItem[] = [
     { to: "/packages", labelKey: "nav.subscriberPlans", icon: Package, tone: "violet" },
     { to: "/subscriber-zones", labelKey: "nav.subscriberZones", icon: MapPin, tone: "rose" },
     { to: "/users", labelKey: "nav.subscribersItem", icon: Wifi, tone: "blue" },
+    { to: "/users/prepaid-cards", labelKey: "nav.prepaidCards", icon: CreditCard, tone: "fuchsia" },
+    { to: "/users/prepaid-cards-list", labelKey: "nav.prepaidCardsList", icon: FileText, tone: "purple" },
     { to: "/online-users", labelKey: "nav.onlineUsers", icon: Radio, tone: "green" },
     { to: "/billing", labelKey: "nav.invoicesItem", icon: ReceiptText, tone: "emerald" },
   ];
@@ -321,17 +332,17 @@ export function AdminShell() {
             </>
           ) : null}
 
-          {/* Expenses group */}
+          {/* Finance group */}
           <GroupButton
-            open={inventoryOpen}
-            onToggle={() => setInventoryOpen((v) => !v)}
-            active={isInventoryRoute}
-            label={t("nav.expensesGroup")}
+            open={financeOpen}
+            onToggle={() => setFinanceOpen((v) => !v)}
+            active={isFinanceRoute}
+            label={t("nav.financeGroup")}
             Icon={FolderKanban}
-            tone="orange"
+            tone="emerald"
           />
-          {inventoryOpen
-            ? inventoryNav.map(({ to, labelKey, icon: Icon, tone }) => (
+          {financeOpen
+            ? financeNav.map(({ to, labelKey, icon: Icon, tone }) => (
                 <NavLink
                   key={to}
                   to={to}

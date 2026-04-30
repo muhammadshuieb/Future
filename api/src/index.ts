@@ -13,7 +13,7 @@ import { config } from "./config.js";
 import type { JwtPayload } from "./middleware/auth.js";
 import authRoutes from "./routes/auth.routes.js";
 import subscribersRoutes from "./routes/subscribers.js";
-import { waitForDbReady } from "./lib/db.js";
+import { waitForDbReady, pool } from "./lib/db.js";
 import packagesRoutes from "./routes/packages.routes.js";
 import invoicesRoutes from "./routes/invoices.routes.js";
 import paymentsRoutes from "./routes/payments.routes.js";
@@ -26,7 +26,9 @@ import notificationsRoutes from "./routes/notifications.routes.js";
 import adminBackupRoutes from "./routes/admin-backup.routes.js";
 import staffRoutes from "./routes/staff.routes.js";
 import maintenanceRestoreSqlRoutes from "./routes/maintenance-restore-sql.routes.js";
+import maintenanceGoogleCallbackRoutes from "./routes/maintenance-google-callback.routes.js";
 import maintenanceRoutes from "./routes/maintenance.routes.js";
+import maintenanceUpdatesRoutes from "./routes/maintenance-updates.routes.js";
 import whatsappRoutes from "./routes/whatsapp.routes.js";
 import onlineUsersRoutes from "./routes/online-users.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
@@ -35,11 +37,18 @@ import serverLogsRoutes from "./routes/server-logs.routes.js";
 import systemSettingsRoutes from "./routes/system-settings.routes.js";
 import wireguardRoutes from "./routes/wireguard.routes.js";
 import regionsRoutes from "./routes/regions.routes.js";
+import rmCardsRoutes from "./routes/rm-cards.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
+import {
+  ensurePortalTenantAndStaffTables,
+  logRadiusManagerUserCount,
+} from "./services/portal-schema-bootstrap.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
 import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
 import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
+import { logDmaSchemaSnapshot } from "./services/dma-schema-snapshot.service.js";
+import { DmaForbiddenHybridSqlError } from "./dma/dma-sql-guard.js";
 
 const app = express();
 app.use(helmet());
@@ -67,6 +76,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/api/auth", authRoutes);
 app.use("/api/subscribers", subscribersRoutes);
 app.use("/api/packages", packagesRoutes);
+app.use("/packages", packagesRoutes);
 app.use("/api/invoices", invoicesRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/nas", nasRoutes);
@@ -77,8 +87,10 @@ app.use("/api/inventory", inventoryRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/admin", adminBackupRoutes);
 app.use("/api/staff", staffRoutes);
+app.use("/api/maintenance", maintenanceGoogleCallbackRoutes);
 app.use("/api/maintenance", maintenanceRestoreSqlRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
+app.use("/api/maintenance", maintenanceUpdatesRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/online-users", onlineUsersRoutes);
 app.use("/api/audit", auditRoutes);
@@ -87,11 +99,24 @@ app.use("/api/server-logs", serverLogsRoutes);
 app.use("/api/system-settings", systemSettingsRoutes);
 app.use("/api/wireguard", wireguardRoutes);
 app.use("/api/regions", regionsRoutes);
+app.use("/api/rm-cards", rmCardsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
 // Must be declared AFTER all routes.
 app.use(
   (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err instanceof DmaForbiddenHybridSqlError) {
+      log.error(`dma_sql_guard ${req.method} ${req.originalUrl}: ${err.message}`, {
+        method: req.method,
+        url: req.originalUrl,
+        table: err.table,
+        status: 409,
+      }, "http");
+      if (!res.headersSent) {
+        res.status(409).json({ error: "dma_hybrid_sql_forbidden", table: err.table });
+      }
+      return;
+    }
     const e = err instanceof Error ? err : new Error(String(err));
     log.error(`http_error ${req.method} ${req.originalUrl}: ${e.message}`, {
       method: req.method,
@@ -151,12 +176,27 @@ subRedis.on("message", (_channel: string, message: string) => {
 async function start() {
   await waitForDbReady();
   try {
+    await ensurePortalTenantAndStaffTables();
+  } catch (error) {
+    console.error("[bootstrap] portal schema (tenants/staff) failed", error);
+  }
+  try {
     const report = await applyAllMigrations();
     console.log(
-      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped} benign=${report.benign}`
+      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped} benign=${report.benign}${config.dmaMode ? " (DMA_MODE)" : ""}`
     );
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);
+  }
+  try {
+    await logRadiusManagerUserCount();
+  } catch (error) {
+    console.error("[bootstrap] rm_users count log failed", error);
+  }
+  try {
+    await logDmaSchemaSnapshot(pool);
+  } catch (error) {
+    console.error("[bootstrap] dma schema snapshot failed", error);
   }
   // From this point `server_logs` should exist — flush anything buffered.
   markDbReady();

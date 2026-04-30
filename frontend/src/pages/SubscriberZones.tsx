@@ -111,6 +111,7 @@ export function SubscriberZonesPage() {
   const [items, setItems] = useState<Region[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [modal, setModal] = useState(false);
   const [parentId, setParentId] = useState<string>("");
   const [newName, setNewName] = useState("");
@@ -163,12 +164,14 @@ export function SubscriberZonesPage() {
   function openAddRoot() {
     setParentId("");
     setNewName("");
+    setModalError(null);
     setModal(true);
   }
 
   function openAddChild(id: string) {
     setParentId(id);
     setNewName("");
+    setModalError(null);
     setModal(true);
   }
 
@@ -177,7 +180,7 @@ export function SubscriberZonesPage() {
     const name = newName.trim();
     if (!name) return;
     setSaving(true);
-    setMsg(null);
+    setModalError(null);
     try {
       const r = await apiFetch("/api/regions/", {
         method: "POST",
@@ -188,7 +191,7 @@ export function SubscriberZonesPage() {
       });
       if (!r.ok) {
         const raw = await readApiError(r);
-        setMsg({ type: "err", text: formatStaffApiError(r.status, raw, t) });
+        setModalError(formatStaffApiError(r.status, raw, t));
         return;
       }
       setModal(false);
@@ -267,12 +270,18 @@ export function SubscriberZonesPage() {
       <Modal
         open={modal}
         onClose={() => {
+          setModalError(null);
           setModal(false);
         }}
         title={parentId ? t("subscriberZones.addChild") : t("subscriberZones.addRoot")}
         wide
       >
         <form onSubmit={onCreateRegion} className="space-y-4">
+          {modalError ? (
+            <div className="whitespace-pre-wrap rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {modalError}
+            </div>
+          ) : null}
           <SelectField label={t("subscriberZones.parent")} value={parentId} onChange={(e) => setParentId(e.target.value)}>
             <option value="">{t("subscriberZones.noParent")}</option>
             {flatOptions.map((opt) => (
@@ -283,7 +292,14 @@ export function SubscriberZonesPage() {
           </SelectField>
           <TextField label={t("subscriberZones.regionName")} value={newName} onChange={(e) => setNewName(e.target.value)} required />
           <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="outline" onClick={() => setModal(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setModalError(null);
+                setModal(false);
+              }}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={saving}>

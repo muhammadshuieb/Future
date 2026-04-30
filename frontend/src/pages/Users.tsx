@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Banknote, Download, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Banknote, Download, Eye, EyeOff, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -165,7 +165,7 @@ function getRowState(row: SubscriberRow): "online" | "limited" | "expired" | "di
 }
 
 function getRowClass(row: SubscriberRow): string {
-  const state = getRowState(row);
+  const state = getDisplayState(row);
   if (state === "online")
     return "bg-emerald-500/15 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20";
   if (state === "limited") return "bg-cyan-500/15 hover:bg-cyan-500/20";
@@ -173,6 +173,32 @@ function getRowClass(row: SubscriberRow): string {
   if (state === "disabled") return "bg-red-500/20 hover:bg-red-500/25";
   if (state === "active") return "bg-emerald-500/20 hover:bg-emerald-500/25";
   return "hover:bg-[hsl(var(--muted))]/30";
+}
+
+function isExplicitlyDisabled(row: SubscriberRow): boolean {
+  const status = String(row.status ?? "").trim().toLowerCase();
+  if (status === "disabled" || status === "inactive" || status === "suspended" || status === "blocked") return true;
+  const smart = String(row.state ?? "").trim().toUpperCase();
+  return smart === "BLOCKED";
+}
+
+function getDisplayState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
+  if (isExplicitlyDisabled(row)) return "disabled";
+  return getRowState(row);
+}
+
+function getDisplayStatusLabel(
+  row: SubscriberRow,
+  t: (key: string) => string
+): string {
+  const state = getDisplayState(row);
+  if (state === "online") return t("users.state.online");
+  if (state === "limited") return t("users.state.limited");
+  if (state === "expired") return t("users.state.expired");
+  if (state === "disabled") return t("users.state.disabled");
+  if (state === "active") return t("users.state.active");
+  const raw = String(row.state ?? row.status ?? "").trim();
+  return raw || "—";
 }
 
 export function UsersPage() {
@@ -192,11 +218,13 @@ export function UsersPage() {
   const [modal, setModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [modalMsg, setModalMsg] = useState<{ type: "err"; text: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
   const [payPackageLoadingId, setPayPackageLoadingId] = useState<string | null>(null);
+  const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<string | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const [username, setUsername] = useState("");
@@ -208,7 +236,6 @@ export function UsersPage() {
   const [pool, setPool] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [nickname, setNickname] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
@@ -219,22 +246,51 @@ export function UsersPage() {
   const [searchText, setSearchText] = useState<string>(searchParams.get("q") ?? "");
   const [sortKey, setSortKey] = useState<SortKey>("username");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "expired" | "disabled">("all");
   const appliedSearch = searchParams.get("q")?.trim() ?? "";
+
+  const subscribersListQuery = useMemo(() => {
+    const q = new URLSearchParams({
+      page: String(currentPage),
+      per_page: String(pageSize),
+      sort_key: sortKey,
+      sort_dir: sortDir,
+    });
+    if (appliedSearch) q.set("q", appliedSearch);
+    q.set("status_filter", statusFilter);
+    return q.toString();
+  }, [currentPage, pageSize, sortKey, sortDir, appliedSearch, statusFilter]);
+
+  /** Background refresh: subscribers only (no full-page loading; skips when tab hidden). */
+  const refreshSubscribersList = useCallback(async () => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    try {
+      const rSub = await apiFetch(`/api/subscribers/?${subscribersListQuery}`);
+      if (rSub.ok) {
+        const j = (await rSub.json()) as {
+          items: Record<string, unknown>[];
+          meta?: { total?: number };
+        };
+        const nextItems = j.items.map(asSubscriberRow);
+        setItems(nextItems);
+        setTotalItems(Number(j.meta?.total ?? nextItems.length ?? 0));
+        setSelectedIds((current) => current.filter((id) => nextItems.some((item) => item.id === id)));
+      } else {
+        const raw = await readApiError(rSub);
+        setLoadError(`${t("nav.users")}: ${formatStaffApiError(rSub.status, raw, t)}`);
+      }
+    } catch {
+      // ignore transient network errors during background poll
+    }
+  }, [subscribersListQuery, t]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      const q = new URLSearchParams({
-        page: String(currentPage),
-        per_page: String(pageSize),
-        sort_key: sortKey,
-        sort_dir: sortDir,
-      });
-      if (appliedSearch) q.set("q", appliedSearch);
       const [rSub, rPkg, rNas, rReg] = await Promise.all([
-        apiFetch(`/api/subscribers/?${q.toString()}`),
-        apiFetch("/api/packages/"),
+        apiFetch(`/api/subscribers/?${subscribersListQuery}`),
+        apiFetch("/api/packages/?account_type=subscriptions"),
         apiFetch("/api/nas/"),
         apiFetch("/api/regions/"),
       ]);
@@ -276,18 +332,27 @@ export function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [t, currentPage, pageSize, sortKey, sortDir, appliedSearch]);
+  }, [t, subscribersListQuery]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
+    const pollMs = 60_000;
     const timer = window.setInterval(() => {
-      void load();
-    }, 15000);
+      void refreshSubscribersList();
+    }, pollMs);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [refreshSubscribersList]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refreshSubscribersList();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshSubscribersList]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
@@ -330,9 +395,9 @@ export function UsersPage() {
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
-    setMsg(null);
+    setModalMsg(null);
     if (!packageId) {
-      setMsg({ type: "err", text: t("common.required") });
+      setModalMsg({ type: "err", text: t("common.required") });
       return;
     }
     setSaving(true);
@@ -344,7 +409,6 @@ export function UsersPage() {
           password,
           package_id: packageId,
           nas_server_id: nasId || null,
-          nickname: nickname || undefined,
           first_name: firstName || undefined,
           last_name: lastName || undefined,
           phone: phone || undefined,
@@ -358,7 +422,7 @@ export function UsersPage() {
       });
       if (!r.ok) {
         const err = (await r.json().catch(() => ({}))) as { error?: string };
-        setMsg({ type: "err", text: err.error ?? t("users.createFailed") });
+        setModalMsg({ type: "err", text: err.error ?? t("users.createFailed") });
         return;
       }
       setMsg({ type: "ok", text: t("users.created") });
@@ -372,7 +436,6 @@ export function UsersPage() {
       setPool("");
       setFirstName("");
       setLastName("");
-      setNickname("");
       setPhone("");
       setAddress("");
       setNotes("");
@@ -385,7 +448,7 @@ export function UsersPage() {
   }
 
   function openCreateModal() {
-    setMsg(null);
+    setModalMsg(null);
     setUsername("");
     setPassword("");
     setPackageId("");
@@ -395,7 +458,6 @@ export function UsersPage() {
     setPool("");
     setFirstName("");
     setLastName("");
-    setNickname("");
     setPhone("");
     setAddress("");
     setNotes("");
@@ -536,6 +598,41 @@ export function UsersPage() {
     await load();
   }
 
+  async function toggleSubscriberStatus(row: SubscriberRow) {
+    if (!canManage) return;
+    const disabled = isExplicitlyDisabled(row);
+    const confirmMsg = disabled ? t("users.enableConfirm") : t("users.disableConfirm");
+    if (!confirm(confirmMsg)) return;
+    setToggleStatusLoadingId(row.id);
+    setMsg(null);
+    try {
+      const endpoint = disabled ? "enable" : "disable";
+      const method = disabled ? "POST" : "PATCH";
+      const res = await apiFetch(`/api/subscribers/${row.id}/${endpoint}`, { method });
+      if (!res.ok) {
+        const raw = await readApiError(res);
+        setMsg({ type: "err", text: formatStaffApiError(res.status, raw, t) });
+        return;
+      }
+      setItems((current) =>
+        current.map((item) =>
+          item.id === row.id
+            ? {
+                ...item,
+                status: disabled ? "active" : "disabled",
+                state: disabled ? "ACTIVE" : "BLOCKED",
+                is_online: disabled ? item.is_online : 0,
+              }
+            : item
+        )
+      );
+      setMsg({ type: "ok", text: disabled ? t("users.enabled") : t("users.disabled") });
+      void refreshSubscribersList();
+    } finally {
+      setToggleStatusLoadingId(null);
+    }
+  }
+
   function applySearch() {
     const q = searchText.trim();
     setCurrentPage(1);
@@ -655,6 +752,19 @@ export function UsersPage() {
                   {t("users.searchClear")}
                 </Button>
               ) : null}
+              <select
+                className="rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as "all" | "active" | "expired" | "disabled");
+                  setCurrentPage(1);
+                }}
+              >
+                <option value="all">الكل</option>
+                <option value="active">نشيط</option>
+                <option value="expired">منتهي</option>
+                <option value="disabled">معطل</option>
+              </select>
             </form>
             <Button type="button" variant="outline" onClick={toggleAll} disabled={visibleItems.length === 0}>
               {allSelected ? t("users.clearSelection") : t("users.selectAll")}
@@ -814,12 +924,16 @@ export function UsersPage() {
                     <span
                       className={cn(
                         "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-                        (s.state ?? s.status) === "ACTIVE" || s.status === "active"
+                        getDisplayState(s) === "active" || getDisplayState(s) === "online"
                           ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-                          : "bg-zinc-500/15 opacity-80"
+                          : getDisplayState(s) === "disabled"
+                            ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                            : getDisplayState(s) === "expired"
+                              ? "bg-amber-500/20 text-amber-800 dark:text-amber-300"
+                              : "bg-zinc-500/15 opacity-80"
                       )}
                     >
-                      {String(s.state ?? s.status)}
+                      {getDisplayStatusLabel(s, t)}
                     </span>
                   </td>
                   <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td>
@@ -857,6 +971,27 @@ export function UsersPage() {
                       {canManage ? (
                         <Button
                           type="button"
+                          variant="outline"
+                          className={cn(
+                            "px-2 py-1 text-xs",
+                            isExplicitlyDisabled(s)
+                              ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                              : "border-amber-500/40 text-amber-700 dark:text-amber-300"
+                          )}
+                          onClick={() => void toggleSubscriberStatus(s)}
+                          disabled={toggleStatusLoadingId === s.id}
+                        >
+                          <Power className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
+                          {toggleStatusLoadingId === s.id
+                            ? t("common.loading")
+                            : isExplicitlyDisabled(s)
+                              ? t("users.enable")
+                              : t("users.disable")}
+                        </Button>
+                      ) : null}
+                      {canManage ? (
+                        <Button
+                          type="button"
                           variant="ghost"
                           className="px-2 py-1 text-red-600"
                           onClick={() => void deleteOne(s.id, s.username)}
@@ -879,8 +1014,21 @@ export function UsersPage() {
         ) : null}
       </div>
 
-      <Modal open={modal} onClose={() => setModal(false)} title={t("users.add")} wide>
+      <Modal
+        open={modal}
+        onClose={() => {
+          setModalMsg(null);
+          setModal(false);
+        }}
+        title={t("users.add")}
+        wide
+      >
         <form onSubmit={onCreate} className="space-y-4">
+          {modalMsg ? (
+            <div className="whitespace-pre-wrap rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {modalMsg.text}
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label={t("users.username")} value={username} onChange={(e) => setUsername(e.target.value)} required />
             <TextField
@@ -903,18 +1051,11 @@ export function UsersPage() {
               onChange={(e) => setLastName(e.target.value)}
             />
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <TextField
-              label={`${t("users.nickname")} (${t("common.optional")})`}
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-            />
-            <TextField
-              label={`${t("users.phone")} (${t("common.optional")})`}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-          </div>
+          <TextField
+            label={`${t("users.phone")} (${t("common.optional")})`}
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
           <TextField
             label={`${t("users.address")} (${t("common.optional")})`}
             value={address}
@@ -963,7 +1104,14 @@ export function UsersPage() {
           <TextField label={`${t("users.pool")} (${t("common.optional")})`} value={pool} onChange={(e) => setPool(e.target.value)} />
           <TextAreaField label={`${t("users.notes")} (${t("common.optional")})`} value={notes} onChange={(e) => setNotes(e.target.value)} />
           <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="outline" onClick={() => setModal(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setModalMsg(null);
+                setModal(false);
+              }}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={saving}>

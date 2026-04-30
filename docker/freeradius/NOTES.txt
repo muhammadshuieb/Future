@@ -25,7 +25,7 @@ Bare metal (مثال)
 
 تنظيف radacct (احتفاظ 30 يوم للجلسات المغلقة)
 ----------------------------------------------
-  - ملف: sql/migrations/004_radacct_cleanup_event.sql
+  - ملف: docker/mysql/opt/04-radacct-cleanup-event.sql
   - يُنشئ EVENT يومي: حذف الصفوف حيث acctstoptime IS NOT NULL وأقدم من 30 يوم.
   - يتطلب event_scheduler=ON (مفعّل في docker/mysql/conf.d/radius-import.cnf).
   - لقاعدة قائمة: نفّذ الملف يدوياً كمسؤول MySQL.
@@ -62,12 +62,17 @@ FreeRADIUS 3.2.x (Debian bookworm)
 -------
 - مصادقة المستخدمين من radcheck / radreply؛ أسرار NAS من جدول nas (read_clients = yes).
 - authorize_check_query في queries.conf يقرأ المستخدم من radcheck؛ عمودا nasname و secret خاصان بجدول nas ويُستخدمان عبر client_query وليس authorize_check_query.
-- إن فشل FreeRADIUS بسبب عمود server في nas، أضف العمود أو عدّل client_query في
-  /etc/freeradius/3.0/mods-config/sql/main/mysql/queries.conf
+- عمود server غير موجود في nas لدى Radius Manager؛ صورة Docker تُعيد تعريف client_query في
+  mods-available/sql.template (NULL AS server) بعد تضمين queries.conf الافتراضي.
 
 - إن ظهر Access denied for user 'radius'@'...' فالمستخدم غير مُنشأ أو كلمة المرور
-  لا تطابق MYSQL_PASSWORD في compose. نفّذ يدوياً docker/mysql/opt/03-freeradius-user.sql
-  على قاعدة radius (أو أعد إنشاء الحجم إن كانت بيئة تطوير فقط).
+  لا تطابق RADIUS_DB_PASSWORD في .env (نفس القيمة لـ freeradius MYSQL_PASSWORD).
+  عند أول تهيئة MySQL تُنشأ من docker/mysql/init/z-futureradius-followup.sh؛ يدوياً:
+  ALTER USER 'radius'@'%' IDENTIFIED BY '...'; GRANT ALL ON radius.* TO 'radius'@'%'; FLUSH PRIVILEGES;
+
+- بعد استعادة dump كامل لـ radius.sql: غالباً تُفقد صلاحيات مستخدم MySQL لـ FreeRADIUS؛
+  طابق كلمة مرور المستخدم مع RADIUS_DB_PASSWORD ثم أعد تشغيل freeradius. حتى ذلك، قد يدور الحاوية
+  بإعادة تشغيل سريعة (CPU مرتفع وواجهة Docker تُظهره كمتوقف).
 
 فهارس radacct
 -------------

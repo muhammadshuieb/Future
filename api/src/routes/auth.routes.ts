@@ -60,14 +60,23 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
-  const [rolePermRows] = await pool.query<RowDataPacket[]>(
-    `SELECT permissions_json
-     FROM staff_role_permissions
-     WHERE tenant_id = ? AND role = ?
-     LIMIT 1`,
-    [row.tenant_id as string, row.role as string]
-  );
-  const roleTemplate = parsePermissionsObject(rolePermRows[0]?.permissions_json);
+  let roleTemplate: Record<string, boolean> = {};
+  try {
+    const [rolePermRows] = await pool.query<RowDataPacket[]>(
+      `SELECT permissions_json
+       FROM staff_role_permissions
+       WHERE tenant_id = ? AND role = ?
+       LIMIT 1`,
+      [row.tenant_id as string, row.role as string]
+    );
+    roleTemplate = parsePermissionsObject(rolePermRows[0]?.permissions_json);
+  } catch (error) {
+    const e = error as { code?: string; errno?: number };
+    // Old Radius Manager dumps may not include this table yet.
+    if (!(e?.code === "ER_NO_SUCH_TABLE" || e?.errno === 1146)) {
+      throw error;
+    }
+  }
   const userOverrides = parsePermissionsObject(row.permissions_json);
   const mergedPermissions = parseManagerPermissions({ ...roleTemplate, ...userOverrides });
 

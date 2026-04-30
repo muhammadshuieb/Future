@@ -17,7 +17,7 @@ export type DmaValidationResult = {
 export async function validateDmaDatabase(pool: Pool): Promise<DmaValidationResult> {
   const [dbRows] = await pool.query<RowDataPacket[]>(`SELECT DATABASE() AS d`);
   const schema = dbRows[0]?.d as string | null;
-  /** اسم القاعدة في radius.sql الافتراضي هو `radius`؛ يمكن استعادتها باسم آخر. */
+  /** اسم القاعدة في التصدير المرجعي الافتراضي هو `radius`؛ يمكن استعادتها باسم آخر. */
   const expectedName = config.expectedRmSchemaName;
   const databaseNameMatches = Boolean(schema) && (!expectedName || schema === expectedName);
   if (!schema) {

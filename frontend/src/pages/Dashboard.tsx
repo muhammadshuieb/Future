@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  AreaChart,
-  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -26,13 +24,15 @@ import {
   MessageCircle,
   AlertTriangle,
   TrendingUp,
-  DollarSign,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 
 type Summary = {
+  dma_mode?: boolean;
+  total_rm_users?: number;
+  dma_conntrack_rows?: number;
   active_subscribers: number;
   expired_subscribers: number;
   online_users: number;
@@ -87,20 +87,17 @@ export function DashboardPage() {
   const { t, isRtl } = useI18n();
   const navigate = useNavigate();
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [revenue, setRevenue] = useState<{ period: string; total: number }[]>([]);
   const [growth, setGrowth] = useState<{ period: string; total: number }[]>([]);
   const [wsMsg, setWsMsg] = useState<string | null>(null);
   const [subscriberSearch, setSubscriberSearch] = useState("");
 
   useEffect(() => {
     void (async () => {
-      const [s, r, g] = await Promise.all([
-        apiFetch("/api/dashboard/summary"),
-        apiFetch("/api/dashboard/charts/revenue"),
-        apiFetch("/api/dashboard/charts/subscribers"),
-      ]);
+      const s = await apiFetch("/api/dashboard/summary");
       if (s.ok) setSummary((await s.json()) as Summary);
-      if (r.ok) setRevenue(((await r.json()) as { items: typeof revenue }).items);
+    })();
+    void (async () => {
+      const g = await apiFetch("/api/dashboard/charts/subscribers");
       if (g.ok) setGrowth(((await g.json()) as { items: typeof growth }).items);
     })();
   }, []);
@@ -143,7 +140,6 @@ export function DashboardPage() {
     }
     return `${x.toFixed(1)} ${u[i]}`;
   };
-
   const StatCard = ({
     label,
     value,
@@ -312,8 +308,18 @@ export function DashboardPage() {
       </div>
 
       {summary && (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard label={t("dash.activeSub")} value={summary.active_subscribers} Icon={Users} tone="blue" delay={0} />
+        <div
+          className={`grid gap-4 sm:grid-cols-2 ${
+            summary.dma_mode ? "xl:grid-cols-5" : "xl:grid-cols-4"
+          }`}
+        >
+          <StatCard
+            label={summary.dma_mode ? t("dash.rmUsersTotal") : t("dash.activeSub")}
+            value={summary.dma_mode ? Number(summary.total_rm_users ?? summary.active_subscribers) : summary.active_subscribers}
+            Icon={Users}
+            tone="blue"
+            delay={0}
+          />
           <StatCard label={t("dash.expired")} value={summary.expired_subscribers} Icon={Clock} tone="amber" delay={1} />
           <StatCard label={t("dash.onlineNow")} value={summary.online_users} Icon={Wifi} tone="green" delay={2} />
           <StatCard
@@ -323,6 +329,15 @@ export function DashboardPage() {
             tone="violet"
             delay={3}
           />
+          {summary.dma_mode ? (
+            <StatCard
+              label={t("dash.dmaConntrack")}
+              value={Number(summary.dma_conntrack_rows ?? 0)}
+              Icon={Server}
+              tone="cyan"
+              delay={4}
+            />
+          ) : null}
         </div>
       )}
 
@@ -392,39 +407,7 @@ export function DashboardPage() {
         </Card>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500">
-              <DollarSign className="h-5 w-5" />
-            </div>
-            <h2 className="font-semibold">{t("dash.revenue")}</h2>
-          </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={revenue}>
-                <defs>
-                  <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.45} />
-                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-                <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: 12,
-                  }}
-                />
-                <Area type="monotone" dataKey="total" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#revGrad)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-
+      <div className="grid gap-6 lg:grid-cols-1">
         <Card>
           <div className="mb-4 flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/10 text-violet-500">

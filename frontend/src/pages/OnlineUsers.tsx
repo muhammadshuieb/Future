@@ -120,7 +120,7 @@ export function OnlineUsersPage() {
     void load();
     const timer = window.setInterval(() => {
       void load();
-    }, 15000);
+    }, 30000);
     return () => window.clearInterval(timer);
   }, [load]);
 

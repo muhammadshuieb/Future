@@ -34,6 +34,18 @@ function mapRmToRoleAndPerms(m: RowDataPacket): { role: Role; permissions: Manag
   };
 }
 
+function normalizeRmManagerEmail(m: RowDataPacket, hasEmail: boolean): string {
+  if (hasEmail && String(m.email ?? "").trim()) {
+    return String(m.email).trim();
+  }
+  return `${String(m.managername ?? "manager").trim()}@rm-legacy.local`;
+}
+
+function readRmManagerBalance(m: RowDataPacket): number {
+  const n = Number(m.balance ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /**
  * If staff_users login failed, try rm_managers (MD5 password) and ensure a staff_users row.
  * Keeps rm_managers as source of auth on restored DB; upgrades password_hash to bcrypt.
@@ -65,8 +77,7 @@ export async function tryLoginViaRmManagers(
   if (md5Hex(password) !== stored.toLowerCase()) return null;
 
   const { role, permissions } = mapRmToRoleAndPerms(m);
-  const email =
-    hasEmail && String(m.email ?? "").trim() ? String(m.email).trim() : `${String(m.managername)}@rm-legacy.local`;
+  const email = normalizeRmManagerEmail(m, hasEmail);
   const name = String(m.managername ?? "manager");
   const staffCols = await getTableColumns(pool, "staff_users");
   const [existing] = await pool.query<RowDataPacket[]>(
@@ -124,4 +135,86 @@ export async function tryLoginViaRmManagers(
     [id]
   );
   return out[0] ?? null;
+}
+
+export async function syncStaffUsersFromRmManagers(pool: Pool, tenantId: string): Promise<{ synced: number }> {
+  if (!(await hasTable(pool, "rm_managers"))) return { synced: 0 };
+  const rmCols = await getTableColumns(pool, "rm_managers");
+  if (!rmCols.has("managername")) return { synced: 0 };
+  const hasEmail = rmCols.has("email");
+  const hasActive = rmCols.has("enablemanager");
+  const hasBalance = rmCols.has("balance");
+  const [rmRows] = await pool.query<RowDataPacket[]>(`SELECT * FROM rm_managers ORDER BY managername`);
+  if (!rmRows.length) return { synced: 0 };
+  const staffCols = await getTableColumns(pool, "staff_users");
+  let synced = 0;
+
+  for (const rm of rmRows) {
+    const managerName = String(rm.managername ?? "").trim();
+    if (!managerName) continue;
+    const { role, permissions } = mapRmToRoleAndPerms(rm);
+    const email = normalizeRmManagerEmail(rm, hasEmail);
+    const active = hasActive ? Number(rm.enablemanager ?? 0) === 1 : true;
+    const balance = hasBalance ? readRmManagerBalance(rm) : 0;
+    const permissionsJson = JSON.stringify(permissions);
+
+    const candidateSql =
+      role === "admin"
+        ? `SELECT id
+           FROM staff_users
+           WHERE tenant_id = ?
+             AND (LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?) OR role = 'admin')
+           ORDER BY (role = 'admin') DESC, created_at ASC
+           LIMIT 1`
+        : `SELECT id
+           FROM staff_users
+           WHERE tenant_id = ?
+             AND (LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?))
+           LIMIT 1`;
+    const [candidateRows] = await pool.query<RowDataPacket[]>(candidateSql, [tenantId, email, managerName]);
+    const existingId = candidateRows[0]?.id ? String(candidateRows[0].id) : null;
+
+    if (existingId) {
+      const sets: string[] = ["name = ?", "email = ?", "role = ?", "active = ?"];
+      const vals: unknown[] = [managerName, email, role, active ? 1 : 0];
+      if (staffCols.has("permissions_json")) {
+        sets.push("permissions_json = ?");
+        vals.push(permissionsJson);
+      }
+      if (staffCols.has("wallet_balance")) {
+        sets.push("wallet_balance = ?");
+        vals.push(balance);
+      }
+      if (staffCols.has("opening_balance")) {
+        sets.push("opening_balance = ?");
+        vals.push(balance);
+      }
+      vals.push(existingId, tenantId);
+      await pool.query(`UPDATE staff_users SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`, vals);
+      synced += 1;
+      continue;
+    }
+
+    const fields: string[] = ["id", "tenant_id", "name", "email", "password_hash", "role", "active"];
+    const values: unknown[] = [randomUUID(), tenantId, managerName, email, "", role, active ? 1 : 0];
+    if (staffCols.has("permissions_json")) {
+      fields.push("permissions_json");
+      values.push(permissionsJson);
+    }
+    if (staffCols.has("wallet_balance")) {
+      fields.push("wallet_balance");
+      values.push(balance);
+    }
+    if (staffCols.has("opening_balance")) {
+      fields.push("opening_balance");
+      values.push(balance);
+    }
+    await pool.query(
+      `INSERT INTO staff_users (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
+      values
+    );
+    synced += 1;
+  }
+
+  return { synced };
 }

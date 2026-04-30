@@ -40,6 +40,8 @@ type Row = {
   creator_name?: string | null;
   expiration_date?: string | null;
   created_at?: string | null;
+  used_bytes?: string | number | null;
+  quota_total_bytes?: string | number | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
 type Nas = { id: string; name: string; ip: string };
@@ -152,7 +154,6 @@ export function UserProfilePage() {
   const [macAddress, setMacAddress] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [nickname, setNickname] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [regionId, setRegionId] = useState("");
@@ -188,7 +189,7 @@ export function UserProfilePage() {
     try {
       const [rSub, rPkg, rNas, rReg] = await Promise.all([
         apiFetch("/api/subscribers/"),
-        apiFetch("/api/packages/"),
+        apiFetch("/api/packages/?account_type=subscriptions"),
         apiFetch("/api/nas/"),
         apiFetch("/api/regions/"),
       ]);
@@ -216,7 +217,6 @@ export function UserProfilePage() {
           setMacAddress(String(found.mac_address ?? ""));
           setFirstName(String(found.first_name ?? ""));
           setLastName(String(found.last_name ?? ""));
-          setNickname(String(found.nickname ?? ""));
           setPhone(String(found.phone ?? ""));
           setAddress(String(found.address ?? ""));
           setRegionId(found.region_id ? String(found.region_id) : "");
@@ -263,7 +263,6 @@ export function UserProfilePage() {
           mac_address: macAddress || null,
           first_name: firstName || null,
           last_name: lastName || null,
-          nickname: nickname || null,
           phone: phone || null,
           address: address || null,
           region_id: regionId || null,
@@ -412,6 +411,9 @@ export function UserProfilePage() {
     }
     return `${x.toFixed(i === 0 ? 0 : x >= 10 ? 1 : 2)} ${units[i]}`;
   }
+  const quotaTotal = Number(row.quota_total_bytes ?? 0);
+  const usedBytes = Number(row.used_bytes ?? 0);
+  const remainingBytes = quotaTotal > 0 ? Math.max(0, quotaTotal - Math.max(0, usedBytes)) : 0;
 
   function fmtDuration(seconds: number): string {
     const s = Math.max(0, Math.floor(seconds || 0));
@@ -619,10 +621,7 @@ export function UserProfilePage() {
                 <TextField label={t("users.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={!canManage} />
                 <TextField label={t("users.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={!canManage} />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <TextField label={t("users.nickname")} value={nickname} onChange={(e) => setNickname(e.target.value)} disabled={!canManage} />
-                <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
-              </div>
+              <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
               <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
               <SelectField
                 label={`${t("users.region")} (${t("common.optional")})`}
@@ -677,6 +676,18 @@ export function UserProfilePage() {
               <div>
                 <dt className="text-xs opacity-60">{t("users.expires")}</dt>
                 <dd className="font-mono text-xs">{String(row.expiration_date ?? "").slice(0, 19).replace("T", " ")}</dd>
+              </div>
+              <div>
+                <dt className="text-xs opacity-60">Total limit</dt>
+                <dd className="font-mono text-xs">
+                  {quotaTotal > 0 ? fmtBytes(quotaTotal) : t("packages.unlimited")}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs opacity-60">{t("users.remainingQuota")}</dt>
+                <dd className="font-mono text-xs">
+                  {quotaTotal > 0 ? fmtBytes(remainingBytes) : t("packages.unlimited")}
+                </dd>
               </div>
               <div>
                 <dt className="text-xs opacity-60">{t("users.createdAt")}</dt>

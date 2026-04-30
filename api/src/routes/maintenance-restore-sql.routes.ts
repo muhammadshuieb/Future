@@ -39,13 +39,15 @@ router.post(
       return;
     }
     try {
-      const raw = req.body?.applySchemaExtensions;
-      const applySchemaExtensions =
-        raw === true ||
-        raw === "true" ||
-        raw === "1" ||
-        String(raw ?? "true").toLowerCase() === "true";
-      const result = await SqlRestore.importSqlFilePathIntoAppDatabase(f.path, { applySchemaExtensions });
+      const applyExt =
+        String(
+          (req.body as { applySchemaExtensions?: string; apply_schema_extensions?: string })?.applySchemaExtensions ??
+            (req.body as { apply_schema_extensions?: string })?.apply_schema_extensions ??
+            ""
+        ).toLowerCase() === "true";
+      const result = await SqlRestore.importSqlFilePathIntoAppDatabase(f.path, {
+        applySchemaExtensions: applyExt,
+      });
       const tenantId = req.auth!.tenantId;
       const staffId = req.auth!.sub ?? null;
       const baseName = f.originalname || "upload.sql";
@@ -68,7 +70,7 @@ router.post(
             success: false,
             errorMessage: err.slice(0, 2000),
             targetDatabase: config.db.database,
-            applySchemaExtensions,
+            applySchemaExtensions: applyExt,
             mysqlOutputExcerpt: result.mysql_output?.slice(0, 4000) ?? null,
           });
         } catch (logErr) {
@@ -94,7 +96,7 @@ router.post(
           success: true,
           errorMessage: null,
           targetDatabase: config.db.database,
-          applySchemaExtensions,
+          applySchemaExtensions: applyExt,
           mysqlOutputExcerpt: null,
         });
       } catch (logErr) {
@@ -104,7 +106,6 @@ router.post(
         ok: true,
         restored_at: restoredAt,
         bytes: result.detail.bytes,
-        applied_schema_extensions: result.detail.appliedSchemaExtensions,
         database: config.databaseName,
         target_database: config.db.database,
       });

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowDownCircle, ArrowUpCircle, CircleDollarSign, Pencil, Plus, Receipt, Trash2, TriangleAlert } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
+import { useFinancePeriod } from "../context/FinancePeriodContext";
+import { getFinancePeriodMonths } from "../lib/finance-period";
+import { FinancePeriodFilter } from "../components/finance/FinancePeriodFilter";
 
 type ExpenseRow = {
   id: string;
@@ -32,9 +35,10 @@ export function ExpensesPage() {
   const [categoryId, setCategoryId] = useState("");
   const [unitCost, setUnitCost] = useState("0");
   const [stockQty, setStockQty] = useState("0");
-  const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
   const [report, setReport] = useState<MonthlyReport | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const { period } = useFinancePeriod();
+  const periodMonths = useMemo(() => getFinancePeriodMonths(period), [period]);
 
   const load = useCallback(async () => {
     const [productsRes, categoriesRes] = await Promise.all([
@@ -52,11 +56,23 @@ export function ExpensesPage() {
   }, []);
 
   const loadReport = useCallback(async () => {
-    const res = await apiFetch(`/api/inventory/report/monthly?month=${encodeURIComponent(reportMonth)}`);
-    if (!res.ok) return;
-    const payload = (await res.json()) as MonthlyReport;
-    setReport(payload);
-  }, [reportMonth]);
+    const rows = await Promise.all(
+      periodMonths.map(async (month) => {
+        const res = await apiFetch(`/api/inventory/report/monthly?month=${encodeURIComponent(month)}`);
+        if (!res.ok) return null;
+        return (await res.json()) as MonthlyReport;
+      })
+    );
+    const valid = rows.filter((item): item is MonthlyReport => Boolean(item));
+    const combined: MonthlyReport = {
+      month: periodMonths.join(","),
+      expense_cost: valid.reduce((sum, item) => sum + Number(item.expense_cost ?? 0), 0),
+      stock_added_cost: valid.reduce((sum, item) => sum + Number(item.stock_added_cost ?? 0), 0),
+      payments_total: valid.reduce((sum, item) => sum + Number(item.payments_total ?? 0), 0),
+      invoices_total: valid.reduce((sum, item) => sum + Number(item.invoices_total ?? 0), 0),
+    };
+    setReport(combined);
+  }, [periodMonths]);
 
   useEffect(() => {
     void load();
@@ -70,6 +86,19 @@ export function ExpensesPage() {
     () => new Map(categories.map((c) => [c.id, c.name])),
     [categories]
   );
+  const expenseCost = Number(report?.expense_cost ?? 0);
+  const stockAddedCost = Number(report?.stock_added_cost ?? 0);
+  const paymentsTotal = Number(report?.payments_total ?? 0);
+  const invoicesTotal = Number(report?.invoices_total ?? 0);
+  const monthlyProfit = paymentsTotal - expenseCost;
+  const overdueAmount = Math.max(0, invoicesTotal - paymentsTotal);
+  const maxFinanceValue = Math.max(invoicesTotal, paymentsTotal, expenseCost, stockAddedCost, 1);
+  const financeBars = [
+    { key: "invoiced", label: t("expenses.totalInvoiced"), value: invoicesTotal, tone: "bg-indigo-500/80" },
+    { key: "collected", label: t("expenses.totalPayments"), value: paymentsTotal, tone: "bg-emerald-500/80" },
+    { key: "expenses", label: t("expenses.totalExpenses"), value: expenseCost, tone: "bg-rose-500/80" },
+    { key: "stock", label: t("expenses.totalStockAdded"), value: stockAddedCost, tone: "bg-amber-500/80" },
+  ];
 
   async function createExpense() {
     setMessage(null);
@@ -129,8 +158,74 @@ export function ExpensesPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">{t("expenses.title")}</h1>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">{t("expenses.title")}</h1>
+        <p className="text-sm opacity-70">{t("expenses.subtitle")}</p>
+      </div>
+
+      <FinancePeriodFilter />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <Card className="p-4" variant="solid">
+          <div className="mb-1 flex items-center justify-between text-xs uppercase opacity-60">
+            <span>{t("expenses.totalInvoiced")}</span>
+            <Receipt className="h-4 w-4 text-indigo-500" />
+          </div>
+          <div className="text-2xl font-bold">{invoicesTotal.toFixed(2)}</div>
+        </Card>
+        <Card className="p-4" variant="solid">
+          <div className="mb-1 flex items-center justify-between text-xs uppercase opacity-60">
+            <span>{t("expenses.totalPayments")}</span>
+            <ArrowDownCircle className="h-4 w-4 text-emerald-500" />
+          </div>
+          <div className="text-2xl font-bold">{paymentsTotal.toFixed(2)}</div>
+        </Card>
+        <Card className="p-4" variant="solid">
+          <div className="mb-1 flex items-center justify-between text-xs uppercase opacity-60">
+            <span>{t("expenses.totalExpenses")}</span>
+            <ArrowUpCircle className="h-4 w-4 text-rose-500" />
+          </div>
+          <div className="text-2xl font-bold">{expenseCost.toFixed(2)}</div>
+        </Card>
+        <Card className="p-4" variant="solid">
+          <div className="mb-1 flex items-center justify-between text-xs uppercase opacity-60">
+            <span>{t("expenses.monthlyProfit")}</span>
+            <CircleDollarSign className={`h-4 w-4 ${monthlyProfit >= 0 ? "text-emerald-500" : "text-rose-500"}`} />
+          </div>
+          <div className={`text-2xl font-bold ${monthlyProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+            {monthlyProfit.toFixed(2)}
+          </div>
+        </Card>
+        <Card className="p-4" variant="solid">
+          <div className="mb-1 flex items-center justify-between text-xs uppercase opacity-60">
+            <span>{t("expenses.monthlyOverdue")}</span>
+            <TriangleAlert className="h-4 w-4 text-amber-500" />
+          </div>
+          <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">{overdueAmount.toFixed(2)}</div>
+        </Card>
+      </div>
+
+      <Card className="space-y-4 p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">{t("expenses.monthlyComparison")}</h2>
+          <span className="text-xs opacity-70">{periodMonths.join(" / ")}</span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {financeBars.map((bar) => (
+            <div key={bar.key} className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="opacity-70">{bar.label}</span>
+                <span className="font-medium">{bar.value.toFixed(2)}</span>
+              </div>
+              <div className="h-2.5 rounded-full bg-[hsl(var(--muted))]/60">
+                <div className={`h-2.5 rounded-full ${bar.tone}`} style={{ width: `${Math.min((bar.value / maxFinanceValue) * 100, 100)}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
       <Card className="grid gap-3 p-4 md:grid-cols-5">
         <TextField label="SKU" value={sku} onChange={(e) => setSku(e.target.value)} />
         <TextField label={t("expenses.name")} value={name} onChange={(e) => setName(e.target.value)} />
@@ -152,7 +247,6 @@ export function ExpensesPage() {
         </div>
       </Card>
       <Card className="sticky-list-panel flex flex-wrap items-center gap-3 p-4 text-sm">
-        <TextField label={t("expenses.monthlyReport")} value={reportMonth} onChange={(e) => setReportMonth(e.target.value)} />
         <Button type="button" variant="outline" onClick={() => void loadReport()}>
           {t("common.refresh")}
         </Button>
@@ -161,6 +255,12 @@ export function ExpensesPage() {
         </div>
         <div className="opacity-80">
           {t("expenses.totalPayments")}: <strong>{Number(report?.payments_total ?? 0).toFixed(2)}</strong>
+        </div>
+        <div className="opacity-80">
+          {t("expenses.monthlyProfit")}:{" "}
+          <strong className={monthlyProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
+            {monthlyProfit.toFixed(2)}
+          </strong>
         </div>
       </Card>
       {message ? <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{message}</p> : null}

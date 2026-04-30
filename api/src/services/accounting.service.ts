@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import { config } from "../config.js";
 
 /**
  * Aggregates radacct into user_usage_live / user_usage_daily.
@@ -25,8 +26,52 @@ export class AccountingService {
     return `COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)`;
   }
 
+  private activeSessionFreshHours(): number {
+    return Math.max(
+      1,
+      Math.min(24 * 30, Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "72", 10) || 72)
+    );
+  }
+
+  private async activeSessionWhere(alias?: string): Promise<string> {
+    const p = alias ? `${alias}.` : "";
+    const hasAcctUpdate = await hasColumn(this.pool, "radacct", "acctupdatetime");
+    const freshHours = this.activeSessionFreshHours();
+    if (!hasAcctUpdate) {
+      return `${p}acctstoptime IS NULL
+      AND ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR)`;
+    }
+    return `${p}acctstoptime IS NULL
+      AND (
+        (${p}acctupdatetime IS NOT NULL AND ${p}acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR))
+        OR ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR)
+      )`;
+  }
+
+  async countActiveUsernames(tenantId: string): Promise<number> {
+    if (!(await hasTable(this.pool, "radacct"))) return 0;
+    const activeWhere = await this.activeSessionWhere("r");
+    if (config.dmaMode || !(await hasTable(this.pool, "subscribers"))) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT r.username) AS c
+         FROM radacct r
+         WHERE ${activeWhere} AND r.username <> ''`
+      );
+      return Number(rows[0]?.c ?? 0);
+    }
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT COUNT(DISTINCT r.username) AS c
+       FROM radacct r
+       INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+       WHERE ${activeWhere} AND r.username <> ''`,
+      [tenantId]
+    );
+    return Number(rows[0]?.c ?? 0);
+  }
+
   async refreshLiveUsage(tenantId: string): Promise<void> {
     if (!(await hasTable(this.pool, "radacct"))) return;
+    if (!(await hasTable(this.pool, "user_usage_live"))) return;
     const expr = await this.sessionOctetExpression();
     await this.pool.query(
       `
@@ -56,6 +101,7 @@ export class AccountingService {
 
   /** No-op if `subscribers.used_bytes` is absent (run sql/schema_extensions or migrations). */
   async syncSubscribersUsedBytes(tenantId: string): Promise<void> {
+    if (config.dmaMode) return;
     if (!(await hasTable(this.pool, "subscribers"))) return;
     if (!(await hasTable(this.pool, "user_usage_live"))) return;
     if (!(await hasColumn(this.pool, "subscribers", "used_bytes"))) return;
@@ -136,11 +182,12 @@ export class AccountingService {
 
   async countActiveSessions(tenantId: string, username?: string): Promise<number> {
     if (!(await hasTable(this.pool, "radacct"))) return 0;
-    if (!(await hasTable(this.pool, "subscribers"))) {
+    const activeWhere = await this.activeSessionWhere("r");
+    if (config.dmaMode || !(await hasTable(this.pool, "subscribers"))) {
       const [rows] = await this.pool.query<RowDataPacket[]>(
         username
-          ? `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL AND username = ?`
-          : `SELECT COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL`,
+          ? `SELECT COUNT(*) AS c FROM radacct r WHERE ${activeWhere} AND r.username = ?`
+          : `SELECT COUNT(*) AS c FROM radacct r WHERE ${activeWhere}`,
         username ? [username] : []
       );
       return Number(rows[0]?.c ?? 0);
@@ -150,11 +197,11 @@ export class AccountingService {
         ? `SELECT COUNT(*) AS c
            FROM radacct r
            INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
-           WHERE r.acctstoptime IS NULL AND r.username = ?`
+           WHERE ${activeWhere} AND r.username = ?`
         : `SELECT COUNT(*) AS c
            FROM radacct r
            INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
-           WHERE r.acctstoptime IS NULL`,
+           WHERE ${activeWhere}`,
       username ? [tenantId, username] : [tenantId]
     );
     return Number(rows[0]?.c ?? 0);
@@ -166,8 +213,9 @@ export class AccountingService {
     limit = 500
   ): Promise<RowDataPacket[]> {
     if (!(await hasTable(this.pool, "radacct"))) return [];
-    if (!(await hasTable(this.pool, "subscribers"))) {
-      return this.legacyListOnlineSessions(username, limit);
+    const activeWhere = await this.activeSessionWhere("r");
+    if (config.dmaMode || !(await hasTable(this.pool, "subscribers"))) {
+      return this.legacyListOnlineSessions(username, limit, activeWhere);
     }
     const lim = Math.min(5000, Math.max(1, Number(limit) || 500));
     const sql = `
@@ -175,7 +223,7 @@ export class AccountingService {
              r.framedipaddress, r.callingstationid, r.acctinputoctets, r.acctoutputoctets
       FROM radacct r
       INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
-      WHERE r.acctstoptime IS NULL
+      WHERE ${activeWhere}
       ${username ? "AND r.username = ?" : ""}
       ORDER BY r.acctstarttime DESC
       LIMIT ${lim}
@@ -190,15 +238,16 @@ export class AccountingService {
   /** Fallback when subscribers table is missing. */
   private async legacyListOnlineSessions(
     username?: string,
-    limit = 500
+    limit = 500,
+    activeWhere = "acctstoptime IS NULL"
   ): Promise<RowDataPacket[]> {
     const lim = Math.min(5000, Math.max(1, Number(limit) || 500));
     const sql = `
       SELECT radacctid, username, nasipaddress, acctstarttime, acctsessiontime,
              framedipaddress, callingstationid, acctinputoctets, acctoutputoctets
-      FROM radacct
-      WHERE acctstoptime IS NULL
-      ${username ? "AND username = ?" : ""}
+      FROM radacct r
+      WHERE ${activeWhere}
+      ${username ? "AND r.username = ?" : ""}
       ORDER BY acctstarttime DESC
       LIMIT ${lim}
     `;

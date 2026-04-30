@@ -11,7 +11,6 @@ import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import type { RowDataPacket } from "mysql2";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
-import { importSubscribersFromDma } from "../dma/importSubscribersFromDma.js";
 import { verifyLegacySubscriberPassword } from "../dma/legacyPassword.js";
 
 const router = Router();
@@ -64,19 +63,51 @@ router.post("/public-lookup", async (req, res) => {
     return;
   }
   try {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT s.id, s.username, s.status, s.start_date, s.expiration_date, s.used_bytes,
-              s.first_name, s.last_name, s.nickname, s.phone,
-              r.name AS region_name,
-              p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes
-       FROM subscribers s
-       LEFT JOIN packages p ON p.id = s.package_id
-       LEFT JOIN subscriber_regions r ON r.id = s.region_id
-       WHERE s.tenant_id = ?
-         AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(s.phone,''),' ',''),'-',''),'+',''),'(','') = ?
-       LIMIT 2`,
-      [tenantId, digits]
-    );
+    let rows: RowDataPacket[];
+    if (!config.dmaMode && (await hasTable(pool, "subscribers"))) {
+      const [r] = await pool.query<RowDataPacket[]>(
+        `SELECT s.id, s.username, s.status, s.start_date, s.expiration_date, s.used_bytes,
+                s.first_name, s.last_name, s.nickname, s.phone,
+                r.name AS region_name,
+                p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes
+         FROM subscribers s
+         LEFT JOIN packages p ON p.id = s.package_id
+         LEFT JOIN subscriber_regions r ON r.id = s.region_id
+         WHERE s.tenant_id = ?
+           AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(s.phone,''),' ',''),'-',''),'+',''),'(','') = ?
+         LIMIT 2`,
+        [tenantId, digits]
+      );
+      rows = r as RowDataPacket[];
+    } else if (await hasTable(pool, "rm_users")) {
+      const hasSrv = await hasTable(pool, "rm_services");
+      const [r] = await pool.query<RowDataPacket[]>(
+        hasSrv
+          ? `SELECT u.username AS id, u.username, CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status,
+                    u.createdon AS start_date, u.expiration AS expiration_date, 0 AS used_bytes,
+                    u.firstname AS first_name, u.lastname AS last_name, '' AS nickname, u.phone,
+                    '' AS region_name, svc.srvname AS package_name,
+                    '' AS mikrotik_rate_limit, svc.combquota AS quota_total_bytes
+             FROM rm_users u
+             LEFT JOIN rm_services svc ON svc.srvid = u.srvid
+             WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.phone,''),' ',''),'-',''),'+',''),'(','') = ?
+                OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.mobile,''),' ',''),'-',''),'+',''),'(','') = ?
+             LIMIT 2`
+          : `SELECT u.username AS id, u.username, CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status,
+                    u.createdon AS start_date, u.expiration AS expiration_date, 0 AS used_bytes,
+                    u.firstname AS first_name, u.lastname AS last_name, '' AS nickname, u.phone,
+                    '' AS region_name, CAST(u.srvid AS CHAR) AS package_name,
+                    '' AS mikrotik_rate_limit, 0 AS quota_total_bytes
+             FROM rm_users u
+             WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.phone,''),' ',''),'-',''),'+',''),'(','') = ?
+                OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.mobile,''),' ',''),'-',''),'+',''),'(','') = ?
+             LIMIT 2`,
+        hasSrv ? [digits, digits] : [digits, digits]
+      );
+      rows = r as RowDataPacket[];
+    } else {
+      rows = [];
+    }
     if (rows.length === 0) {
       res.status(404).json({ error: "not_found" });
       return;
@@ -233,20 +264,66 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     return;
   }
   async function loadSubscribersByLookup(): Promise<RowDataPacket[]> {
+    if (config.dmaMode) {
+      if (!(await hasTable(pool, "rm_users"))) return [];
+      if (phoneDigits) {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT username AS id, username,
+                  CASE WHEN enableuser = 1 THEN 'active' ELSE 'disabled' END AS status
+           FROM rm_users
+           WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+              OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile,''),' ',''),'-',''),'+',''),'(','') = ?
+           LIMIT 2`,
+          [phoneDigits, phoneDigits]
+        );
+        return rows;
+      }
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT username AS id, username,
+                CASE WHEN enableuser = 1 THEN 'active' ELSE 'disabled' END AS status
+         FROM rm_users WHERE username = ? LIMIT 1`,
+        [usernameInput]
+      );
+      return rows;
+    }
+    if (await hasTable(pool, "subscribers")) {
+      if (phoneDigits) {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT id, username, status
+           FROM subscribers
+           WHERE tenant_id = ?
+             AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+           LIMIT 2`,
+          [tenantId, phoneDigits]
+        );
+        return rows;
+      }
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
+        [tenantId, usernameInput]
+      );
+      return rows;
+    }
+    if (!(await hasTable(pool, "rm_users"))) {
+      return [];
+    }
     if (phoneDigits) {
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT id, username, status
-         FROM subscribers
-         WHERE tenant_id = ?
-           AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+        `SELECT username AS id, username,
+                CASE WHEN enableuser = 1 THEN 'active' ELSE 'disabled' END AS status
+         FROM rm_users
+         WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
+            OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile,''),' ',''),'-',''),'+',''),'(','') = ?
          LIMIT 2`,
-        [tenantId, phoneDigits]
+        [phoneDigits, phoneDigits]
       );
       return rows;
     }
     const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
-      [tenantId, usernameInput]
+      `SELECT username AS id, username,
+              CASE WHEN enableuser = 1 THEN 'active' ELSE 'disabled' END AS status
+       FROM rm_users WHERE username = ? LIMIT 1`,
+      [usernameInput]
     );
     return rows;
   }
@@ -255,53 +332,6 @@ router.post("/login", loginRateLimiter, async (req, res) => {
   if (phoneDigits && subs.length > 1) {
     res.status(401).json({ error: "invalid_credentials" });
     return;
-  }
-
-  /** Restored DMA DB: create extension row from rm_users + radcheck when missing. */
-  if (!subs[0] && (await hasTable(pool, "rm_users"))) {
-    let legacyUser: string | null = null;
-    if (usernameInput) {
-      const [c] = await pool.query<RowDataPacket[]>(
-        `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
-        [usernameInput]
-      );
-      if (c[0]) legacyUser = String(c[0].username);
-    } else if (phoneDigits) {
-      const [c] = await pool.query<RowDataPacket[]>(
-        `SELECT username FROM rm_users
-         WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),' ',''),'-',''),'+',''),'(','') = ?
-            OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile,''),' ',''),'-',''),'+',''),'(','') = ?
-         LIMIT 2`,
-        [phoneDigits, phoneDigits]
-      );
-      if (c.length === 1) legacyUser = String(c[0].username);
-    }
-    if (legacyUser) {
-      const reloadAfterImport = async () => {
-        const [byUser] = await pool.query<RowDataPacket[]>(
-          `SELECT id, username, status FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
-          [tenantId, legacyUser]
-        );
-        subs = byUser;
-      };
-      if (phoneDigits && !password) {
-        await importSubscribersFromDma(pool, {
-          tenantId,
-          validateSchema: false,
-          dryRun: false,
-          onlyUsernames: [legacyUser],
-        });
-        await reloadAfterImport();
-      } else if (password && (await verifyLegacySubscriberPassword(pool, legacyUser, password))) {
-        await importSubscribersFromDma(pool, {
-          tenantId,
-          validateSchema: false,
-          dryRun: false,
-          onlyUsernames: [legacyUser],
-        });
-        await reloadAfterImport();
-      }
-    }
   }
 
   if (!subs[0]) {
@@ -333,19 +363,46 @@ router.post("/login", loginRateLimiter, async (req, res) => {
 router.get("/me", requireSubscriberAuth, async (req, res) => {
   const sid = req.subscriber!.sub;
   const tenantId = req.subscriber!.tenantId;
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT s.id, s.username, s.status, s.expiration_date, s.start_date, s.used_bytes,
-            s.first_name, s.last_name, s.nickname, s.phone, s.region_id,
-            p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes,
-            r.name AS region_name,
-            u.total_bytes AS usage_live_bytes
-     FROM subscribers s
-     LEFT JOIN packages p ON p.id = s.package_id
-     LEFT JOIN subscriber_regions r ON r.id = s.region_id
-     LEFT JOIN user_usage_live u ON u.tenant_id = s.tenant_id AND u.username = s.username
-     WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
-    [sid, tenantId]
-  );
+  let rows: RowDataPacket[];
+  if (!config.dmaMode && (await hasTable(pool, "subscribers"))) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT s.id, s.username, s.status, s.expiration_date, s.start_date, s.used_bytes,
+              s.first_name, s.last_name, s.nickname, s.phone, s.region_id,
+              p.name AS package_name, p.mikrotik_rate_limit, p.quota_total_bytes,
+              r.name AS region_name,
+              u.total_bytes AS usage_live_bytes
+       FROM subscribers s
+       LEFT JOIN packages p ON p.id = s.package_id
+       LEFT JOIN subscriber_regions r ON r.id = s.region_id
+       LEFT JOIN user_usage_live u ON u.tenant_id = s.tenant_id AND u.username = s.username
+       WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
+      [sid, tenantId]
+    );
+    rows = r as RowDataPacket[];
+  } else {
+    const hasSrv = await hasTable(pool, "rm_services");
+    const [r] = await pool.query<RowDataPacket[]>(
+      hasSrv
+        ? `SELECT u.username AS id, u.username,
+                  CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status,
+                  u.expiration AS expiration_date, u.createdon AS start_date, 0 AS used_bytes,
+                  u.firstname AS first_name, u.lastname AS last_name, '' AS nickname, u.phone, NULL AS region_id,
+                  svc.srvname AS package_name, '' AS mikrotik_rate_limit, svc.combquota AS quota_total_bytes,
+                  '' AS region_name, NULL AS usage_live_bytes
+           FROM rm_users u
+           LEFT JOIN rm_services svc ON svc.srvid = u.srvid
+           WHERE u.username = ? LIMIT 1`
+        : `SELECT u.username AS id, u.username,
+                  CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status,
+                  u.expiration AS expiration_date, u.createdon AS start_date, 0 AS used_bytes,
+                  u.firstname AS first_name, u.lastname AS last_name, '' AS nickname, u.phone, NULL AS region_id,
+                  CAST(u.srvid AS CHAR) AS package_name, '' AS mikrotik_rate_limit, 0 AS quota_total_bytes,
+                  '' AS region_name, NULL AS usage_live_bytes
+           FROM rm_users u WHERE u.username = ? LIMIT 1`,
+      [sid]
+    );
+    rows = r as RowDataPacket[];
+  }
   if (!rows[0]) {
     res.status(404).json({ error: "not_found" });
     return;
@@ -400,15 +457,24 @@ router.get("/me/traffic-report", requireSubscriberAuth, async (req, res) => {
   }
   const sid = req.subscriber!.sub;
   const tenantId = req.subscriber!.tenantId;
-  const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-    [sid, tenantId]
-  );
-  if (!subs[0]) {
+  let username: string | null = null;
+  if (!config.dmaMode && (await hasTable(pool, "subscribers"))) {
+    const [subs] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [sid, tenantId]
+    );
+    username = subs[0]?.username != null ? String(subs[0].username) : null;
+  } else if (await hasTable(pool, "rm_users")) {
+    const [rm] = await pool.query<RowDataPacket[]>(
+      `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
+      [sid]
+    );
+    username = rm[0]?.username != null ? String(rm[0].username) : null;
+  }
+  if (!username) {
     res.status(404).json({ error: "not_found" });
     return;
   }
-  const username = String(subs[0].username ?? "");
   if (!(await hasTable(pool, "radacct"))) {
     res.json({
       username,
@@ -613,33 +679,48 @@ router.post("/change-password", requireSubscriberAuth, async (req, res) => {
     res.status(400).json({ error: "wrong_password" });
     return;
   }
-  const enc = encryptSecret(new_password);
-  await pool.execute(`UPDATE subscribers SET radius_password_encrypted = ? WHERE id = ? AND tenant_id = ?`, [
-    enc,
-    sid,
-    tenantId,
-  ]);
-  const [sub] = await pool.query<RowDataPacket[]>(
-    `SELECT package_id, status, ip_address, mac_address, pool FROM subscribers WHERE id = ? AND tenant_id = ?`,
-    [sid, tenantId]
+  await pool.execute(
+    `UPDATE radcheck SET value = ? WHERE username = ? AND attribute = 'Cleartext-Password'`,
+    [new_password, username]
   );
-  if (sub[0]?.package_id && sub[0].status === "active") {
-    const pkg = await radius.getPackage(tenantId, sub[0].package_id as string);
+  if (!config.dmaMode && (await hasTable(pool, "subscribers"))) {
+    const enc = encryptSecret(new_password);
+    await pool.execute(`UPDATE subscribers SET radius_password_encrypted = ? WHERE id = ? AND tenant_id = ?`, [
+      enc,
+      sid,
+      tenantId,
+    ]);
+  }
+  if (await hasTable(pool, "rm_users")) {
+    await pool.execute(`UPDATE rm_users SET password = MD5(?) WHERE username = ?`, [new_password, username]);
+  }
+  const subQ = await hasTable(pool, "subscribers")
+    ? await pool.query<RowDataPacket[]>(
+        `SELECT package_id, status, ip_address, mac_address, pool FROM subscribers WHERE id = ? AND tenant_id = ?`,
+        [sid, tenantId]
+      )
+    : await pool.query<RowDataPacket[]>(
+        `SELECT CAST(srvid AS CHAR) AS package_id,
+                CASE WHEN enableuser = 1 THEN 'active' ELSE 'disabled' END AS status,
+                NULLIF(TRIM(staticipcpe), '') AS ip_address,
+                NULLIF(TRIM(mac), '') AS mac_address,
+                NULL AS pool
+         FROM rm_users WHERE username = ? LIMIT 1`,
+        [username]
+      );
+  const subRows = subQ[0] as RowDataPacket[];
+  if (subRows[0]?.package_id && subRows[0].status === "active") {
+    const pkg = await radius.getPackage(tenantId, subRows[0].package_id as string);
     if (pkg) {
       await radius.createRadiusUser({
         username,
         password: new_password,
         package: pkg,
-        framedIp: sub[0].ip_address as string | null,
-        macLock: sub[0].mac_address as string | null,
-        framedPool: sub[0].pool as string | null,
+        framedIp: subRows[0].ip_address as string | null,
+        macLock: subRows[0].mac_address as string | null,
+        framedPool: subRows[0].pool as string | null,
       });
     }
-  } else {
-    await pool.execute(
-      `UPDATE radcheck SET value = ? WHERE username = ? AND attribute = 'Cleartext-Password'`,
-      [new_password, username]
-    );
   }
   res.json({ ok: true });
 });

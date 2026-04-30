@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, RefreshCw } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -11,7 +11,7 @@ import { canManageOperations } from "../lib/permissions";
 import { cn } from "../lib/utils";
 
 type Pkg = Record<string, unknown>;
-const currencies = ["USD", "SYP"] as const;
+const currencies = ["USD", "SYP", "TRY"] as const;
 
 function quotaGbToBytesString(gbStr: string): string {
   const n = parseFloat(String(gbStr).replace(",", "."));
@@ -38,7 +38,7 @@ function bytesToQuotaGbField(bytes: unknown): string {
 }
 
 export function PackagesPage() {
-  const { t, isRtl } = useI18n();
+  const { t, isRtl, locale } = useI18n();
   const { user } = useAuth();
   const canManage = canManageOperations(user?.role);
 
@@ -47,6 +47,7 @@ export function PackagesPage() {
   const [modal, setModal] = useState<"create" | "edit" | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -57,7 +58,12 @@ export function PackagesPage() {
   const [currency, setCurrency] = useState("USD");
   const [billingDays, setBillingDays] = useState("30");
   const [simUse, setSimUse] = useState("1");
+  const [accountType, setAccountType] = useState<"subscriptions" | "cards">("subscriptions");
   const [framedPool, setFramedPool] = useState("");
+  const [allowedNasIds, setAllowedNasIds] = useState<string[]>([]);
+  const [allowedManagerNames, setAllowedManagerNames] = useState<string[]>([]);
+  const [nasOptions, setNasOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [managerOptions, setManagerOptions] = useState<Array<{ id: string; name: string }>>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,7 +71,13 @@ export function PackagesPage() {
     try {
       const r = await apiFetch("/api/packages/");
       if (r.ok) {
-        setItems(((await r.json()) as { items: Pkg[] }).items);
+        const payload = (await r.json()) as {
+          items: Pkg[];
+          options?: { nases?: Array<{ id: string; name: string }>; managers?: Array<{ id: string; name: string }> };
+        };
+        setItems(payload.items);
+        setNasOptions(payload.options?.nases ?? []);
+        setManagerOptions(payload.options?.managers ?? []);
       } else {
         const raw = await readApiError(r);
         setLoadError(formatStaffApiError(r.status, raw, t));
@@ -88,7 +100,10 @@ export function PackagesPage() {
     setCurrency("USD");
     setBillingDays("30");
     setSimUse("1");
+    setAccountType("subscriptions");
     setFramedPool("");
+    setAllowedNasIds([]);
+    setAllowedManagerNames([]);
     setFormError(null);
     setModal("create");
   }
@@ -102,7 +117,14 @@ export function PackagesPage() {
     setCurrency(String(p.currency ?? "USD"));
     setBillingDays(String(p.billing_period_days ?? "30"));
     setSimUse(String(p.simultaneous_use ?? "1"));
+    setAccountType(String(p.account_type ?? "subscriptions") === "cards" ? "cards" : "subscriptions");
     setFramedPool(String(p.default_framed_pool ?? ""));
+    setAllowedNasIds(
+      Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.map((v) => String(v)) : []
+    );
+    setAllowedManagerNames(
+      Array.isArray(p.available_manager_names) ? p.available_manager_names.map((v) => String(v)) : []
+    );
     setFormError(null);
     setModal("edit");
   }
@@ -123,7 +145,10 @@ export function PackagesPage() {
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
             simultaneous_use: parseInt(simUse, 10) || 1,
+            account_type: accountType,
             default_framed_pool: framedPool || null,
+            allowed_nas_ids: allowedNasIds,
+            available_manager_names: allowedManagerNames,
           }),
         });
         if (r.ok) {
@@ -144,7 +169,10 @@ export function PackagesPage() {
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
             simultaneous_use: parseInt(simUse, 10) || 1,
+            account_type: accountType,
             default_framed_pool: framedPool || null,
+            allowed_nas_ids: allowedNasIds,
+            available_manager_names: allowedManagerNames,
           }),
         });
         if (r.ok) {
@@ -158,6 +186,35 @@ export function PackagesPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function onDelete(id: string) {
+    const confirmed = window.confirm(t("packages.deleteConfirm"));
+    if (!confirmed) return;
+    setLoadError(null);
+    setDeletingId(id);
+    try {
+      const r = await apiFetch(`/api/packages/${id}`, { method: "DELETE" });
+      if (r.ok) {
+        await load();
+        return;
+      }
+      const raw = await readApiError(r);
+      setLoadError(formatStaffApiError(r.status, raw, t));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  function toggleNas(id: string) {
+    setAllowedNasIds((current) =>
+      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
+    );
+  }
+  function toggleManager(id: string) {
+    setAllowedManagerNames((current) =>
+      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
+    );
   }
 
   return (
@@ -192,15 +249,31 @@ export function PackagesPage() {
             <div className="absolute start-0 top-0 h-1 w-full bg-[hsl(var(--primary))]" />
             <div className="flex items-start justify-between gap-2">
               <div className="text-lg font-semibold leading-snug">{String(p.name)}</div>
+              <div className="text-xs opacity-70">
+                {String(p.account_type ?? "subscriptions") === "cards"
+                  ? t("packages.type.cards")
+                  : t("packages.type.subscriptions")}
+              </div>
               {canManage ? (
-                <button
-                  type="button"
-                  onClick={() => openEdit(p)}
-                  className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
-                  aria-label={t("common.edit")}
-                >
-                  <Pencil className="h-4 w-4" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => openEdit(p)}
+                    className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
+                    aria-label={t("common.edit")}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDelete(String(p.id))}
+                    disabled={deletingId === String(p.id)}
+                    className="rounded-lg p-2 text-red-600 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={t("common.delete")}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               ) : null}
             </div>
             <dl className="mt-4 space-y-2 text-xs">
@@ -220,6 +293,16 @@ export function PackagesPage() {
                 <dt className="opacity-60">{t("packages.price")}</dt>
                 <dd className="text-end font-semibold">
                   {String(p.price)} {String(p.currency)}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="opacity-60">{t("packages.allowedNas")}</dt>
+                <dd className="text-end font-medium">{Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.length : 0}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="opacity-60">{t("packages.availableManagers")}</dt>
+                <dd className="text-end font-medium">
+                  {Array.isArray(p.available_manager_names) ? p.available_manager_names.length : 0}
                 </dd>
               </div>
             </dl>
@@ -267,6 +350,76 @@ export function PackagesPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label={t("packages.billingDays")} value={billingDays} onChange={(e) => setBillingDays(e.target.value)} />
             <TextField label={t("packages.simUse")} value={simUse} onChange={(e) => setSimUse(e.target.value)} />
+          </div>
+          <SelectField label={t("packages.type")} value={accountType} onChange={(e) => setAccountType(e.target.value as "subscriptions" | "cards")}>
+            <option value="subscriptions">{t("packages.type.subscriptions")}</option>
+            <option value="cards">{t("packages.type.cards")}</option>
+          </SelectField>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">{t("packages.allowedNas")}</label>
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-3">
+                <label className="mb-2 flex cursor-pointer items-center justify-between rounded-lg bg-[hsl(var(--card))]/70 px-2 py-1 text-sm">
+                  <span>{t("packages.selectAll")}</span>
+                  <input
+                    type="checkbox"
+                    checked={nasOptions.length > 0 && allowedNasIds.length === nasOptions.length}
+                    onChange={(e) =>
+                      setAllowedNasIds(e.target.checked ? nasOptions.map((n) => n.id) : [])
+                    }
+                  />
+                </label>
+                <div className="max-h-40 space-y-1 overflow-auto">
+                  {nasOptions.map((n) => (
+                    <label
+                      key={n.id}
+                      className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-sm hover:bg-[hsl(var(--card))]/70"
+                    >
+                      <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{n.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={allowedNasIds.includes(n.id)}
+                        onChange={() => toggleNas(n.id)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">{t("packages.availableManagers")}</label>
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-3">
+                <label className="mb-2 flex cursor-pointer items-center justify-between rounded-lg bg-[hsl(var(--card))]/70 px-2 py-1 text-sm">
+                  <span>{t("packages.selectAll")}</span>
+                  <input
+                    type="checkbox"
+                    checked={
+                      managerOptions.length > 0 && allowedManagerNames.length === managerOptions.length
+                    }
+                    onChange={(e) =>
+                      setAllowedManagerNames(
+                        e.target.checked ? managerOptions.map((m) => m.id) : []
+                      )
+                    }
+                  />
+                </label>
+                <div className="max-h-40 space-y-1 overflow-auto">
+                  {managerOptions.map((m) => (
+                    <label
+                      key={m.id}
+                      className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-sm hover:bg-[hsl(var(--card))]/70"
+                    >
+                      <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{m.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={allowedManagerNames.includes(m.id)}
+                        onChange={() => toggleManager(m.id)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => setModal(null)}>

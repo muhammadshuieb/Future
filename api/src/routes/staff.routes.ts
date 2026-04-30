@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { getTableColumns } from "../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { requireAuth, requireRole, type Role } from "../middleware/auth.js";
 import { normalizeManagerPermissions, requestHasManagerPermission } from "../lib/manager-permissions.js";
 import { writeAuditLog } from "../services/audit-log.service.js";
@@ -46,7 +46,36 @@ router.get("/", async (req: Request, res: Response) => {
      ORDER BY created_at DESC`,
     isManager ? [req.auth!.tenantId, req.auth!.sub, req.auth!.sub] : [req.auth!.tenantId]
   );
-  res.json({ items: rows });
+  const items: Array<Record<string, unknown>> = rows.map((row) => ({ ...row }));
+  if (await hasTable(pool, "rm_managers")) {
+    const [rmManagers] = await pool.query<RowDataPacket[]>(
+      `SELECT managername, firstname, lastname, email, balance, enablemanager
+       FROM rm_managers
+       ORDER BY managername`
+    );
+    for (const m of rmManagers) {
+      const managerName = String(m.managername ?? "").trim();
+      if (!managerName) continue;
+      if (items.some((row) => String(row.email ?? "").toLowerCase() === String(m.email ?? "").toLowerCase())) {
+        continue;
+      }
+      const fullName = `${String(m.firstname ?? "").trim()} ${String(m.lastname ?? "").trim()}`.trim();
+      items.push({
+        id: `rm:${managerName}`,
+        name: fullName || managerName,
+        email: String(m.email ?? `${managerName}@rm.local`),
+        role: "manager",
+        active: Number(m.enablemanager ?? 0) === 1,
+        created_at: null,
+        wallet_balance: Number(m.balance ?? 0),
+        opening_balance: Number(m.balance ?? 0),
+        parent_staff_id: null,
+        permissions_json: null,
+        legacy_source: "rm_managers",
+      });
+    }
+  }
+  res.json({ items });
 });
 
 const createStaffBody = z.object({
@@ -229,6 +258,81 @@ router.patch("/:id", async (req: Request, res: Response) => {
     entityType: "staff_user",
     entityId: req.params.id,
     payload: parsed.data,
+  });
+  res.json({ ok: true });
+});
+
+router.delete("/:id", async (req: Request, res: Response) => {
+  if (!canManageManagers(req)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const tenantId = req.auth!.tenantId;
+  const targetId = String(req.params.id ?? "");
+  if (!targetId) {
+    res.status(400).json({ error: "invalid_staff_id" });
+    return;
+  }
+  if (targetId.startsWith("rm:")) {
+    if (req.auth!.role !== "admin") {
+      res.status(403).json({ error: "forbidden", detail: "legacy_rm_delete_admin_only" });
+      return;
+    }
+    const managerName = targetId.slice(3).trim();
+    if (!managerName) {
+      res.status(400).json({ error: "invalid_staff_id" });
+      return;
+    }
+    if (!(await hasTable(pool, "rm_managers"))) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const [legacyRows] = await pool.query<RowDataPacket[]>(
+      `SELECT managername FROM rm_managers WHERE managername = ? LIMIT 1`,
+      [managerName]
+    );
+    if (!legacyRows[0]) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    await pool.execute(`DELETE FROM rm_managers WHERE managername = ?`, [managerName]);
+    await writeAuditLog(pool, {
+      tenantId,
+      staffId: req.auth!.sub,
+      action: "delete",
+      entityType: "rm_manager",
+      entityId: targetId,
+      payload: null,
+    });
+    res.json({ ok: true, legacy_rm_manager: true });
+    return;
+  }
+  if (targetId === req.auth!.sub) {
+    res.status(400).json({ error: "cannot_delete_self" });
+    return;
+  }
+  const [existing] = await pool.query<RowDataPacket[]>(
+    `SELECT id, role, parent_staff_id FROM staff_users WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [targetId, tenantId]
+  );
+  if (!existing[0]) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (req.auth!.role === "manager") {
+    if (String(existing[0].role) !== "manager" || String(existing[0].parent_staff_id ?? "") !== req.auth!.sub) {
+      res.status(403).json({ error: "forbidden", detail: "manager_scope_violation" });
+      return;
+    }
+  }
+  await pool.execute(`DELETE FROM staff_users WHERE id = ? AND tenant_id = ?`, [targetId, tenantId]);
+  await writeAuditLog(pool, {
+    tenantId,
+    staffId: req.auth!.sub,
+    action: "delete",
+    entityType: "staff_user",
+    entityId: targetId,
+    payload: null,
   });
   res.json({ ok: true });
 });

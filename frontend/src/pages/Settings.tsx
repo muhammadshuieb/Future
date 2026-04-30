@@ -16,6 +16,8 @@ type SystemSettings = {
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
+  billing_currency: "USD" | "SYP" | "TRY";
+  disconnection_method: "nas" | "remote";
   subscription_license_note: string;
   accountant_contact_phone: string;
 };
@@ -36,6 +38,8 @@ export function SettingsPage() {
     mikrotik_interim_update_minutes: 1,
     disconnect_on_activation: true,
     disconnect_on_update: true,
+    billing_currency: "USD",
+    disconnection_method: "remote",
     subscription_license_note: "",
     accountant_contact_phone: "",
   });
@@ -208,6 +212,48 @@ export function SettingsPage() {
           {t("settings.disconnectOnUpdate")}
         </label>
         <p className="text-[11px] opacity-60">{t("settings.disconnectOnUpdateHint")}</p>
+        <div className="space-y-2">
+          <label className="text-sm font-medium">{t("settings.billingCurrency")}</label>
+          <select
+            className="w-full rounded-xl border border-[hsl(var(--border))] bg-transparent px-3 py-2 text-sm"
+            value={settings.billing_currency}
+            onChange={(e) =>
+              setSettings((p) => ({
+                ...p,
+                billing_currency: (["USD", "SYP", "TRY"].includes(e.target.value) ? e.target.value : "USD") as
+                  | "USD"
+                  | "SYP"
+                  | "TRY",
+              }))
+            }
+          >
+            <option value="USD">{t("currency.usd")}</option>
+            <option value="SYP">{t("currency.syp")}</option>
+            <option value="TRY">{t("currency.try")}</option>
+          </select>
+          <p className="text-[11px] opacity-60">{t("settings.billingCurrencyHint")}</p>
+        </div>
+        <div className="space-y-2">
+          <div className="text-sm font-medium">{t("settings.disconnectionMethod")}</div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="disconnection_method"
+              checked={settings.disconnection_method === "nas"}
+              onChange={() => setSettings((p) => ({ ...p, disconnection_method: "nas" }))}
+            />
+            {t("settings.disconnectionMethodNas")}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="disconnection_method"
+              checked={settings.disconnection_method === "remote"}
+              onChange={() => setSettings((p) => ({ ...p, disconnection_method: "remote" }))}
+            />
+            {t("settings.disconnectionMethodRemote")}
+          </label>
+        </div>
         <TextField
           label={t("settings.licenseNote")}
           value={settings.subscription_license_note}

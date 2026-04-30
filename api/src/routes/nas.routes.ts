@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { config } from "../config.js";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
@@ -57,7 +58,7 @@ async function upsertLegacyNas(input: {
 router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req: Request, res: Response) => {
   try {
     let modern: RowDataPacket[] = [];
-    if (await hasTable(pool, "nas_servers")) {
+    if (!config.dmaMode && (await hasTable(pool, "nas_servers"))) {
       const col = await getTableColumns(pool, "nas_servers");
       const want = [
         "id",
@@ -103,7 +104,28 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
       );
       legacy = rows;
     }
-    res.json({ nas_servers: modern, nas_legacy: legacy });
+    const legacyAsModern = legacy.map((r) => ({
+      id: String(r.id ?? ""),
+      legacy_nas_id: r.id != null ? Number(r.id) : null,
+      name: String(r.name ?? ""),
+      ip: String(r.ip ?? ""),
+      type: String(r.type ?? "other"),
+      mikrotik_api_enabled: 0,
+      mikrotik_api_user: null,
+      status: "active",
+      coa_port: 3799,
+      online_status: "unknown",
+      last_ping_ok: null,
+      last_radius_ok: null,
+      last_check_at: null,
+      session_count: 0,
+      created_at: null,
+      dma_legacy_nas_only: true,
+    }));
+    // Keep backward compatibility for clients that still read `nas_legacy`,
+    // and expose a unified `nas_servers` array for existing frontend screens.
+    const merged = modern.length > 0 ? modern : legacyAsModern;
+    res.json({ nas_servers: merged, nas_legacy: legacy });
   } catch (e) {
     console.error("nas GET", e);
     res.status(500).json({
@@ -136,6 +158,45 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   }
   const id = randomUUID();
   try {
+    let legacyOnlyMode = config.dmaMode || !(await hasTable(pool, "nas_servers"));
+    if (!legacyOnlyMode) {
+      const col = await getTableColumns(pool, "nas_servers");
+      // Some DMA databases may include a partial/legacy nas_servers table.
+      // If required modern columns are missing, fallback to legacy `nas` table writes.
+      const modernInsertable =
+        col.has("tenant_id") && col.has("name") && col.has("ip") && (col.has("secret_encrypted") || col.has("secret"));
+      if (!modernInsertable) legacyOnlyMode = true;
+    }
+    if (legacyOnlyMode) {
+      const legacyId = await upsertLegacyNas({
+        legacyId: parsed.data.legacy_nas_id ?? null,
+        ip: parsed.data.ip,
+        name: parsed.data.name,
+        type: parsed.data.type ?? "mikrotik",
+        secret: parsed.data.secret,
+      });
+      if (parsed.data.wireguard_tunnel_ip?.trim()) {
+        await upsertLegacyNas({
+          legacyId: null,
+          ip: parsed.data.wireguard_tunnel_ip.trim(),
+          name: `${parsed.data.name} WireGuard`,
+          type: parsed.data.type ?? "mikrotik",
+          secret: parsed.data.secret,
+        });
+      }
+      if (legacyId == null) {
+        res.status(500).json({
+          error: "nas_legacy_table_missing",
+          detail: "Legacy nas table is not available for DMA fallback insert.",
+        });
+        return;
+      }
+      res.status(201).json({
+        id: legacyId > 0 ? String(legacyId) : id,
+        dma_legacy_nas_only: true,
+      });
+      return;
+    }
     const enc = encryptSecret(parsed.data.secret);
     const col = await getTableColumns(pool, "nas_servers");
     const fields: string[] = [];
@@ -227,6 +288,10 @@ router.patch(
   denyViewerWrites,
   denyAccountant,
   async (req: Request, res: Response) => {
+    if (config.dmaMode) {
+      res.status(410).json({ error: "gone", reason: "dma_mode", detail: "NAS inventory UI uses legacy nas table only in DMA_MODE." });
+      return;
+    }
     const parsed = nasPatch.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_body" });
@@ -358,6 +423,28 @@ router.delete(
   denyViewerWrites,
   denyAccountant,
   async (req: Request, res: Response) => {
+    if (config.dmaMode) {
+      if (!(await hasTable(pool, "nas"))) {
+        res.status(503).json({ error: "nas_legacy_table_missing" });
+        return;
+      }
+      const legacyId = Number.parseInt(String(req.params.id), 10);
+      if (!Number.isFinite(legacyId)) {
+        res.status(400).json({ error: "invalid_nas_id" });
+        return;
+      }
+      try {
+        await pool.execute(`DELETE FROM nas WHERE id = ?`, [legacyId]);
+        res.json({ ok: true, dma_legacy_nas_only: true });
+      } catch (e) {
+        console.error("nas DELETE dma", e);
+        res.status(500).json({
+          error: "db_error",
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+      return;
+    }
     const tenant = req.auth!.tenantId;
     const [existing] = await pool.query<RowDataPacket[]>(
       `SELECT id, ip, legacy_nas_id FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
@@ -389,21 +476,49 @@ router.delete(
 );
 
 router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT ip FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-    [req.params.id, req.auth!.tenantId]
-  );
-  if (!rows[0]) {
+  let nasIp: string | null = null;
+  if (config.dmaMode) {
+    if (!(await hasTable(pool, "nas"))) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const [rows] = await pool.query<RowDataPacket[]>(`SELECT nasname FROM nas WHERE id = ? LIMIT 1`, [req.params.id]);
+    nasIp = rows[0]?.nasname != null ? String(rows[0].nasname) : null;
+  } else {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT ip FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, req.auth!.tenantId]
+    );
+    nasIp = rows[0]?.ip != null ? String(rows[0].ip) : null;
+  }
+  if (!nasIp) {
     res.status(404).json({ error: "not_found" });
     return;
   }
   const testUser = "coa-probe-disconnect-invalid-user";
-  const r = await coa.disconnectUserForTenant(testUser, rows[0].ip as string, req.auth!.tenantId);
+  const r = await coa.disconnectUserForTenant(testUser, nasIp, req.auth!.tenantId);
   res.json({ result: r });
 });
 
 /** Plaintext shared secret — admin/manager only (never expose to viewer/accountant). */
 router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req: Request, res: Response) => {
+  if (config.dmaMode) {
+    if (!(await hasTable(pool, "nas"))) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const [plainRows] = await pool.query<RowDataPacket[]>(
+      `SELECT secret, nasname FROM nas WHERE id = ? LIMIT 1`,
+      [req.params.id]
+    );
+    const pr = plainRows[0];
+    if (pr?.secret != null && String(pr.secret).length > 0) {
+      res.json({ secret: String(pr.secret), source: "legacy_plain" as const });
+      return;
+    }
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT secret_encrypted, ip
      FROM nas_servers

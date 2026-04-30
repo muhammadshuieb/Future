@@ -8,6 +8,7 @@ RUN apt-get update \
        freeradius-utils \
        ca-certificates \
        gettext-base \
+       procps \
   && rm -rf /var/lib/apt/lists/*
 
 COPY docker/freeradius/docker-entrypoint.sh /docker-entrypoint.sh
@@ -18,6 +19,7 @@ COPY docker/freeradius/sites-available/coa-futureradius /etc/freeradius/3.0/site
 RUN chmod +x /docker-entrypoint.sh \
   && : > /etc/freeradius/3.0/mods-available/sql \
   && ln -sf /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql \
+  && sed -i 's/secret, server \\/secret, NULL AS server \\/g' /etc/freeradius/3.0/mods-config/sql/main/mysql/queries.conf \
   && ln -sf /etc/freeradius/3.0/sites-available/coa-futureradius /etc/freeradius/3.0/sites-enabled/coa \
   && sed -i 's/^\([[:space:]]*\)-sql$/\1sql/' /etc/freeradius/3.0/sites-enabled/default \
   && sed -i '/^session {/,/^}$/s/^[[:space:]]*# sql$/\tsql/' /etc/freeradius/3.0/sites-enabled/default \

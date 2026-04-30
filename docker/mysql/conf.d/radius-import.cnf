@@ -5,5 +5,10 @@ sql_mode=NO_ENGINE_SUBSTITUTION
 character-set-server=utf8mb4
 collation-server=utf8mb4_unicode_ci
 
-# مطلوب لحدث cleanup_radacct (sql/migrations/004_radacct_cleanup_event.sql)
+# مطلوب لحدث cleanup_radacct (docker/mysql/opt/04-radacct-cleanup-event.sql)
 event_scheduler=ON
+
+# جدول radacct يتغير باستمرار (محاسبة RADIUS): إيقاف إعادة حساب إحصائيات InnoDB التلقائية
+# على مستوى السيرفر يقلّل ضغط الخلفية مع جداول أخرى صغيرة نسبياً. بعد تغييرات كبيرة يمكن
+# تشغيل ANALYZE TABLE يدوياً في وقت هادئ.
+innodb_stats_auto_recalc=OFF

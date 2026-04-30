@@ -4,7 +4,8 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ iputils-ping curl default-mysql-client rclone \
+  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ iputils-ping curl default-mysql-client rclone git docker.io docker-compose \
+  && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json ./

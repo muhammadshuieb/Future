@@ -784,6 +784,7 @@ export async function applyProfessionalArabicTemplates(tenantId: string): Promis
 }
 
 export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent: number; failed: number }> {
+  if (config.dmaMode) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const thresholds = parseUsageThresholds(settings.usage_alert_thresholds);
@@ -904,6 +905,7 @@ export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent
 }
 
 export async function sendPaymentDueReminders(tenantId: string): Promise<{ sent: number; failed: number }> {
+  if (config.dmaMode) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const templates = await getTemplateMap(tenantId);
@@ -1164,6 +1166,7 @@ export async function sendNewSubscriberWhatsApp(input: {
 }
 
 export async function sendExpiryReminders(tenantId: string): Promise<{ sent: number; failed: number }> {
+  if (config.dmaMode) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const reminderDays = Number(settings.reminder_days ?? 5);
@@ -1268,6 +1271,7 @@ export async function sendWhatsAppBroadcast(
   tenantId: string,
   input: WhatsAppBroadcastInput
 ): Promise<{ total: number; sent: number; failed: number }> {
+  if (config.dmaMode) return { total: 0, sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) throw new Error("whatsapp_disabled");
   const message = input.message.trim();
@@ -1399,6 +1403,7 @@ export async function sendInvoicePaidWhatsApp(input: {
   currency?: string | null;
   paidAt?: Date | string | null;
 }): Promise<void> {
+  if (config.dmaMode) return;
   await ensureSchema();
   const settings = await getSettingsRow(input.tenantId);
   if (!settings.enabled) return;

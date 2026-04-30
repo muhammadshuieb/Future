@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, RefreshCw } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -70,6 +70,7 @@ export function StaffUsersPage() {
   const [items, setItems] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [modal, setModal] = useState<"create" | "edit" | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -113,6 +114,7 @@ export function StaffUsersPage() {
     setOpeningBalance("0");
     setPermissions(defaultManagerPermissions());
     setParentStaffId("");
+    setModalError(null);
     setModal("create");
   }
 
@@ -126,13 +128,14 @@ export function StaffUsersPage() {
     setOpeningBalance(String(item.opening_balance ?? 0));
     setPermissions(normalizePermissions(item.permissions_json ?? null));
     setParentStaffId(String(item.parent_staff_id ?? ""));
+    setModalError(null);
     setModal("edit");
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setError(null);
+    setModalError(null);
     try {
       const body = {
         name,
@@ -150,7 +153,7 @@ export function StaffUsersPage() {
           : await apiFetch(`/api/staff/${editId}`, { method: "PATCH", body: JSON.stringify(body) });
       if (!res.ok) {
         const raw = await readApiError(res);
-        setError(formatStaffApiError(res.status, raw, t));
+        setModalError(formatStaffApiError(res.status, raw, t));
         return;
       }
       setModal(null);
@@ -172,6 +175,23 @@ export function StaffUsersPage() {
         method: "POST",
         body: JSON.stringify({ amount }),
       });
+      if (!res.ok) {
+        const raw = await readApiError(res);
+        setError(formatStaffApiError(res.status, raw, t));
+        return;
+      }
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteStaff(item: StaffRow) {
+    if (!window.confirm(t("staff.deleteConfirm"))) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/staff/${item.id}`, { method: "DELETE" });
       if (!res.ok) {
         const raw = await readApiError(res);
         setError(formatStaffApiError(res.status, raw, t));
@@ -237,7 +257,7 @@ export function StaffUsersPage() {
                     {String(item.created_at ?? "").slice(0, 16).replace("T", " ")}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {item.role === "manager" ? (
+                    {item.role === "manager" && !String(item.id).startsWith("rm:") ? (
                       <button
                         type="button"
                         onClick={() => void topupManager(item)}
@@ -249,10 +269,20 @@ export function StaffUsersPage() {
                     <button
                       type="button"
                       onClick={() => openEdit(item)}
+                      disabled={String(item.id).startsWith("rm:")}
                       className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
                       aria-label={t("common.edit")}
                     >
                       <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteStaff(item)}
+                      disabled={!String(item.id).startsWith("rm:") && String(item.id) === String(user?.id)}
+                      className="rounded-lg p-2 text-red-600 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={t("common.delete")}
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </td>
                 </tr>
@@ -262,8 +292,21 @@ export function StaffUsersPage() {
         </div>
       </Card>
 
-      <Modal open={modal !== null} onClose={() => setModal(null)} title={modal === "edit" ? t("common.edit") : t("staff.add")} wide>
+      <Modal
+        open={modal !== null}
+        onClose={() => {
+          setModalError(null);
+          setModal(null);
+        }}
+        title={modal === "edit" ? t("common.edit") : t("staff.add")}
+        wide
+      >
         <form onSubmit={onSubmit} className="space-y-4">
+          {modalError ? (
+            <div className="whitespace-pre-wrap rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {modalError}
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label={t("staff.name")} value={name} onChange={(e) => setName(e.target.value)} required />
             <TextField label={t("login.email")} value={email} onChange={(e) => setEmail(e.target.value)} required />
