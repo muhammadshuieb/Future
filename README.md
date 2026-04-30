@@ -10,7 +10,6 @@
   - Email: `admin@local.test`
   - Name (also accepted in login): `admin`
   - Password: `muhammadshuieb`
-  - You can override via `.env`: `SEED_ADMIN_EMAIL`, `SEED_ADMIN_NAME`, `SEED_ADMIN_PASSWORD`
 
 ## Update flow on Hostinger
 

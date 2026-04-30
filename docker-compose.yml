@@ -102,9 +102,6 @@ services:
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
-      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-root@local.test}
-      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-root}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-muhammadshuieb}
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       SQL_MIGRATIONS_DIR: /app/sql/migrations

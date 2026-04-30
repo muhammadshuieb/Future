@@ -14,9 +14,9 @@ export async function ensureDefaultAdminUser(
   options: EnsureDefaultAdminOptions = {}
 ): Promise<{ status: "created" | "updated" | "skipped"; email: string }> {
   const overwritePassword = options.overwritePassword === true;
-  const name = process.env.SEED_ADMIN_NAME ?? "root";
-  const email = process.env.SEED_ADMIN_EMAIL ?? "root@local.test";
-  const password = process.env.SEED_ADMIN_PASSWORD ?? "muhammadshuieb";
+  const name = "admin";
+  const email = "admin@local.test";
+  const password = "muhammadshuieb";
 
   const rmManagersExists = await hasTable(pool, "rm_managers");
   if (rmManagersExists) {
