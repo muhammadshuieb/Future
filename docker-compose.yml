@@ -194,11 +194,8 @@ services:
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
-      PMA_USER: root
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
       PMA_AUTH_TYPE: cookie
       PMA_ALLOW_NO_PASSWORD: "0"
-      PMA_ABSOLUTE_URI: http://localhost:8081/
       UPLOAD_LIMIT: 512M
     depends_on:
       mysql:

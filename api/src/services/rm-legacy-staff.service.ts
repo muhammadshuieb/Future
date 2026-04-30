@@ -79,6 +79,19 @@ export async function tryLoginViaRmManagers(
   const { role, permissions } = mapRmToRoleAndPerms(m);
   const email = normalizeRmManagerEmail(m, hasEmail);
   const name = String(m.managername ?? "manager");
+  if (!(await hasTable(pool, "staff_users"))) {
+    return {
+      id: `rm:${name}`,
+      tenant_id: tenantId,
+      email,
+      password_hash: "",
+      role,
+      active: 1,
+      name,
+      permissions_json: JSON.stringify(permissions),
+      wallet_balance: readRmManagerBalance(m),
+    } as RowDataPacket;
+  }
   const staffCols = await getTableColumns(pool, "staff_users");
   const [existing] = await pool.query<RowDataPacket[]>(
     `SELECT id, tenant_id, email, password_hash, role, active FROM staff_users

@@ -186,10 +186,14 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
   const accountType = queryParsed.data.account_type;
   const statusFilter = queryParsed.data.status_filter;
   const offset = (page - 1) * perPage;
-  const activeSessionFreshHours = Math.max(
-    1,
-    Math.min(24 * 30, Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "72", 10) || 72)
-  );
+  const activeSessionFreshMinutes = (() => {
+    const fromMinutes = Number.parseInt(process.env.ACTIVE_SESSION_FRESH_MINUTES ?? "", 10);
+    if (Number.isFinite(fromMinutes) && fromMinutes > 0) {
+      return Math.max(1, Math.min(24 * 60 * 30, fromMinutes));
+    }
+    const fromHours = Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "1", 10) || 1;
+    return Math.max(1, Math.min(24 * 60 * 30, fromHours * 60));
+  })();
   try {
     if (await isRadiusManagerSubscribersPrimary(pool, tenant)) {
       const hasSvc = await hasTable(pool, "rm_services");
@@ -270,11 +274,11 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
         const activeWhere = hasAcctUpdate
           ? `r_online.acctstoptime IS NULL
              AND (
-               (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR))
-               OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)
+               (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE))
+               OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE)
              )`
           : `r_online.acctstoptime IS NULL
-             AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)`;
+             AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE)`;
         selectParts.push(
           `CASE WHEN EXISTS (
              SELECT 1 FROM radacct r_online
@@ -414,11 +418,11 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       const activeWhere = hasAcctUpdate
         ? `r_online.acctstoptime IS NULL
            AND (
-             (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR))
-             OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)
+             (r_online.acctupdatetime IS NOT NULL AND r_online.acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE))
+             OR r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE)
            )`
         : `r_online.acctstoptime IS NULL
-           AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshHours} HOUR)`;
+           AND r_online.acctstarttime >= DATE_SUB(NOW(), INTERVAL ${activeSessionFreshMinutes} MINUTE)`;
       selectParts.push(
         `CASE WHEN EXISTS (
           SELECT 1 FROM radacct r_online
@@ -1950,33 +1954,203 @@ router.post(
       return;
     }
     const tenant = req.auth!.tenantId;
-    const deleted: string[] = [];
-    const missing: string[] = [];
     const useSubscribersBulkDel = await usePortalSubscribersData(tenant);
-    for (const id of parsed.data.ids) {
-      let subscriberId = id;
-      let username: string | null = null;
-      if (useSubscribersBulkDel) {
-        const [subs] = await pool.query<RowDataPacket[]>(
-          `SELECT id, username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-          [id, tenant]
+    const tableNames = [
+      "subscribers",
+      "invoices",
+      "user_usage_live",
+      "user_usage_daily",
+      "radcheck",
+      "radreply",
+      "radusergroup",
+      "radacct",
+      "radpostauth",
+      "rm_users",
+    ] as const;
+    const available = new Map<string, boolean>();
+    await Promise.all(
+      tableNames.map(async (name) => {
+        available.set(name, await hasTable(pool, name));
+      })
+    );
+
+    const conn = await pool.getConnection();
+    let deleted: string[] = [];
+    let missing: string[] = [];
+    try {
+      await conn.beginTransaction();
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_sub_input_ids`);
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_subscriber_ids`);
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_usernames`);
+      await conn.execute(
+        `CREATE TEMPORARY TABLE tmp_bulk_sub_input_ids (
+          id VARCHAR(64) PRIMARY KEY
+        )`
+      );
+      const placeholders = parsed.data.ids.map(() => "(?)").join(",");
+      await conn.execute(
+        `INSERT INTO tmp_bulk_sub_input_ids (id) VALUES ${placeholders}`,
+        parsed.data.ids
+      );
+      await conn.execute(
+        `CREATE TEMPORARY TABLE tmp_bulk_subscriber_ids (
+          id VARCHAR(64) PRIMARY KEY
+        )`
+      );
+      await conn.execute(
+        `CREATE TEMPORARY TABLE tmp_bulk_usernames (
+          username VARCHAR(64) PRIMARY KEY
+        )`
+      );
+
+      if (useSubscribersBulkDel && available.get("subscribers")) {
+        await conn.execute(
+          `INSERT INTO tmp_bulk_subscriber_ids (id)
+           SELECT s.id
+           FROM subscribers s
+           INNER JOIN tmp_bulk_sub_input_ids i ON i.id = s.id
+           WHERE s.tenant_id = ?`,
+          [tenant]
         );
-        if (!subs[0]) {
-          missing.push(id);
-          continue;
-        }
-        subscriberId = String(subs[0].id);
-        username = String(subs[0].username);
-      } else {
-        username = await resolveUsernameForSubscriberId(tenant, id);
-        if (!username) {
-          missing.push(id);
-          continue;
-        }
-        subscriberId = username;
+        await conn.execute(
+          `INSERT INTO tmp_bulk_usernames (username)
+           SELECT DISTINCT s.username
+           FROM subscribers s
+           INNER JOIN tmp_bulk_subscriber_ids d ON d.id = s.id
+           WHERE s.tenant_id = ?
+             AND s.username IS NOT NULL
+             AND s.username <> ''`,
+          [tenant]
+        );
+      } else if (available.get("rm_users")) {
+        await conn.execute(
+          `INSERT INTO tmp_bulk_usernames (username)
+           SELECT DISTINCT u.username
+           FROM rm_users u
+           INNER JOIN tmp_bulk_sub_input_ids i ON i.id = u.username
+           WHERE u.username IS NOT NULL
+             AND u.username <> ''`
+        );
       }
-      await deleteSubscriberData(tenant, subscriberId, username);
-      deleted.push(id);
+
+      const [deletedRows] = await conn.query<RowDataPacket[]>(
+        useSubscribersBulkDel && available.get("subscribers")
+          ? `SELECT i.id
+             FROM tmp_bulk_sub_input_ids i
+             INNER JOIN tmp_bulk_subscriber_ids d ON d.id = i.id`
+          : `SELECT i.id
+             FROM tmp_bulk_sub_input_ids i
+             INNER JOIN tmp_bulk_usernames u ON u.username = i.id`
+      );
+      deleted = deletedRows.map((r) => String(r.id));
+      const deletedSet = new Set(deleted);
+      missing = parsed.data.ids.filter((id) => !deletedSet.has(id));
+
+      if (!deleted.length) {
+        await conn.rollback();
+        await writeAuditLog(pool, {
+          tenantId: tenant,
+          staffId: req.auth!.sub,
+          action: "bulk_delete",
+          entityType: "subscriber",
+          payload: { deleted_count: 0, missing_count: missing.length, ids: parsed.data.ids },
+        });
+        res.json({ ok: true, deleted, missing });
+        return;
+      }
+
+      if (available.get("invoices")) {
+        if (useSubscribersBulkDel && available.get("subscribers")) {
+          await conn.execute(
+            `DELETE inv FROM invoices inv
+             INNER JOIN tmp_bulk_subscriber_ids d ON d.id = inv.subscriber_id
+             WHERE inv.tenant_id = ?`,
+            [tenant]
+          );
+        } else {
+          await conn.execute(
+            `DELETE inv FROM invoices inv
+             INNER JOIN tmp_bulk_usernames u ON u.username = inv.subscriber_id
+             WHERE inv.tenant_id = ?`,
+            [tenant]
+          );
+        }
+      }
+      if (available.get("user_usage_live")) {
+        await conn.execute(
+          `DELETE ul FROM user_usage_live ul
+           INNER JOIN tmp_bulk_usernames u ON u.username = ul.username
+           WHERE ul.tenant_id = ?`,
+          [tenant]
+        );
+      }
+      if (available.get("user_usage_daily")) {
+        await conn.execute(
+          `DELETE ud FROM user_usage_daily ud
+           INNER JOIN tmp_bulk_usernames u ON u.username = ud.username
+           WHERE ud.tenant_id = ?`,
+          [tenant]
+        );
+      }
+      if (available.get("radcheck")) {
+        await conn.execute(
+          `DELETE rc FROM radcheck rc
+           INNER JOIN tmp_bulk_usernames u ON u.username = rc.username`
+        );
+      }
+      if (available.get("radreply")) {
+        await conn.execute(
+          `DELETE rr FROM radreply rr
+           INNER JOIN tmp_bulk_usernames u ON u.username = rr.username`
+        );
+      }
+      if (available.get("radusergroup")) {
+        await conn.execute(
+          `DELETE rg FROM radusergroup rg
+           INNER JOIN tmp_bulk_usernames u ON u.username = rg.username`
+        );
+      }
+      if (available.get("radacct")) {
+        await conn.execute(
+          `DELETE ra FROM radacct ra
+           INNER JOIN tmp_bulk_usernames u ON u.username = ra.username`
+        );
+      }
+      if (available.get("radpostauth")) {
+        await conn.execute(
+          `DELETE rp FROM radpostauth rp
+           INNER JOIN tmp_bulk_usernames u ON u.username = rp.username`
+        );
+      }
+      if (available.get("rm_users")) {
+        await conn.execute(
+          `DELETE ru FROM rm_users ru
+           INNER JOIN tmp_bulk_usernames u ON u.username = ru.username`
+        );
+      }
+      if (available.get("subscribers") && useSubscribersBulkDel) {
+        await conn.execute(
+          `DELETE s FROM subscribers s
+           INNER JOIN tmp_bulk_subscriber_ids d ON d.id = s.id
+           WHERE s.tenant_id = ?`,
+          [tenant]
+        );
+      }
+
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_usernames`);
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_subscriber_ids`);
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_sub_input_ids`);
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_usernames`).catch(() => {});
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_subscriber_ids`).catch(() => {});
+      await conn.execute(`DROP TEMPORARY TABLE IF EXISTS tmp_bulk_sub_input_ids`).catch(() => {});
+      const msg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: "bulk_delete_failed", detail: msg });
+      return;
+    } finally {
+      conn.release();
     }
     await writeAuditLog(pool, {
       tenantId: tenant,

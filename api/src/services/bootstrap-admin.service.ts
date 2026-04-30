@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { createHash } from "crypto";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
@@ -16,6 +17,41 @@ export async function ensureDefaultAdminUser(
   const name = process.env.SEED_ADMIN_NAME ?? "root";
   const email = process.env.SEED_ADMIN_EMAIL ?? "root@local.test";
   const password = process.env.SEED_ADMIN_PASSWORD ?? "muhammadshuieb";
+
+  const rmManagersExists = await hasTable(pool, "rm_managers");
+  if (rmManagersExists) {
+    const md5 = createHash("md5").update(password, "utf8").digest("hex");
+    const [existingRm] = await pool.query<RowDataPacket[]>(
+      `SELECT managername FROM rm_managers WHERE managername = ? LIMIT 1`,
+      [name]
+    );
+    if (existingRm[0]) {
+      if (overwritePassword) {
+        await pool.execute(
+          `UPDATE rm_managers
+           SET password = ?, email = ?, enablemanager = 1
+           WHERE managername = ?`,
+          [md5, email, name]
+        );
+      } else {
+        await pool.execute(
+          `UPDATE rm_managers
+           SET email = ?, enablemanager = 1
+           WHERE managername = ?`,
+          [email, name]
+        );
+      }
+      return { status: "updated", email };
+    }
+    await pool.execute(
+      `INSERT INTO rm_managers
+       (managername, password, email, firstname, lastname, enablemanager,
+        perm_listmanagers, perm_createmanagers, perm_deletemanagers)
+       VALUES (?, ?, ?, ?, ?, 1, 1, 1, 1)`,
+      [name, md5, email, name, "admin"]
+    );
+    return { status: "created", email };
+  }
 
   const staffUsersExists = await hasTable(pool, "staff_users");
   if (!staffUsersExists) {

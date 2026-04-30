@@ -49,6 +49,28 @@ type PeerConnectionStatus = {
   tx_bytes: number;
 };
 
+async function ensureWireGuardPeersTable(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wireguard_peers (
+      id CHAR(36) NOT NULL,
+      tenant_id CHAR(36) NOT NULL,
+      username VARCHAR(128) NOT NULL,
+      public_key VARCHAR(64) NOT NULL,
+      private_key_encrypted VARBINARY(512) NOT NULL,
+      tunnel_ip VARCHAR(64) DEFAULT NULL,
+      allowed_ips VARCHAR(255) DEFAULT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      note VARCHAR(255) DEFAULT NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      KEY idx_wireguard_peers_tenant (tenant_id),
+      KEY idx_wireguard_peers_username (username),
+      KEY idx_wireguard_peers_tunnel_ip (tunnel_ip)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+}
+
 function publicConfig(settings: Awaited<ReturnType<typeof getSystemSettings>>, inferredHost = "") {
   return {
     wireguard_vpn_enabled: settings.wireguard_vpn_enabled,
@@ -305,6 +327,7 @@ router.put("/config", routePolicy({ allow: ["admin", "manager"] }), async (req, 
 
 router.get("/peers", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req, res) => {
   try {
+    await ensureWireGuardPeersTable();
     await syncWireGuardRuntime(req.auth!.tenantId);
     if (!(await hasTable(pool, "wireguard_peers"))) {
       res.json({ peers: [] });
@@ -337,6 +360,7 @@ router.post("/peers", routePolicy({ allow: ["admin", "manager"] }), async (req, 
     return;
   }
   try {
+    await ensureWireGuardPeersTable();
     if (!(await hasTable(pool, "wireguard_peers"))) {
       res.status(503).json({ error: "wireguard_peers_table_missing" });
       return;

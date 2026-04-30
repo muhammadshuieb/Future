@@ -26,25 +26,27 @@ export class AccountingService {
     return `COALESCE(acctinputoctets, 0) + COALESCE(acctoutputoctets, 0)`;
   }
 
-  private activeSessionFreshHours(): number {
-    return Math.max(
-      1,
-      Math.min(24 * 30, Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "72", 10) || 72)
-    );
+  private activeSessionFreshMinutes(): number {
+    const fromMinutes = Number.parseInt(process.env.ACTIVE_SESSION_FRESH_MINUTES ?? "", 10);
+    if (Number.isFinite(fromMinutes) && fromMinutes > 0) {
+      return Math.max(1, Math.min(24 * 60 * 30, fromMinutes));
+    }
+    const fromHours = Number.parseInt(process.env.ACTIVE_SESSION_FRESH_HOURS ?? "1", 10) || 1;
+    return Math.max(1, Math.min(24 * 60 * 30, fromHours * 60));
   }
 
   private async activeSessionWhere(alias?: string): Promise<string> {
     const p = alias ? `${alias}.` : "";
     const hasAcctUpdate = await hasColumn(this.pool, "radacct", "acctupdatetime");
-    const freshHours = this.activeSessionFreshHours();
+    const freshMinutes = this.activeSessionFreshMinutes();
     if (!hasAcctUpdate) {
       return `${p}acctstoptime IS NULL
-      AND ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR)`;
+      AND ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshMinutes} MINUTE)`;
     }
     return `${p}acctstoptime IS NULL
       AND (
-        (${p}acctupdatetime IS NOT NULL AND ${p}acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR))
-        OR ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshHours} HOUR)
+        (${p}acctupdatetime IS NOT NULL AND ${p}acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${freshMinutes} MINUTE))
+        OR ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshMinutes} MINUTE)
       )`;
   }
 

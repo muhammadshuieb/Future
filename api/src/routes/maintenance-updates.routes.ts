@@ -23,7 +23,25 @@ function getUpdateConfig() {
   const gitBin = process.env.APP_UPDATE_GIT_BIN?.trim() || "git";
   const composeBin = process.env.APP_UPDATE_COMPOSE_BIN?.trim() || "";
   const runtimeFile = process.env.APP_UPDATE_RUNTIME_FILE?.trim() || "/app/runtime/update-feature.json";
-  return { branch, remote, repoDir, enabled, token, composeEnabled, composeDir, composeFile, gitBin, composeBin, runtimeFile };
+  const updateStateFile = process.env.APP_UPDATE_STATE_FILE?.trim() || "/app/runtime/update-state.json";
+  const autoIntervalMinutes = Math.max(0, Number.parseInt(process.env.APP_UPDATE_AUTO_INTERVAL_MINUTES ?? "30", 10) || 30);
+  const requireToken = String(process.env.APP_UPDATE_REQUIRE_TOKEN || "false").toLowerCase() === "true";
+  return {
+    branch,
+    remote,
+    repoDir,
+    enabled,
+    token,
+    composeEnabled,
+    composeDir,
+    composeFile,
+    gitBin,
+    composeBin,
+    runtimeFile,
+    updateStateFile,
+    autoIntervalMinutes,
+    requireToken,
+  };
 }
 
 async function runGit(gitBin: string, args: string[], cwd: string) {
@@ -85,6 +103,105 @@ async function writeRuntimeEnabled(runtimeFile: string, enabled: boolean): Promi
   await writeFile(runtimeFile, JSON.stringify({ enabled }, null, 2), "utf8");
 }
 
+type UpdateRunState = {
+  lastCheckedAt?: string;
+  lastRunAt?: string;
+  lastStatus?: "ok" | "error";
+  lastError?: string | null;
+  beforeCommit?: string | null;
+  afterCommit?: string | null;
+  currentCommitDate?: string | null;
+  remoteCommit?: string | null;
+  remoteCommitDate?: string | null;
+};
+
+async function readUpdateState(file: string): Promise<UpdateRunState> {
+  try {
+    const raw = await readFile(file, "utf8");
+    const json = JSON.parse(raw) as UpdateRunState;
+    return json && typeof json === "object" ? json : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeUpdateState(file: string, patch: UpdateRunState): Promise<void> {
+  const current = await readUpdateState(file);
+  const next = { ...current, ...patch };
+  const dir = path.dirname(file);
+  await mkdir(dir, { recursive: true });
+  await writeFile(file, JSON.stringify(next, null, 2), "utf8");
+}
+
+async function resolveCommitDate(gitBin: string, cwd: string, commit: string): Promise<string | null> {
+  if (!commit) return null;
+  try {
+    const out = await runGit(gitBin, ["show", "-s", "--format=%cI", commit], cwd);
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
+  const steps: string[] = [];
+  steps.push("git fetch");
+  await runGit(cfg.gitBin, ["fetch", cfg.remote, cfg.branch], cfg.repoDir);
+  steps.push("git checkout");
+  await runGit(cfg.gitBin, ["checkout", cfg.branch], cfg.repoDir);
+  const before = await runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir);
+  steps.push("git pull --ff-only");
+  await runGit(cfg.gitBin, ["pull", "--ff-only", cfg.remote, cfg.branch], cfg.repoDir);
+  const after = await runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir);
+
+  let composeStatus: string | undefined;
+  if (cfg.composeEnabled) {
+    const compose = await resolveComposeCommand(cfg);
+    const composeArgs = cfg.composeFile
+      ? [...compose.baseArgs, "-f", cfg.composeFile, "up", "-d", "--build"]
+      : [...compose.baseArgs, "up", "-d", "--build"];
+    steps.push("docker compose up -d --build");
+    await runCommand(compose.cmd, composeArgs, cfg.composeDir);
+    const psArgs = cfg.composeFile
+      ? [...compose.baseArgs, "-f", cfg.composeFile, "ps"]
+      : [...compose.baseArgs, "ps"];
+    steps.push("docker compose ps");
+    const ps = await runCommand(compose.cmd, psArgs, cfg.composeDir);
+    composeStatus = ps.stdout;
+  }
+
+  const [currentCommitDate, remoteCommit, remoteCommitDate] = await Promise.all([
+    resolveCommitDate(cfg.gitBin, cfg.repoDir, after),
+    runGit(cfg.gitBin, ["ls-remote", cfg.remote, `refs/heads/${cfg.branch}`], cfg.repoDir).then((raw) =>
+      (raw.split(/\s+/)[0] || "").trim()
+    ),
+    runGit(cfg.gitBin, ["show", "-s", "--format=%cI", `${cfg.remote}/${cfg.branch}`], cfg.repoDir).catch(() => ""),
+  ]);
+
+  await writeUpdateState(cfg.updateStateFile, {
+    lastRunAt: new Date().toISOString(),
+    lastStatus: "ok",
+    lastError: null,
+    beforeCommit: before,
+    afterCommit: after,
+    currentCommitDate,
+    remoteCommit: remoteCommit || null,
+    remoteCommitDate: remoteCommitDate || null,
+  });
+
+  return {
+    changed: before !== after,
+    beforeCommit: before,
+    afterCommit: after,
+    composeEnabled: cfg.composeEnabled,
+    composeStatus,
+    steps,
+    currentCommitDate,
+    remoteCommit: remoteCommit || null,
+    remoteCommitDate: remoteCommitDate || null,
+  };
+}
+
 router.get("/updates/status", async (_req, res) => {
   const cfg = getUpdateConfig();
   try {
@@ -93,6 +210,10 @@ router.get("/updates/status", async (_req, res) => {
     const [currentCommit, currentBranch] = await Promise.all([
       runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir),
       runGit(cfg.gitBin, ["rev-parse", "--abbrev-ref", "HEAD"], cfg.repoDir),
+    ]);
+    const [currentCommitDate, state] = await Promise.all([
+      resolveCommitDate(cfg.gitBin, cfg.repoDir, currentCommit),
+      readUpdateState(cfg.updateStateFile),
     ]);
     res.json({
       ok: true,
@@ -104,6 +225,12 @@ router.get("/updates/status", async (_req, res) => {
       configuredBranch: cfg.branch,
       currentBranch,
       currentCommit,
+      currentCommitDate,
+      lastCheckedAt: state.lastCheckedAt ?? null,
+      lastRunAt: state.lastRunAt ?? null,
+      lastStatus: state.lastStatus ?? null,
+      remoteCommit: state.remoteCommit ?? null,
+      remoteCommitDate: state.remoteCommitDate ?? null,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "status_failed";
@@ -144,11 +271,19 @@ router.post("/updates/check", async (_req, res) => {
       ),
     ]);
     const updateAvailable = Boolean(remoteCommit) && localCommit !== remoteCommit;
+    const remoteCommitDate = await runGit(cfg.gitBin, ["show", "-s", "--format=%cI", `${cfg.remote}/${cfg.branch}`], cfg.repoDir).catch(() => "");
+    await writeUpdateState(cfg.updateStateFile, {
+      lastCheckedAt: new Date().toISOString(),
+      remoteCommit: remoteCommit || null,
+      remoteCommitDate: remoteCommitDate || null,
+      lastError: null,
+    });
     res.json({
       ok: true,
       updateAvailable,
       localCommit,
       remoteCommit,
+      remoteCommitDate: remoteCommitDate || null,
       remote: cfg.remote,
       branch: cfg.branch,
     });
@@ -167,51 +302,16 @@ router.post("/updates/run", async (req, res) => {
     return;
   }
   const headerToken = String(req.headers["x-update-token"] || "").trim();
-  if (!cfg.token || headerToken !== cfg.token) {
+  if (cfg.requireToken && (!cfg.token || headerToken !== cfg.token)) {
     res.status(401).json({ error: "invalid_update_token" });
     return;
   }
   try {
-    const steps: string[] = [];
-    steps.push("git fetch");
-    await runGit(cfg.gitBin, ["fetch", cfg.remote, cfg.branch], cfg.repoDir);
-    steps.push("git checkout");
-    await runGit(cfg.gitBin, ["checkout", cfg.branch], cfg.repoDir);
-    const before = await runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir);
-    steps.push("git pull --ff-only");
-    await runGit(cfg.gitBin, ["pull", "--ff-only", cfg.remote, cfg.branch], cfg.repoDir);
-    const after = await runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir);
-    if (cfg.composeEnabled) {
-      const compose = await resolveComposeCommand(cfg);
-      const composeArgs = cfg.composeFile
-        ? [...compose.baseArgs, "-f", cfg.composeFile, "up", "-d", "--build"]
-        : [...compose.baseArgs, "up", "-d", "--build"];
-      steps.push("docker compose up -d --build");
-      await runCommand(compose.cmd, composeArgs, cfg.composeDir);
-      const psArgs = cfg.composeFile
-        ? [...compose.baseArgs, "-f", cfg.composeFile, "ps"]
-        : [...compose.baseArgs, "ps"];
-      steps.push("docker compose ps");
-      const ps = await runCommand(compose.cmd, psArgs, cfg.composeDir);
-      res.json({
-        ok: true,
-        changed: before !== after,
-        beforeCommit: before,
-        afterCommit: after,
-        composeEnabled: true,
-        steps,
-        composeStatus: ps.stdout,
-      });
-      return;
-    }
+    const result = await runUpdateProcess(cfg);
     res.json({
       ok: true,
-      changed: before !== after,
-      beforeCommit: before,
-      afterCommit: after,
-      composeEnabled: false,
-      steps,
-      note: "Docker auto-rebuild disabled by APP_UPDATE_DOCKER_ENABLED=false.",
+      ...result,
+      note: cfg.composeEnabled ? undefined : "Docker auto-rebuild disabled by APP_UPDATE_DOCKER_ENABLED=false.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "run_failed";
@@ -223,8 +323,51 @@ router.post("/updates/run", async (req, res) => {
       });
       return;
     }
+    await writeUpdateState(cfg.updateStateFile, {
+      lastRunAt: new Date().toISOString(),
+      lastStatus: "error",
+      lastError: message,
+    }).catch(() => {});
     res.status(500).json({ error: "update_run_failed", detail: message });
   }
 });
+
+let autoUpdateStarted = false;
+export function startAutoUpdateLoop(): void {
+  if (autoUpdateStarted) return;
+  autoUpdateStarted = true;
+  const cfg = getUpdateConfig();
+  if (cfg.autoIntervalMinutes <= 0) return;
+  const tick = async () => {
+    try {
+      const runtimeEnabled = await readRuntimeEnabled(cfg.runtimeFile);
+      const effectiveEnabled = runtimeEnabled ?? cfg.enabled;
+      if (!effectiveEnabled) return;
+      const localCommit = await runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir);
+      const remoteCommit = await runGit(cfg.gitBin, ["ls-remote", cfg.remote, `refs/heads/${cfg.branch}`], cfg.repoDir).then((raw) =>
+        (raw.split(/\s+/)[0] || "").trim()
+      );
+      await writeUpdateState(cfg.updateStateFile, {
+        lastCheckedAt: new Date().toISOString(),
+        remoteCommit: remoteCommit || null,
+      });
+      if (!remoteCommit || remoteCommit === localCommit) return;
+      await runUpdateProcess(cfg);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeUpdateState(cfg.updateStateFile, {
+        lastRunAt: new Date().toISOString(),
+        lastStatus: "error",
+        lastError: message,
+      }).catch(() => {});
+      console.error("[updates:auto] failed", message);
+    }
+  };
+  void tick();
+  const intervalMs = cfg.autoIntervalMinutes * 60_000;
+  setInterval(() => {
+    void tick();
+  }, intervalMs);
+}
 
 export default router;

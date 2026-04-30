@@ -14,6 +14,12 @@ type UpdateStatus = {
   configuredBranch: string;
   currentBranch: string;
   currentCommit: string;
+  currentCommitDate?: string | null;
+  lastCheckedAt?: string | null;
+  lastRunAt?: string | null;
+  lastStatus?: string | null;
+  remoteCommit?: string | null;
+  remoteCommitDate?: string | null;
   repoDir: string;
 };
 
@@ -23,6 +29,7 @@ type CheckResult = {
   remoteCommit: string;
   remote: string;
   branch: string;
+  remoteCommitDate?: string | null;
 };
 
 export function UpdatesPage() {
@@ -35,7 +42,6 @@ export function UpdatesPage() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [toggling, setToggling] = useState(false);
-  const [token, setToken] = useState("");
 
   async function loadStatus() {
     setLoading(true);
@@ -80,7 +86,6 @@ export function UpdatesPage() {
       const res = await apiFetch("/api/maintenance/updates/run", {
         method: "POST",
         body: "{}",
-        headers: { "x-update-token": token.trim() },
       });
       if (!res.ok) {
         setError(await readApiError(res));
@@ -182,13 +187,6 @@ export function UpdatesPage() {
           {t("updates.runTitle")}
         </div>
         <p className="text-sm opacity-80">{t("updates.tokenHint")}</p>
-        <input
-          type="password"
-          className="w-full rounded-lg border border-[hsl(var(--border))] bg-transparent px-3 py-2 text-sm"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder={t("updates.tokenPlaceholder")}
-        />
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => void checkUpdates()} disabled={loading}>
             {t("updates.check")}
@@ -196,7 +194,7 @@ export function UpdatesPage() {
           <Button
             type="button"
             onClick={() => void runUpdate()}
-            disabled={running || !status?.updateEnabled || !token.trim()}
+            disabled={running || !status?.updateEnabled}
           >
             {running ? t("common.loading") : t("updates.run")}
           </Button>
@@ -208,6 +206,12 @@ export function UpdatesPage() {
             {check.remoteCommit.slice(0, 8) || "?"})
           </p>
         ) : null}
+        <p className="text-xs opacity-70">
+          Current commit date: {status?.currentCommitDate || "-"} | Remote commit date: {check?.remoteCommitDate || status?.remoteCommitDate || "-"}
+        </p>
+        <p className="text-xs opacity-70">
+          Last check: {status?.lastCheckedAt || "-"} | Last run: {status?.lastRunAt || "-"} | Last result: {status?.lastStatus || "-"}
+        </p>
       </Card>
     </div>
   );

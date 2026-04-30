@@ -28,7 +28,7 @@ import staffRoutes from "./routes/staff.routes.js";
 import maintenanceRestoreSqlRoutes from "./routes/maintenance-restore-sql.routes.js";
 import maintenanceGoogleCallbackRoutes from "./routes/maintenance-google-callback.routes.js";
 import maintenanceRoutes from "./routes/maintenance.routes.js";
-import maintenanceUpdatesRoutes from "./routes/maintenance-updates.routes.js";
+import maintenanceUpdatesRoutes, { startAutoUpdateLoop } from "./routes/maintenance-updates.routes.js";
 import whatsappRoutes from "./routes/whatsapp.routes.js";
 import onlineUsersRoutes from "./routes/online-users.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
@@ -222,6 +222,11 @@ async function start() {
     await syncWireGuardRuntime(config.defaultTenantId);
   } catch (error) {
     console.error("[bootstrap] wireguard runtime sync failed", error);
+  }
+  try {
+    startAutoUpdateLoop();
+  } catch (error) {
+    console.error("[bootstrap] auto update loop failed", error);
   }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {
