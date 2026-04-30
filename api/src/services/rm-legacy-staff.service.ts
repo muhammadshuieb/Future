@@ -46,6 +46,15 @@ function readRmManagerBalance(m: RowDataPacket): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Columns for reloading a staff row after rm_managers login (avoid ER_BAD_FIELD on older schemas). */
+function staffUsersReloadSelectSql(staffCols: Set<string>): string {
+  const parts = ["id", "tenant_id", "email", "password_hash", "role", "active"];
+  if (staffCols.has("name")) parts.push("name");
+  if (staffCols.has("permissions_json")) parts.push("permissions_json");
+  if (staffCols.has("wallet_balance")) parts.push("wallet_balance");
+  return parts.join(", ");
+}
+
 /**
  * If staff_users login failed, try rm_managers (MD5 password) and ensure a staff_users row.
  * Keeps rm_managers as source of auth on restored DB; upgrades password_hash to bcrypt.
@@ -79,7 +88,7 @@ export async function tryLoginViaRmManagers(
   }
   if (mRows.length !== 1) return null;
   const m = mRows[0];
-  if (cols.has("enablemanager") && Number(m.enablemanager) !== 1) return null;
+  if (cols.has("enablemanager") && m.enablemanager != null && Number(m.enablemanager) !== 1) return null;
   const stored = String(m.password ?? "");
   if (stored.length !== 32) return null;
   if (md5Hex(password) !== stored.toLowerCase()) return null;
@@ -123,9 +132,9 @@ export async function tryLoginViaRmManagers(
     }
     vals.push(id, tenantId);
     await pool.query(`UPDATE staff_users SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`, vals);
+    const reloadCols = staffUsersReloadSelectSql(staffCols);
     const [out] = await pool.query<RowDataPacket[]>(
-      `SELECT id, tenant_id, email, password_hash, role, active, name, permissions_json, wallet_balance
-       FROM staff_users WHERE id = ? LIMIT 1`,
+      `SELECT ${reloadCols} FROM staff_users WHERE id = ? LIMIT 1`,
       [id]
     );
     return out[0] ?? null;
@@ -150,11 +159,8 @@ export async function tryLoginViaRmManagers(
     `INSERT INTO staff_users (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
     values
   );
-  const [out] = await pool.query<RowDataPacket[]>(
-    `SELECT id, tenant_id, email, password_hash, role, active, name, permissions_json, wallet_balance
-     FROM staff_users WHERE id = ? LIMIT 1`,
-    [id]
-  );
+  const reloadCols = staffUsersReloadSelectSql(staffCols);
+  const [out] = await pool.query<RowDataPacket[]>(`SELECT ${reloadCols} FROM staff_users WHERE id = ? LIMIT 1`, [id]);
   return out[0] ?? null;
 }
 
