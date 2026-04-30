@@ -22,19 +22,18 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # RADIUS auth/accounting must be published: 1812/1813 UDP. If Portainer shows only 3799,
-  # rebuild from this compose file — otherwise MikroTik will only "timeout".
+  # RADIUS auth/accounting: 1812/1813 UDP on the host. Use host networking so packets destined to the
+  # WireGuard server IP (e.g. 10.20.0.1 on wg0) reach radiusd. Published ports + docker-proxy often do
+  # NOT receive UDP to a secondary/WG local address — MikroTik then sees "radius timeout" while tcpdump
+  # on wg0 shows Access-Request. MySQL is reached via 127.0.0.1 because mysql publishes 127.0.0.1:3306.
   freeradius:
     build:
       context: .
       dockerfile: docker/freeradius/Dockerfile
     image: futureradius-freeradius:local
-    ports:
-      - "1812:1812/udp"
-      - "1813:1813/udp"
-      - "3799:3799/udp"
+    network_mode: host
     environment:
-      MYSQL_HOST: mysql
+      MYSQL_HOST: 127.0.0.1
       MYSQL_USER: ${RADIUS_DB_USER:-radius}
       MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       FREERADIUS_DEBUG: ${FREERADIUS_DEBUG:-0}
@@ -117,6 +116,9 @@ services:
       APP_UPDATE_COMPOSE_FILE: ${APP_UPDATE_COMPOSE_FILE:-}
       APP_UPDATE_GIT_BIN: ${APP_UPDATE_GIT_BIN:-git}
       APP_UPDATE_COMPOSE_BIN: ${APP_UPDATE_COMPOSE_BIN:-docker-compose}
+      APP_UPDATE_COMPOSE_REMOVE_ORPHANS: ${APP_UPDATE_COMPOSE_REMOVE_ORPHANS:-true}
+      APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT: ${APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT:-true}
+      APP_UPDATE_COMPOSE_RECYCLE_SERVICES: ${APP_UPDATE_COMPOSE_RECYCLE_SERVICES:-mysql,waha}
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro

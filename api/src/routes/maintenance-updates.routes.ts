@@ -27,6 +27,12 @@ function getUpdateConfig() {
   const autoIntervalMinutes = Math.max(0, Number.parseInt(process.env.APP_UPDATE_AUTO_INTERVAL_MINUTES ?? "30", 10) || 30);
   const requireToken = String(process.env.APP_UPDATE_REQUIRE_TOKEN || "false").toLowerCase() === "true";
   const composeRemoveOrphans = String(process.env.APP_UPDATE_COMPOSE_REMOVE_ORPHANS ?? "true").toLowerCase() !== "false";
+  const composeRetryRecycleOnPortConflict =
+    String(process.env.APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT ?? "true").toLowerCase() !== "false";
+  const composeRecycleServices = (process.env.APP_UPDATE_COMPOSE_RECYCLE_SERVICES ?? "mysql,waha")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^[a-zA-Z0-9_-]+$/.test(s));
   return {
     branch,
     remote,
@@ -43,6 +49,8 @@ function getUpdateConfig() {
     autoIntervalMinutes,
     requireToken,
     composeRemoveOrphans,
+    composeRetryRecycleOnPortConflict,
+    composeRecycleServices,
   };
 }
 
@@ -167,9 +175,27 @@ function portConflictHints(ports: string[]): string[] {
   return [
     `تعارض منافذ على المضيف (${list}). غالباً حاوية أخرى أو نسخة ثانية من نفس المشروع، أو MySQL مثبت على النظام يستخدم 3306.`,
     `Host port conflict (${list}). Another container, a second stack, or host mysqld may already bind these ports.`,
+    `التحديث يعيد المحاولة تلقائياً مرة بعد إيقاف وإزالة حاويات mysql وwaha (volumes تبقى). إن استمر الخطأ فالمنافذ محجوزة من خدمة أخرى: APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT=false لتعطيل ذلك.`,
+    `Updates retry once after compose stop+rm for mysql,waha (data volumes kept). If it still fails, another process holds the ports. Set APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT=false to disable.`,
     `على الخادم: docker ps --format "table {{.Names}}\\t{{.Ports}}" ثم أوقف الحاوية التي تعرض 3306 أو 3001 (docker stop <name>).`,
     `On the host: docker ps --format "table {{.Names}}\\t{{.Ports}}" and docker stop the container publishing the conflicting port.`,
   ];
+}
+
+function composeFileArgs(cfg: ReturnType<typeof getUpdateConfig>): string[] {
+  return cfg.composeFile ? ["-f", cfg.composeFile] : [];
+}
+
+/** Stop and remove named compose services (containers only; named volumes unchanged). */
+async function runComposeRecycle(
+  compose: { cmd: string; baseArgs: string[] },
+  cfg: ReturnType<typeof getUpdateConfig>,
+  services: string[]
+): Promise<void> {
+  if (services.length === 0) return;
+  const base = [...compose.baseArgs, ...composeFileArgs(cfg)];
+  await runCommand(compose.cmd, [...base, "stop", ...services], cfg.composeDir);
+  await runCommand(compose.cmd, [...base, "rm", "-f", ...services], cfg.composeDir);
 }
 
 async function resolveCommitDate(gitBin: string, cwd: string, commit: string): Promise<string | null> {
@@ -197,12 +223,25 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
   if (cfg.composeEnabled) {
     const compose = await resolveComposeCommand(cfg);
     const upTail = ["up", "-d", "--build", ...(cfg.composeRemoveOrphans ? (["--remove-orphans"] as const) : [])];
-    const composeArgs = cfg.composeFile ? [...compose.baseArgs, "-f", cfg.composeFile, ...upTail] : [...compose.baseArgs, ...upTail];
+    const composeUpArgs = [...compose.baseArgs, ...composeFileArgs(cfg), ...upTail];
     steps.push(`docker compose ${upTail.join(" ")}`);
-    await runCommand(compose.cmd, composeArgs, cfg.composeDir);
-    const psArgs = cfg.composeFile
-      ? [...compose.baseArgs, "-f", cfg.composeFile, "ps"]
-      : [...compose.baseArgs, "ps"];
+    try {
+      await runCommand(compose.cmd, composeUpArgs, cfg.composeDir);
+    } catch (firstUpErr) {
+      const msg = firstUpErr instanceof Error ? firstUpErr.message : String(firstUpErr);
+      if (
+        cfg.composeRetryRecycleOnPortConflict &&
+        isDockerPortBindConflict(msg) &&
+        cfg.composeRecycleServices.length > 0
+      ) {
+        steps.push(`compose recycle ${cfg.composeRecycleServices.join(",")} (port conflict) + retry up`);
+        await runComposeRecycle(compose, cfg, cfg.composeRecycleServices);
+        await runCommand(compose.cmd, composeUpArgs, cfg.composeDir);
+      } else {
+        throw firstUpErr;
+      }
+    }
+    const psArgs = [...compose.baseArgs, ...composeFileArgs(cfg), "ps"];
     steps.push("docker compose ps");
     const ps = await runCommand(compose.cmd, psArgs, cfg.composeDir);
     composeStatus = ps.stdout;
