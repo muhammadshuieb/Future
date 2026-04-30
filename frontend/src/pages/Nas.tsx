@@ -176,7 +176,7 @@ export function NasPage() {
         if (secret.trim()) body.secret = secret;
         if (password.trim()) body.password = password;
         body.mikrotik_api_enabled = mikrotikApiEnabled;
-        body.mikrotik_api_user = mikrotikApiUser || null;
+        body.mikrotik_api_user = mikrotikApiUser;
         if (mikrotikApiPassword.trim()) body.mikrotik_api_password = mikrotikApiPassword;
         const r = await apiFetch(`/api/nas/${editId}`, {
           method: "PATCH",

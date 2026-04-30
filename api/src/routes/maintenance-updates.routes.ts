@@ -26,6 +26,7 @@ function getUpdateConfig() {
   const updateStateFile = process.env.APP_UPDATE_STATE_FILE?.trim() || "/app/runtime/update-state.json";
   const autoIntervalMinutes = Math.max(0, Number.parseInt(process.env.APP_UPDATE_AUTO_INTERVAL_MINUTES ?? "30", 10) || 30);
   const requireToken = String(process.env.APP_UPDATE_REQUIRE_TOKEN || "false").toLowerCase() === "true";
+  const composeRemoveOrphans = String(process.env.APP_UPDATE_COMPOSE_REMOVE_ORPHANS ?? "true").toLowerCase() !== "false";
   return {
     branch,
     remote,
@@ -41,6 +42,7 @@ function getUpdateConfig() {
     updateStateFile,
     autoIntervalMinutes,
     requireToken,
+    composeRemoveOrphans,
   };
 }
 
@@ -55,13 +57,21 @@ async function runGit(gitBin: string, args: string[], cwd: string) {
 }
 
 async function runCommand(cmd: string, args: string[], cwd: string) {
-  const { stdout, stderr } = await execFileAsync(cmd, args, {
-    cwd,
-    windowsHide: true,
-    timeout: 10 * 60_000,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  return { stdout: String(stdout || "").trim(), stderr: String(stderr || "").trim() };
+  try {
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
+      cwd,
+      windowsHide: true,
+      timeout: 10 * 60_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return { stdout: String(stdout || "").trim(), stderr: String(stderr || "").trim() };
+  } catch (unknownErr: unknown) {
+    const e = unknownErr as NodeJS.ErrnoException & { stdout?: Buffer | string; stderr?: Buffer | string };
+    const out = e.stdout != null ? String(e.stdout).trim() : "";
+    const errOut = e.stderr != null ? String(e.stderr).trim() : "";
+    const parts = [e.message || String(e), errOut, out].filter(Boolean);
+    throw new Error(parts.join("\n"));
+  }
 }
 
 async function commandExists(cmd: string, args: string[], cwd: string): Promise<boolean> {
@@ -133,6 +143,35 @@ async function writeUpdateState(file: string, patch: UpdateRunState): Promise<vo
   await writeFile(file, JSON.stringify(next, null, 2), "utf8");
 }
 
+/** Host ports mentioned in Docker "Bind for … failed" messages (for UI hints). */
+function extractDockerBindPorts(log: string): string[] {
+  const found = new Set<string>();
+  for (const line of log.split(/\r?\n/)) {
+    const m = line.match(/Bind for .*:(\d+)\s+failed/i);
+    if (m?.[1]) found.add(m[1]);
+  }
+  return [...found];
+}
+
+function isDockerPortBindConflict(message: string): boolean {
+  const low = message.toLowerCase();
+  return (
+    low.includes("port is already allocated") ||
+    low.includes("address already in use") ||
+    (low.includes("bind for") && low.includes("failed"))
+  );
+}
+
+function portConflictHints(ports: string[]): string[] {
+  const list = ports.length ? ports.join(", ") : "3306, 3001, …";
+  return [
+    `تعارض منافذ على المضيف (${list}). غالباً حاوية أخرى أو نسخة ثانية من نفس المشروع، أو MySQL مثبت على النظام يستخدم 3306.`,
+    `Host port conflict (${list}). Another container, a second stack, or host mysqld may already bind these ports.`,
+    `على الخادم: docker ps --format "table {{.Names}}\\t{{.Ports}}" ثم أوقف الحاوية التي تعرض 3306 أو 3001 (docker stop <name>).`,
+    `On the host: docker ps --format "table {{.Names}}\\t{{.Ports}}" and docker stop the container publishing the conflicting port.`,
+  ];
+}
+
 async function resolveCommitDate(gitBin: string, cwd: string, commit: string): Promise<string | null> {
   if (!commit) return null;
   try {
@@ -157,10 +196,9 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
   let composeStatus: string | undefined;
   if (cfg.composeEnabled) {
     const compose = await resolveComposeCommand(cfg);
-    const composeArgs = cfg.composeFile
-      ? [...compose.baseArgs, "-f", cfg.composeFile, "up", "-d", "--build"]
-      : [...compose.baseArgs, "up", "-d", "--build"];
-    steps.push("docker compose up -d --build");
+    const upTail = ["up", "-d", "--build", ...(cfg.composeRemoveOrphans ? (["--remove-orphans"] as const) : [])];
+    const composeArgs = cfg.composeFile ? [...compose.baseArgs, "-f", cfg.composeFile, ...upTail] : [...compose.baseArgs, ...upTail];
+    steps.push(`docker compose ${upTail.join(" ")}`);
     await runCommand(compose.cmd, composeArgs, cfg.composeDir);
     const psArgs = cfg.composeFile
       ? [...compose.baseArgs, "-f", cfg.composeFile, "ps"]
@@ -320,6 +358,21 @@ router.post("/updates/run", async (req, res) => {
         error: "update_runtime_binary_missing",
         detail:
           "Missing runtime binary. Set APP_UPDATE_GIT_BIN and/or APP_UPDATE_COMPOSE_BIN to valid commands/paths in API environment.",
+      });
+      return;
+    }
+    if (isDockerPortBindConflict(message)) {
+      const ports = extractDockerBindPorts(message);
+      await writeUpdateState(cfg.updateStateFile, {
+        lastRunAt: new Date().toISOString(),
+        lastStatus: "error",
+        lastError: message,
+      }).catch(() => {});
+      res.status(500).json({
+        error: "update_port_conflict",
+        detail: message,
+        ports: ports.length ? ports : null,
+        hints: portConflictHints(ports),
       });
       return;
     }

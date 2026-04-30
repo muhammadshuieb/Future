@@ -45,9 +45,11 @@ export async function readApiError(res: Response): Promise<string> {
     const text = await res.text();
     if (!text) return res.statusText || `HTTP ${res.status}`;
     try {
-      const j = JSON.parse(text) as { error?: string; detail?: string };
-      if (j.detail) return `${j.error ?? "error"}: ${j.detail}`;
-      if (j.error) return j.error;
+      const j = JSON.parse(text) as { error?: string; detail?: string; hints?: string[] };
+      const hintBlock =
+        Array.isArray(j.hints) && j.hints.length > 0 ? `\n\n${j.hints.join("\n")}` : "";
+      if (j.detail) return `${j.error ?? "error"}: ${j.detail}${hintBlock}`;
+      if (j.error) return j.error + hintBlock;
     } catch {
       return text.slice(0, 200);
     }
