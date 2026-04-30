@@ -288,13 +288,66 @@ router.patch(
   denyViewerWrites,
   denyAccountant,
   async (req: Request, res: Response) => {
-    if (config.dmaMode) {
-      res.status(410).json({ error: "gone", reason: "dma_mode", detail: "NAS inventory UI uses legacy nas table only in DMA_MODE." });
-      return;
-    }
     const parsed = nasPatch.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_body" });
+      return;
+    }
+    let legacyOnlyMode = config.dmaMode || !(await hasTable(pool, "nas_servers"));
+    let modernCols: Set<string> | null = null;
+    if (!legacyOnlyMode) {
+      modernCols = await getTableColumns(pool, "nas_servers");
+      const modernPatchable = modernCols.has("tenant_id") && modernCols.has("name") && modernCols.has("ip");
+      if (!modernPatchable) legacyOnlyMode = true;
+    }
+    if (legacyOnlyMode) {
+      if (!(await hasTable(pool, "nas"))) {
+        res.status(503).json({ error: "nas_legacy_table_missing" });
+        return;
+      }
+      const legacyId = Number.parseInt(String(req.params.id), 10);
+      if (!Number.isFinite(legacyId)) {
+        res.status(400).json({ error: "invalid_nas_id" });
+        return;
+      }
+      try {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT id, nasname, shortname, type, secret FROM nas WHERE id = ? LIMIT 1`,
+          [legacyId]
+        );
+        const row = rows[0];
+        if (!row) {
+          res.status(404).json({ error: "not_found" });
+          return;
+        }
+        const nextIp = parsed.data.ip ?? String(row.nasname ?? "");
+        const nextName = parsed.data.name ?? String(row.shortname ?? "");
+        const nextType = parsed.data.type ?? String(row.type ?? "other");
+        const nextSecret = parsed.data.secret ?? String(row.secret ?? "");
+        await upsertLegacyNas({
+          legacyId,
+          ip: nextIp,
+          name: nextName,
+          type: nextType,
+          secret: nextSecret,
+        });
+        if (parsed.data.wireguard_tunnel_ip?.trim()) {
+          await upsertLegacyNas({
+            legacyId: null,
+            ip: parsed.data.wireguard_tunnel_ip.trim(),
+            name: `${nextName} WireGuard`,
+            type: nextType,
+            secret: nextSecret,
+          });
+        }
+        res.json({ ok: true, dma_legacy_nas_only: true });
+      } catch (e) {
+        console.error("nas PATCH legacy", e);
+        res.status(500).json({
+          error: "db_error",
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
       return;
     }
     const tenant = req.auth!.tenantId;
@@ -310,7 +363,7 @@ router.patch(
       return;
     }
     const b = parsed.data;
-    const col = await getTableColumns(pool, "nas_servers");
+    const col = modernCols ?? (await getTableColumns(pool, "nas_servers"));
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (b.name !== undefined) {
