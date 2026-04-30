@@ -92,6 +92,25 @@ export async function ensurePortalTenantAndStaffTables(): Promise<void> {
       CONSTRAINT \`fk_regions_parent\` FOREIGN KEY (\`parent_id\`) REFERENCES \`subscriber_regions\` (\`id\`) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS \`wireguard_peers\` (
+      \`id\` CHAR(36) NOT NULL,
+      \`tenant_id\` CHAR(36) NOT NULL,
+      \`username\` VARCHAR(128) NOT NULL,
+      \`public_key\` VARCHAR(64) NOT NULL,
+      \`private_key_encrypted\` VARBINARY(512) NOT NULL,
+      \`tunnel_ip\` VARCHAR(64) DEFAULT NULL,
+      \`allowed_ips\` VARCHAR(255) DEFAULT NULL,
+      \`is_active\` TINYINT(1) NOT NULL DEFAULT 1,
+      \`note\` VARCHAR(255) DEFAULT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      KEY \`idx_wireguard_peers_tenant\` (\`tenant_id\`),
+      KEY \`idx_wireguard_peers_username\` (\`username\`),
+      KEY \`idx_wireguard_peers_tunnel_ip\` (\`tunnel_ip\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 export async function logRadiusManagerUserCount(): Promise<void> {

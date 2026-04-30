@@ -30,23 +30,23 @@ router.get("/", async (req: Request, res: Response) => {
     return;
   }
   const cols = await getTableColumns(pool, "staff_users");
-  if (!cols.has("name")) {
-    res.status(503).json({ error: "staff_schema_missing", detail: "Apply migration 008_staff_and_subscriber_profile_fields.sql" });
-    return;
-  }
+  const hasStaffUsers = cols.has("name");
   const isManager = req.auth!.role === "manager";
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, name, email, role, active, created_at,
-            ${cols.has("wallet_balance") ? "wallet_balance" : "0"} AS wallet_balance,
-            ${cols.has("opening_balance") ? "opening_balance" : "0"} AS opening_balance,
-            ${cols.has("parent_staff_id") ? "parent_staff_id" : "NULL"} AS parent_staff_id,
-            ${cols.has("permissions_json") ? "permissions_json" : "NULL"} AS permissions_json
-     FROM staff_users
-     WHERE tenant_id = ? ${isManager ? "AND (id = ? OR parent_staff_id = ?)" : ""}
-     ORDER BY created_at DESC`,
-    isManager ? [req.auth!.tenantId, req.auth!.sub, req.auth!.sub] : [req.auth!.tenantId]
-  );
-  const items: Array<Record<string, unknown>> = rows.map((row) => ({ ...row }));
+  const items: Array<Record<string, unknown>> = [];
+  if (hasStaffUsers) {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, name, email, role, active, created_at,
+              ${cols.has("wallet_balance") ? "wallet_balance" : "0"} AS wallet_balance,
+              ${cols.has("opening_balance") ? "opening_balance" : "0"} AS opening_balance,
+              ${cols.has("parent_staff_id") ? "parent_staff_id" : "NULL"} AS parent_staff_id,
+              ${cols.has("permissions_json") ? "permissions_json" : "NULL"} AS permissions_json
+       FROM staff_users
+       WHERE tenant_id = ? ${isManager ? "AND (id = ? OR parent_staff_id = ?)" : ""}
+       ORDER BY created_at DESC`,
+      isManager ? [req.auth!.tenantId, req.auth!.sub, req.auth!.sub] : [req.auth!.tenantId]
+    );
+    items.push(...rows.map((row) => ({ ...row })));
+  }
   if (await hasTable(pool, "rm_managers")) {
     const [rmManagers] = await pool.query<RowDataPacket[]>(
       `SELECT managername, firstname, lastname, email, balance, enablemanager
@@ -56,7 +56,10 @@ router.get("/", async (req: Request, res: Response) => {
     for (const m of rmManagers) {
       const managerName = String(m.managername ?? "").trim();
       if (!managerName) continue;
-      if (items.some((row) => String(row.email ?? "").toLowerCase() === String(m.email ?? "").toLowerCase())) {
+      if (
+        String(m.email ?? "").trim() &&
+        items.some((row) => String(row.email ?? "").toLowerCase() === String(m.email ?? "").toLowerCase())
+      ) {
         continue;
       }
       const fullName = `${String(m.firstname ?? "").trim()} ${String(m.lastname ?? "").trim()}`.trim();
@@ -74,6 +77,10 @@ router.get("/", async (req: Request, res: Response) => {
         legacy_source: "rm_managers",
       });
     }
+  }
+  if (!hasStaffUsers && items.length === 0) {
+    res.status(503).json({ error: "staff_schema_missing", detail: "rm_managers_table_missing_or_empty" });
+    return;
   }
   res.json({ items });
 });
