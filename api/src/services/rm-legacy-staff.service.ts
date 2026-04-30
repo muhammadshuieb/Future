@@ -62,13 +62,21 @@ export async function tryLoginViaRmManagers(
   const ident = emailOrName.trim();
   if (!ident) return null;
   const hasEmail = cols.has("email");
-  const [mRows] = await pool.query<RowDataPacket[]>(
-    hasEmail
-      ? `SELECT * FROM rm_managers
-         WHERE (managername = ? OR LOWER(TRIM(email)) = LOWER(?)) LIMIT 2`
-      : `SELECT * FROM rm_managers WHERE managername = ? LIMIT 1`,
-    hasEmail ? [ident, ident] : [ident]
-  );
+  /** Prefer unambiguous lookup: managername for logins like "admin"; email only when ident looks like an email. */
+  let mRows: RowDataPacket[];
+  if (ident.includes("@") && hasEmail) {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT * FROM rm_managers WHERE LOWER(TRIM(COALESCE(email,''))) = LOWER(?) LIMIT 2`,
+      [ident]
+    );
+    mRows = rows;
+  } else {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT * FROM rm_managers WHERE managername = ? LIMIT 1`,
+      [ident]
+    );
+    mRows = rows;
+  }
   if (mRows.length !== 1) return null;
   const m = mRows[0];
   if (cols.has("enablemanager") && Number(m.enablemanager) !== 1) return null;
