@@ -1,10 +1,8 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
-import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import type { JwtPayload, Role } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import { parseManagerPermissions, parsePermissionsObject } from "../lib/manager-permissions.js";
@@ -26,35 +24,8 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     return;
   }
   const { email, password } = parsed.data;
-  let row: RowDataPacket | undefined;
-  if (await hasTable(pool, "staff_users")) {
-    const staffCols = await getTableColumns(pool, "staff_users");
-    const selectCols = ["id", "tenant_id", "email", "password_hash", "role", "active"];
-    if (staffCols.has("name")) selectCols.push("name");
-    if (staffCols.has("permissions_json")) selectCols.push("permissions_json");
-    if (staffCols.has("wallet_balance")) selectCols.push("wallet_balance");
-    const values: Array<string | number | boolean | null> = [email];
-    let whereClause = "email = ?";
-    if (staffCols.has("name")) {
-      whereClause = "(email = ? OR name = ?)";
-      values.push(email);
-    }
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT ${selectCols.join(", ")} FROM staff_users WHERE ${whereClause} LIMIT 1`,
-      values
-    );
-    row = rows[0] as RowDataPacket | undefined;
-    if (row?.active) {
-      const ok = await bcrypt.compare(password, row.password_hash as string);
-      if (!ok) row = undefined;
-    } else {
-      row = undefined;
-    }
-  }
-  if (!row) {
-    const fromRm = await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password);
-    if (fromRm) row = fromRm;
-  }
+  // `email` field is treated as login identifier (managername) for backward compatibility with frontend payload.
+  let row = (await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password)) ?? undefined;
   if (!row?.active) {
     res.status(401).json({ error: "invalid_credentials" });
     return;

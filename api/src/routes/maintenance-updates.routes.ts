@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 const router = Router();
 
 router.use(requireAuth);
-router.use(requireRole("admin"));
+router.use(requireRole("manager"));
 
 function getUpdateConfig() {
   const branch = process.env.APP_UPDATE_BRANCH?.trim() || "main";
@@ -327,7 +327,12 @@ router.get("/updates/feature", async (_req, res) => {
 });
 
 router.put("/updates/feature", async (req, res) => {
-  const enabled = Boolean(req.body?.enabled);
+  const rawEnabled = req.body?.enabled;
+  if (typeof rawEnabled !== "boolean") {
+    res.status(400).json({ error: "invalid_body", detail: "enabled_boolean_required" });
+    return;
+  }
+  const enabled = rawEnabled;
   const cfg = getUpdateConfig();
   try {
     await writeRuntimeEnabled(cfg.runtimeFile, enabled);
@@ -341,6 +346,8 @@ router.put("/updates/feature", async (req, res) => {
 router.post("/updates/check", async (_req, res) => {
   const cfg = getUpdateConfig();
   try {
+    // Ensure local refs for configured branch are fresh before commit/date checks.
+    await runGit(cfg.gitBin, ["fetch", cfg.remote, cfg.branch], cfg.repoDir);
     const [localCommit, remoteCommit] = await Promise.all([
       runGit(cfg.gitBin, ["rev-parse", "HEAD"], cfg.repoDir),
       runGit(cfg.gitBin, ["ls-remote", cfg.remote, `refs/heads/${cfg.branch}`], cfg.repoDir).then((raw) =>

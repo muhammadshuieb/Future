@@ -14,6 +14,7 @@ import {
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField, SelectField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -77,6 +78,7 @@ export function ServerLogsPage() {
   const [data, setData] = useState<LogsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [clearScope, setClearScope] = useState<"all" | "older_than_7_days" | null>(null);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const mountedRef = useRef(true);
 
@@ -126,8 +128,13 @@ export function ServerLogsPage() {
   }, [autoRefresh, load]);
 
   async function handleClear(scope: "all" | "older_than_7_days") {
-    const confirmMsg = scope === "all" ? t("logs.confirm_clear_all") : t("logs.confirm_clear_old");
-    if (!window.confirm(confirmMsg)) return;
+    setClearScope(scope);
+  }
+
+  async function confirmClearLogs() {
+    const scope = clearScope;
+    setClearScope(null);
+    if (!scope) return;
     try {
       const res = await apiFetch(`/api/server-logs?scope=${scope}`, { method: "DELETE" });
       if (!res.ok) {
@@ -161,6 +168,8 @@ export function ServerLogsPage() {
   }
 
   const totals = data?.totals ?? { error: 0, warn: 0, info: 0, debug: 0 };
+  const clearConfirmMessage =
+    clearScope === "all" ? t("logs.confirm_clear_all") : clearScope === "older_than_7_days" ? t("logs.confirm_clear_old") : "";
 
   return (
     <div className="space-y-6">
@@ -315,6 +324,18 @@ export function ServerLogsPage() {
           })}
         </ul>
       </Card>
+      <ActionDialog
+        open={Boolean(clearScope)}
+        title={t("common.delete")}
+        message={clearConfirmMessage}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setClearScope(null)}
+        onConfirm={() => {
+          void confirmClearLogs();
+        }}
+      />
     </div>
   );
 }

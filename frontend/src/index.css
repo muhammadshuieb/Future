@@ -140,6 +140,27 @@ html[dir="ltr"] body {
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
   }
+
+  /* Users page filters: keep dropdown text visible in dark mode. */
+  .users-filter-select option {
+    color: hsl(var(--foreground));
+    background-color: hsl(var(--card));
+  }
+
+  /* Users table compact mode: fit viewport width and show more rows. */
+  .users-table {
+    table-layout: fixed;
+  }
+  .users-table th,
+  .users-table td {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .users-table td {
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
+  }
 }
 
 /* Custom scrollbar to match modern UI */

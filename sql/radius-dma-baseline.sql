@@ -1060,7 +1060,7 @@ CREATE TABLE `rm_managers` (
 --
 
 INSERT INTO `rm_managers` (`managername`, `password`, `firstname`, `lastname`, `phone`, `mobile`, `address`, `city`, `zip`, `country`, `state`, `comment`, `company`, `vatid`, `email`, `balance`, `perm_listusers`, `perm_createusers`, `perm_editusers`, `perm_edituserspriv`, `perm_deleteusers`, `perm_listmanagers`, `perm_createmanagers`, `perm_editmanagers`, `perm_deletemanagers`, `perm_listservices`, `perm_createservices`, `perm_editservices`, `perm_deleteservices`, `perm_listonlineusers`, `perm_listinvoices`, `perm_trafficreport`, `perm_addcredits`, `perm_negbalance`, `perm_listallinvoices`, `perm_showinvtotals`, `perm_logout`, `perm_cardsys`, `perm_editinvoice`, `perm_allusers`, `perm_allowdiscount`, `perm_enwriteoff`, `perm_accessap`, `perm_cts`, `perm_email`, `perm_sms`, `enablemanager`, `lang`) VALUES
-('admin', 'b59c67bf196a4758191e42f76670ceba', 'Default', 'Manager', '', '', '', '', '', '', '', 'Superuser', '', '', '', '-128.32', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 'English'),
+('root', 'd321ff85b62fbf3ae282ba02011d0e19', 'Root', 'Admin', '', '', '', '', '', '', '', 'Future Radius bootstrap', '', '', '', '0.00', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 'English'),
 ('manager1', 'b59c67bf196a4758191e42f76670ceba', 'John', 'Smith', '546-5122-5412', '594-441-4121', 'St. Anders Blvd 1654.', 'Smallville', '532321', '', 'Colorado', 'Reseller', 'My Wireless Inc.', '145121', 'john@mywirelessinc.com', '739.16', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 'English');
 
 -- --------------------------------------------------------

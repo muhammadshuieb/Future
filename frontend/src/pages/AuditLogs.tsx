@@ -3,6 +3,7 @@ import { Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -31,6 +32,7 @@ export function AuditLogsPage() {
   const [total, setTotal] = useState(0);
   const [actionFilter, setActionFilter] = useState("");
   const [entityFilter, setEntityFilter] = useState("");
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / perPage));
   const canClear = user?.role === "admin";
@@ -69,7 +71,12 @@ export function AuditLogsPage() {
 
   async function clearAll() {
     if (!canClear) return;
-    if (!confirm(t("audit.clearConfirm"))) return;
+    setConfirmClearOpen(true);
+  }
+
+  async function confirmClearAll() {
+    setConfirmClearOpen(false);
+    if (!canClear) return;
     const res = await apiFetch("/api/audit", { method: "DELETE" });
     if (!res.ok) {
       const raw = await readApiError(res);
@@ -177,6 +184,18 @@ export function AuditLogsPage() {
           </Button>
         </div>
       </Card>
+      <ActionDialog
+        open={confirmClearOpen}
+        title={t("common.delete")}
+        message={t("audit.clearConfirm")}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmClearOpen(false)}
+        onConfirm={() => {
+          void confirmClearAll();
+        }}
+      />
     </div>
   );
 }

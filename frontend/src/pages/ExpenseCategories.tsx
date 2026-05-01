@@ -3,6 +3,8 @@ import { Pencil, Plus, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 
@@ -13,6 +15,9 @@ export function ExpenseCategoriesPage() {
   const [items, setItems] = useState<Category[]>([]);
   const [name, setName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<Category | null>(null);
+  const [editName, setEditName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
 
   const load = useCallback(async () => {
     const r = await apiFetch("/api/inventory/categories");
@@ -44,22 +49,33 @@ export function ExpenseCategoriesPage() {
 
   async function editCategory(item: Category) {
     setMessage(null);
-    const nextName = prompt(t("expenses.categoryName"), item.name);
-    if (!nextName || !nextName.trim()) return;
-    const res = await apiFetch(`/api/inventory/categories/${item.id}`, {
+    setEditTarget(item);
+    setEditName(item.name);
+  }
+
+  async function saveEditCategory() {
+    if (!editTarget || !editName.trim()) return;
+    const res = await apiFetch(`/api/inventory/categories/${editTarget.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ name: nextName.trim() }),
+      body: JSON.stringify({ name: editName.trim() }),
     });
     if (!res.ok) {
       const raw = await readApiError(res);
       setMessage(formatStaffApiError(res.status, raw, t));
       return;
     }
+    setEditTarget(null);
     await load();
   }
 
   async function deleteCategory(item: Category) {
-    if (!confirm(`${t("common.delete")} ${item.name}?`)) return;
+    setDeleteTarget(item);
+  }
+
+  async function confirmDeleteCategory() {
+    if (!deleteTarget) return;
+    const item = deleteTarget;
+    setDeleteTarget(null);
     const res = await apiFetch(`/api/inventory/categories/${item.id}`, { method: "DELETE" });
     if (!res.ok) {
       const raw = await readApiError(res);
@@ -117,6 +133,31 @@ export function ExpenseCategoriesPage() {
         </div>
         {items.length === 0 ? <p className="p-6 text-center text-sm opacity-60">{t("expenses.emptyCategories")}</p> : null}
       </Card>
+      <Modal open={Boolean(editTarget)} onClose={() => setEditTarget(null)} title={t("common.edit")}>
+        <div className="space-y-3">
+          <TextField label={t("expenses.categoryName")} value={editName} onChange={(e) => setEditName(e.target.value)} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setEditTarget(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="button" onClick={() => void saveEditCategory()}>
+              {t("common.save")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <ActionDialog
+        open={Boolean(deleteTarget)}
+        title={t("common.delete")}
+        message={deleteTarget ? `${t("common.delete")} ${deleteTarget.name}?` : ""}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          void confirmDeleteCategory();
+        }}
+      />
     </div>
   );
 }

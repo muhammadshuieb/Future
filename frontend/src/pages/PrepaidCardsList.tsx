@@ -3,8 +3,10 @@ import { Activity, CalendarClock, ChartNoAxesCombined, Download, Power, RefreshC
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ColumnVisibilityMenu, useColumnVisibility } from "../components/ui/ColumnVisibilityMenu";
 import { useI18n } from "../context/LocaleContext";
 import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { cn } from "../lib/utils";
 
@@ -20,7 +22,7 @@ type CardRow = {
   cardtype: number;
   revoked: number;
   active: number;
-  status?: "active" | "expired";
+  status?: "active" | "expired" | "disabled";
   srvid?: number;
   service_name: string;
 };
@@ -49,7 +51,7 @@ export function PrepaidCardsListPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "expired">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "expired" | "disabled">("all");
   const [serviceFilter, setServiceFilter] = useState<string>("all");
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>("generated_on");
@@ -62,6 +64,12 @@ export function PrepaidCardsListPage() {
   const [excludedIds, setExcludedIds] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<number | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    message: string;
+    variant: "warning" | "danger";
+    action: (() => void) | null;
+  }>({ open: false, message: "", variant: "warning", action: null });
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<CardRow | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -72,6 +80,23 @@ export function PrepaidCardsListPage() {
   const [editRevoked, setEditRevoked] = useState("0");
   const [cardStats, setCardStats] = useState<CardStats | null>(null);
   const [cardDetailsLoading, setCardDetailsLoading] = useState(false);
+  const prepaidColumns = useMemo(
+    () => [
+      { key: "id", label: "#" },
+      { key: "cardnum", label: t("prepaid.cardsList.colCard") },
+      { key: "password", label: t("users.password"), defaultVisible: false },
+      { key: "series", label: t("prepaid.cardsList.colSeries") },
+      { key: "service_name", label: t("prepaid.cardsList.colService") },
+      { key: "value", label: t("prepaid.cardsList.colValue") },
+      { key: "total_limit_mb", label: t("prepaid.cardsList.colTotalLimitMb"), defaultVisible: false },
+      { key: "type", label: t("prepaid.cardsList.colType"), defaultVisible: false },
+      { key: "generated_on", label: t("prepaid.cardsList.colGenerated"), defaultVisible: false },
+      { key: "valid_till", label: t("prepaid.cardsList.colValidTill") },
+      { key: "status", label: t("users.status") },
+    ],
+    [t]
+  );
+  const prepaidColumnVisibility = useColumnVisibility("prepaid-cards", prepaidColumns);
   const query = useMemo(() => {
     const p = new URLSearchParams({ page: String(page), per_page: String(pageSize) });
     if (q.trim()) p.set("q", q.trim());
@@ -271,8 +296,17 @@ export function PrepaidCardsListPage() {
     }
   }
 
+  function openConfirm(message: string, action: () => void, variant: "warning" | "danger" = "warning") {
+    setConfirmDialog({ open: true, message, action, variant });
+  }
+
   async function deleteOne(id: number) {
-    if (!confirm(t("prepaid.cardsList.confirmDeleteOne"))) return;
+    openConfirm(t("prepaid.cardsList.confirmDeleteOne"), () => {
+      void confirmDeleteOne(id);
+    }, "danger");
+  }
+
+  async function confirmDeleteOne(id: number) {
     setBusy(true);
     setErr(null);
     try {
@@ -291,7 +325,12 @@ export function PrepaidCardsListPage() {
   }
 
   async function deleteExpired() {
-    if (!confirm(t("prepaid.cardsList.confirmDeleteExpired"))) return;
+    openConfirm(t("prepaid.cardsList.confirmDeleteExpired"), () => {
+      void confirmDeleteExpired();
+    }, "danger");
+  }
+
+  async function confirmDeleteExpired() {
     setBusy(true);
     setErr(null);
     try {
@@ -310,7 +349,17 @@ export function PrepaidCardsListPage() {
   }
   async function deleteSelected() {
     if (!selectedCount) return;
-    if (!confirm(t("prepaid.cardsList.confirmDeleteSelected").replace("{count}", String(selectedCount)))) return;
+    openConfirm(
+      t("prepaid.cardsList.confirmDeleteSelected").replace("{count}", String(selectedCount)),
+      () => {
+        void confirmDeleteSelected();
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteSelected() {
+    if (!selectedCount) return;
     setBusy(true);
     setErr(null);
     try {
@@ -337,10 +386,33 @@ export function PrepaidCardsListPage() {
   function isDisabled(row: CardRow): boolean {
     return Number(row.active ?? 1) === 0 || Number(row.revoked ?? 0) === 1;
   }
+  function getTodayLocalIsoDate(): string {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  function isExpiredByDate(expiration: string | null | undefined): boolean {
+    const exp = String(expiration ?? "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) return false;
+    return exp < getTodayLocalIsoDate();
+  }
+  function getCardVisualState(row: CardRow): "disabled" | "expired" | "active" {
+    if (isDisabled(row)) return "disabled";
+    if (isExpiredByDate(row.expiration)) return "expired";
+    return "active";
+  }
   async function toggleCardStatus(row: CardRow) {
     const disabled = isDisabled(row);
-    const prompt = disabled ? t("prepaid.cardsList.confirmEnable") : t("prepaid.cardsList.confirmDisable");
-    if (!confirm(prompt)) return;
+    const promptText = disabled ? t("prepaid.cardsList.confirmEnable") : t("prepaid.cardsList.confirmDisable");
+    openConfirm(promptText, () => {
+      void confirmToggleCardStatus(row);
+    }, "warning");
+  }
+
+  async function confirmToggleCardStatus(row: CardRow) {
+    const disabled = isDisabled(row);
     setToggleStatusLoadingId(row.id);
     setErr(null);
     try {
@@ -502,13 +574,14 @@ export function PrepaidCardsListPage() {
               label=""
               value={statusFilter}
               onChange={(e) => {
-                setStatusFilter(e.target.value as "all" | "active" | "expired");
+                setStatusFilter(e.target.value as "all" | "active" | "expired" | "disabled");
                 setPage(1);
               }}
             >
               <option value="all">{t("prepaid.status.all")}</option>
               <option value="active">{t("prepaid.status.active")}</option>
               <option value="expired">{t("prepaid.status.expired")}</option>
+              <option value="disabled">{t("prepaid.status.disabled")}</option>
             </SelectField>
             <SelectField
               label=""
@@ -581,6 +654,14 @@ export function PrepaidCardsListPage() {
           <Button type="button" variant="outline" className="rounded-lg" onClick={clearSelection} disabled={!selectedCount}>
             {t("users.clearSelection")}
           </Button>
+          <ColumnVisibilityMenu
+            title="الأعمدة"
+            columns={prepaidColumns}
+            visibleKeys={prepaidColumnVisibility.visibleKeys}
+            onToggle={prepaidColumnVisibility.toggle}
+            onShowAll={prepaidColumnVisibility.showAll}
+            onResetDefault={prepaidColumnVisibility.resetDefault}
+          />
           <span className="ms-auto rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:text-blue-300">{t("prepaid.cardsList.total")}: {total}</span>
           <span className="rounded-full bg-violet-500/15 px-2.5 py-1 text-xs font-semibold text-violet-700 dark:text-violet-300">
             {t("users.selected")}: {selectedCount}
@@ -594,17 +675,17 @@ export function PrepaidCardsListPage() {
               <th className="px-2 py-2">
                 <input type="checkbox" checked={items.length > 0 && items.every((x) => isChecked(x.id))} onChange={toggleAll} />
               </th>
-              {header("#", "id")}
-              {header(t("prepaid.cardsList.colCard"), "cardnum")}
-              <th className="px-2 py-2">{t("users.password")}</th>
-              {header(t("prepaid.cardsList.colSeries"), "series")}
-              {header(t("prepaid.cardsList.colService"), "service_name")}
-              {header(t("prepaid.cardsList.colValue"), "value")}
-              {header(t("prepaid.cardsList.colTotalLimitMb"), "total_limit_mb")}
-              <th className="px-2 py-2">{t("prepaid.cardsList.colType")}</th>
-              {header(t("prepaid.cardsList.colGenerated"), "generated_on")}
-              {header(t("prepaid.cardsList.colValidTill"), "valid_till")}
-              {header(t("users.status"), "status")}
+              {prepaidColumnVisibility.isVisible("id") ? header("#", "id") : null}
+              {prepaidColumnVisibility.isVisible("cardnum") ? header(t("prepaid.cardsList.colCard"), "cardnum") : null}
+              {prepaidColumnVisibility.isVisible("password") ? <th className="px-2 py-2">{t("users.password")}</th> : null}
+              {prepaidColumnVisibility.isVisible("series") ? header(t("prepaid.cardsList.colSeries"), "series") : null}
+              {prepaidColumnVisibility.isVisible("service_name") ? header(t("prepaid.cardsList.colService"), "service_name") : null}
+              {prepaidColumnVisibility.isVisible("value") ? header(t("prepaid.cardsList.colValue"), "value") : null}
+              {prepaidColumnVisibility.isVisible("total_limit_mb") ? header(t("prepaid.cardsList.colTotalLimitMb"), "total_limit_mb") : null}
+              {prepaidColumnVisibility.isVisible("type") ? <th className="px-2 py-2">{t("prepaid.cardsList.colType")}</th> : null}
+              {prepaidColumnVisibility.isVisible("generated_on") ? header(t("prepaid.cardsList.colGenerated"), "generated_on") : null}
+              {prepaidColumnVisibility.isVisible("valid_till") ? header(t("prepaid.cardsList.colValidTill"), "valid_till") : null}
+              {prepaidColumnVisibility.isVisible("status") ? header(t("users.status"), "status") : null}
               <th className="px-2 py-2">{t("common.actions")}</th>
             </tr>
           </thead>
@@ -625,30 +706,39 @@ export function PrepaidCardsListPage() {
                     }}
                   />
                 </td>
-                <td className="px-2 py-1 font-mono text-xs">{r.id}</td>
-                <td className="px-2 py-1 font-mono text-xs">{r.cardnum}</td>
-                <td className="px-2 py-1 font-mono text-xs">{r.password}</td>
-                <td className="px-2 py-1 font-mono">{r.series}</td>
-                <td className="px-2 py-1">{r.service_name}</td>
-                <td className="px-2 py-1">{r.value}</td>
-                <td className="px-2 py-1">{Number(r.total_limit_mb ?? 0)}</td>
-                <td className="px-2 py-1">{r.cardtype === 1 ? t("prepaid.cardsList.typeRefill") : t("prepaid.cardsList.typeClassic")}</td>
-                <td className="px-2 py-1">{String(r.date ?? "").slice(0, 10)}</td>
-                <td className="px-2 py-1">{String(r.expiration ?? "").slice(0, 10)}</td>
-                <td className="px-2 py-1">
+                {prepaidColumnVisibility.isVisible("id") ? <td className="px-2 py-1 font-mono text-xs">{r.id}</td> : null}
+                {prepaidColumnVisibility.isVisible("cardnum") ? <td className="px-2 py-1 font-mono text-xs">{r.cardnum}</td> : null}
+                {prepaidColumnVisibility.isVisible("password") ? <td className="px-2 py-1 font-mono text-xs">{r.password}</td> : null}
+                {prepaidColumnVisibility.isVisible("series") ? <td className="px-2 py-1 font-mono">{r.series}</td> : null}
+                {prepaidColumnVisibility.isVisible("service_name") ? <td className="px-2 py-1">{r.service_name}</td> : null}
+                {prepaidColumnVisibility.isVisible("value") ? <td className="px-2 py-1">{r.value}</td> : null}
+                {prepaidColumnVisibility.isVisible("total_limit_mb") ? <td className="px-2 py-1">{Number(r.total_limit_mb ?? 0)}</td> : null}
+                {prepaidColumnVisibility.isVisible("type") ? <td className="px-2 py-1">{r.cardtype === 1 ? t("prepaid.cardsList.typeRefill") : t("prepaid.cardsList.typeClassic")}</td> : null}
+                {prepaidColumnVisibility.isVisible("generated_on") ? <td className="px-2 py-1">{String(r.date ?? "").slice(0, 10)}</td> : null}
+                {prepaidColumnVisibility.isVisible("valid_till") ? <td className="px-2 py-1">{String(r.expiration ?? "").slice(0, 10)}</td> : null}
+                {prepaidColumnVisibility.isVisible("status") ? <td className="px-2 py-1">
+                  {(() => {
+                    const visualState = getCardVisualState(r);
+                    return (
                   <span
                     className={cn(
                       "inline-flex rounded-full px-2 py-0.5 text-xs font-semibold",
-                      isDisabled(r)
+                      visualState === "disabled"
                         ? "bg-red-500/20 text-red-700 dark:text-red-300"
-                        : (r.status ?? "active") === "active"
+                        : visualState === "active"
                         ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                         : "bg-amber-500/20 text-amber-800 dark:text-amber-300"
                     )}
                   >
-                    {isDisabled(r) ? t("prepaid.status.disabled") : (r.status ?? "active") === "active" ? t("prepaid.status.active") : t("prepaid.status.expired")}
+                    {visualState === "disabled"
+                      ? t("prepaid.status.disabled")
+                      : visualState === "active"
+                        ? t("prepaid.status.active")
+                        : t("prepaid.status.expired")}
                   </span>
-                </td>
+                    );
+                  })()}
+                </td> : null}
                 <td className="px-2 py-1">
                   <Button
                     type="button"
@@ -686,7 +776,7 @@ export function PrepaidCardsListPage() {
             ))}
             {!items.length ? (
               <tr>
-                <td className="px-3 py-6 text-center opacity-60" colSpan={13}>
+                <td className="px-3 py-6 text-center opacity-60" colSpan={prepaidColumnVisibility.visibleKeys.length + 2}>
                   {t("prepaid.cardsList.empty")}
                 </td>
               </tr>
@@ -714,7 +804,7 @@ export function PrepaidCardsListPage() {
               const usedBytes = Number(cardStats?.usage_bytes ?? 0);
               const remainingBytes = totalLimitBytes > 0 ? Math.max(0, totalLimitBytes - Math.max(0, usedBytes)) : 0;
               const progress = totalLimitBytes > 0 ? Math.min(100, Math.max(0, (usedBytes / totalLimitBytes) * 100)) : 0;
-              const disabled = isDisabled(editing);
+              const visualState = getCardVisualState(editing);
               return (
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-3">
@@ -722,8 +812,21 @@ export function PrepaidCardsListPage() {
                       <ShieldCheck className="h-3.5 w-3.5" />
                       {t("prepaid.cardsList.cardStatus")}
                     </div>
-                    <div className={cn("text-sm font-semibold", disabled ? "text-red-600" : "text-emerald-600")}>
-                      {disabled ? t("prepaid.status.disabled") : t("prepaid.status.active")}
+                    <div
+                      className={cn(
+                        "text-sm font-semibold",
+                        visualState === "disabled"
+                          ? "text-red-600"
+                          : visualState === "expired"
+                            ? "text-amber-600"
+                            : "text-emerald-600"
+                      )}
+                    >
+                      {visualState === "disabled"
+                        ? t("prepaid.status.disabled")
+                        : visualState === "expired"
+                          ? t("prepaid.status.expired")
+                          : t("prepaid.status.active")}
                     </div>
                   </div>
                   <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-3">
@@ -845,6 +948,20 @@ export function PrepaidCardsListPage() {
           </div>
         ) : null}
       </Modal>
+      <ActionDialog
+        open={confirmDialog.open}
+        title={t("common.actions")}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmDialog({ open: false, message: "", variant: "warning", action: null })}
+        onConfirm={() => {
+          const action = confirmDialog.action;
+          setConfirmDialog({ open: false, message: "", variant: "warning", action: null });
+          action?.();
+        }}
+      />
     </div>
   );
 }

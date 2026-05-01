@@ -4,6 +4,7 @@ import { ArrowLeft, Download, FileText, X, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -137,6 +138,8 @@ export function UserProfilePage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
+  const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [createInvoiceOpen, setCreateInvoiceOpen] = useState(false);
   const [invoiceAmount, setInvoiceAmount] = useState("");
@@ -282,7 +285,12 @@ export function UserProfilePage() {
 
   async function onDisable() {
     if (!id || !canManage) return;
-    if (!confirm(t("profile.disable") + "?")) return;
+    setDisableConfirmOpen(true);
+  }
+
+  async function confirmDisable() {
+    setDisableConfirmOpen(false);
+    if (!id || !canManage) return;
     const r = await apiFetch(`/api/subscribers/${id}/disable`, { method: "POST" });
     if (r.ok) await load();
   }
@@ -295,7 +303,12 @@ export function UserProfilePage() {
 
   async function onDelete() {
     if (!id || !canManage) return;
-    if (!confirm(t("profile.deleteConfirm"))) return;
+    setDeleteConfirmOpen(true);
+  }
+
+  async function confirmDelete() {
+    setDeleteConfirmOpen(false);
+    if (!id || !canManage) return;
     const r = await apiFetch(`/api/subscribers/${id}`, { method: "DELETE" });
     if (!r.ok) {
       const raw = await readApiError(r);
@@ -983,6 +996,30 @@ export function UserProfilePage() {
         )}
       </Card>
       ) : null}
+      <ActionDialog
+        open={disableConfirmOpen}
+        title={t("common.actions")}
+        message={`${t("profile.disable")}?`}
+        variant="warning"
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDisableConfirmOpen(false)}
+        onConfirm={() => {
+          void confirmDisable();
+        }}
+      />
+      <ActionDialog
+        open={deleteConfirmOpen}
+        title={t("common.delete")}
+        message={t("profile.deleteConfirm")}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          void confirmDelete();
+        }}
+      />
     </div>
   );
 }

@@ -43,6 +43,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { LogoMark } from "../components/brand/Logo";
+import { canOpenStaffSection } from "../lib/permissions";
 
 type NavItem = {
   to: string;
@@ -139,6 +140,7 @@ export function AdminShell() {
   const { t, locale, setLocale, isRtl } = useI18n();
   const location = useLocation();
   const canManageWhatsApp = user?.role === "admin" || user?.role === "manager";
+  const canOpenStaff = canOpenStaffSection(user?.role, user?.permissions);
   const isSubscribersRoute =
     location.pathname.startsWith("/users") ||
     location.pathname.startsWith("/users/prepaid-cards") ||
@@ -301,8 +303,8 @@ export function AdminShell() {
               ))
             : null}
 
-          {/* Staff group (admin-only) */}
-          {user?.role === "admin" ? (
+          {/* Staff group */}
+          {canOpenStaff ? (
             <>
               <GroupButton
                 open={staffOpen}

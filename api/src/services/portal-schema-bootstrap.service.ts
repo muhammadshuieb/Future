@@ -37,35 +37,76 @@ export async function ensurePortalTenantAndStaffTables(): Promise<void> {
       \`perm_listinvoices\` TINYINT(1) NOT NULL DEFAULT 0,
       \`perm_editinvoice\` TINYINT(1) NOT NULL DEFAULT 0,
       \`perm_negbalance\` TINYINT(1) NOT NULL DEFAULT 0,
+      \`allowed_negative_balance\` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
       \`perm_logout\` TINYINT(1) NOT NULL DEFAULT 0,
       PRIMARY KEY (\`id\`),
       UNIQUE KEY \`uq_rm_managers_managername\` (\`managername\`),
       UNIQUE KEY \`uq_rm_managers_email\` (\`email\`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
-  const legacyStaffUsersEnabled = String(process.env.LEGACY_STAFF_USERS_ENABLED || "false").toLowerCase() === "true";
-  if (legacyStaffUsersEnabled) {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`staff_users\` (
-        \`id\` CHAR(36) NOT NULL,
-        \`tenant_id\` CHAR(36) NOT NULL,
-        \`name\` VARCHAR(128) NOT NULL,
-        \`email\` VARCHAR(255) NOT NULL,
-        \`password_hash\` VARCHAR(255) NOT NULL,
-        \`role\` ENUM('admin','manager','accountant','viewer') NOT NULL DEFAULT 'viewer',
-        \`permissions_json\` JSON DEFAULT NULL,
-        \`parent_staff_id\` CHAR(36) DEFAULT NULL,
-        \`active\` TINYINT(1) NOT NULL DEFAULT 1,
-        \`opening_balance\` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-        \`wallet_balance\` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-        \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-        PRIMARY KEY (\`id\`),
-        UNIQUE KEY \`uq_staff_email_tenant\` (\`tenant_id\`,\`email\`),
-        KEY \`idx_staff_parent\` (\`tenant_id\`,\`parent_staff_id\`),
-        CONSTRAINT \`fk_staff_tenant\` FOREIGN KEY (\`tenant_id\`) REFERENCES \`tenants\` (\`id\`)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+  const [rmNegCol] = await pool.query<RowDataPacket[]>(
+    `SELECT 1 AS ok
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'rm_managers'
+       AND COLUMN_NAME = 'allowed_negative_balance'
+     LIMIT 1`
+  );
+  if (!rmNegCol[0]) {
+    await pool.query(
+      `ALTER TABLE \`rm_managers\`
+       ADD COLUMN \`allowed_negative_balance\` DECIMAL(14,2) NOT NULL DEFAULT 0.00`
+    );
   }
+  // staff_users table intentionally not bootstrapped; auth/staff use rm_managers as source of truth.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS \`manager_wallet_transactions\` (
+      \`id\` CHAR(36) NOT NULL,
+      \`tenant_id\` CHAR(36) NOT NULL,
+      \`staff_id\` CHAR(36) NOT NULL,
+      \`actor_staff_id\` CHAR(36) DEFAULT NULL,
+      \`amount\` DECIMAL(14,2) NOT NULL,
+      \`tx_type\` VARCHAR(48) NOT NULL,
+      \`note\` VARCHAR(255) DEFAULT NULL,
+      \`related_subscriber_id\` CHAR(36) DEFAULT NULL,
+      \`currency\` VARCHAR(8) DEFAULT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      KEY \`idx_manager_wallet_tx_staff\` (\`tenant_id\`, \`staff_id\`, \`created_at\`),
+      KEY \`idx_manager_wallet_tx_actor\` (\`tenant_id\`, \`actor_staff_id\`, \`created_at\`),
+      KEY \`idx_manager_wallet_tx_sub\` (\`tenant_id\`, \`related_subscriber_id\`, \`created_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS \`server_logs\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      \`level\` ENUM('error','warn','info','debug') NOT NULL DEFAULT 'info',
+      \`source\` VARCHAR(64) NOT NULL DEFAULT 'api',
+      \`category\` VARCHAR(96) DEFAULT NULL,
+      \`message\` VARCHAR(8000) NOT NULL,
+      \`stack\` MEDIUMTEXT DEFAULT NULL,
+      \`meta\` JSON DEFAULT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      KEY \`idx_server_logs_level_created\` (\`level\`, \`created_at\`),
+      KEY \`idx_server_logs_source_created\` (\`source\`, \`created_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS \`server_log_alerts\` (
+      \`id\` CHAR(36) NOT NULL,
+      \`log_id\` BIGINT UNSIGNED NOT NULL,
+      \`tenant_id\` CHAR(36) NOT NULL,
+      \`status\` ENUM('sent','failed','skipped') NOT NULL DEFAULT 'skipped',
+      \`error_message\` VARCHAR(4000) DEFAULT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`uq_server_log_alerts_log\` (\`log_id\`),
+      KEY \`idx_server_log_alerts_tenant_created\` (\`tenant_id\`, \`created_at\`),
+      CONSTRAINT \`fk_server_log_alerts_log\`
+        FOREIGN KEY (\`log_id\`) REFERENCES \`server_logs\` (\`id\`) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS \`staff_role_permissions\` (
       \`id\` CHAR(36) NOT NULL,

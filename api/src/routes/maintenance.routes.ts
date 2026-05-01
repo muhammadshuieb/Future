@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { promises as fs } from "fs";
 import { z } from "zod";
+import type { RowDataPacket } from "mysql2";
 import {
   applyGoogleDrivePasteToken,
   deleteBackupRunsBulk,
@@ -16,12 +17,37 @@ import {
   updateBackupSchedule,
   updateRcloneSettings,
 } from "../services/backup.service.js";
+import { previewRadacctYearPrune, runRadacctYearPrune } from "../services/radacct-prune.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { inferApiPublicOrigin, inferReturnFrontendOrigin } from "../lib/public-origin.js";
+import { pool } from "../db/pool.js";
 
 const router = Router();
 router.use(requireAuth);
 router.use(requireRole("admin", "manager"));
+
+router.get("/database-size", async (_req, res) => {
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         COALESCE(SUM(data_length), 0) AS data_bytes,
+         COALESCE(SUM(index_length), 0) AS index_bytes,
+         COALESCE(SUM(data_length + index_length), 0) AS total_bytes,
+         COUNT(*) AS table_count
+       FROM information_schema.tables
+       WHERE table_schema = DATABASE()`
+    );
+    res.json({
+      data_bytes: Number(rows[0]?.data_bytes ?? 0),
+      index_bytes: Number(rows[0]?.index_bytes ?? 0),
+      total_bytes: Number(rows[0]?.total_bytes ?? 0),
+      table_count: Number(rows[0]?.table_count ?? 0),
+    });
+  } catch (e) {
+    console.error("maintenance database-size", e);
+    res.status(500).json({ error: "database_size_failed" });
+  }
+});
 
 router.get("/backups", async (req, res) => {
   try {
@@ -237,6 +263,53 @@ router.get("/backups/:id/download", async (req, res) => {
   } catch (e) {
     console.error("maintenance backups download", e);
     res.status(500).json({ error: "backup_download_failed" });
+  }
+});
+
+const pruneYearBody = z.object({
+  year: z.number().int().min(2000).max(2100),
+  confirm: z.boolean().optional(),
+});
+
+router.post("/radacct/prune-year/preview", async (req, res) => {
+  if (req.auth?.role !== "admin") {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const parsed = pruneYearBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const out = await previewRadacctYearPrune(parsed.data.year);
+    res.json({ ok: true, preview: out });
+  } catch (e) {
+    console.error("maintenance radacct prune preview", e);
+    res.status(500).json({ error: "radacct_prune_preview_failed" });
+  }
+});
+
+router.post("/radacct/prune-year/run", async (req, res) => {
+  if (req.auth?.role !== "admin") {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const parsed = pruneYearBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  if (!parsed.data.confirm) {
+    res.status(400).json({ error: "confirm_required" });
+    return;
+  }
+  try {
+    const out = await runRadacctYearPrune(parsed.data.year);
+    res.json({ ok: true, deleted: out });
+  } catch (e) {
+    console.error("maintenance radacct prune run", e);
+    res.status(500).json({ error: "radacct_prune_run_failed" });
   }
 });
 

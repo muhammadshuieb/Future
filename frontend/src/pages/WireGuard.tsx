@@ -3,6 +3,7 @@ import { Copy, Download, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { Modal } from "../components/ui/Modal";
 import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
@@ -60,6 +61,7 @@ export function WireGuardPage() {
   });
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [deletePeerId, setDeletePeerId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [tunnelIp, setTunnelIp] = useState("");
   const [clientConfig, setClientConfig] = useState<{ username: string; config: string } | null>(null);
@@ -160,7 +162,13 @@ export function WireGuardPage() {
   }
 
   async function deletePeer(id: string) {
-    if (!window.confirm(t("wireguard.deleteConfirm"))) return;
+    setDeletePeerId(id);
+  }
+
+  async function confirmDeletePeer() {
+    const id = deletePeerId;
+    setDeletePeerId(null);
+    if (!id) return;
     const res = await apiFetch(`/api/wireguard/peers/${id}`, { method: "DELETE" });
     if (res.ok) await load();
   }
@@ -582,6 +590,18 @@ export function WireGuardPage() {
           </div>
         </div>
       </Modal>
+      <ActionDialog
+        open={Boolean(deletePeerId)}
+        title={t("common.delete")}
+        message={t("wireguard.deleteConfirm")}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeletePeerId(null)}
+        onConfirm={() => {
+          void confirmDeletePeer();
+        }}
+      />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { RefreshCw, ShieldCheck, GitBranch } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
 
@@ -35,6 +36,7 @@ type CheckResult = {
 export function UpdatesPage() {
   const { user } = useAuth();
   const { t } = useI18n();
+  const canAccessUpdates = user?.role === "admin" || user?.role === "manager";
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +44,7 @@ export function UpdatesPage() {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
 
   async function loadStatus() {
     setLoading(true);
@@ -78,7 +81,11 @@ export function UpdatesPage() {
   }
 
   async function runUpdate() {
-    if (!window.confirm(t("updates.confirm"))) return;
+    setConfirmUpdateOpen(true);
+  }
+
+  async function confirmRunUpdate() {
+    setConfirmUpdateOpen(false);
     setRunning(true);
     setError(null);
     setInfo(null);
@@ -131,12 +138,12 @@ export function UpdatesPage() {
   }
 
   useEffect(() => {
-    if (user?.role !== "admin") return;
+    if (!canAccessUpdates) return;
     void loadStatus();
     void checkUpdates();
-  }, [user?.role]);
+  }, [canAccessUpdates]);
 
-  if (user?.role !== "admin") {
+  if (!canAccessUpdates) {
     return <p className="text-sm opacity-70">{t("api.error_403")}</p>;
   }
 
@@ -213,6 +220,18 @@ export function UpdatesPage() {
           Last check: {status?.lastCheckedAt || "-"} | Last run: {status?.lastRunAt || "-"} | Last result: {status?.lastStatus || "-"}
         </p>
       </Card>
+      <ActionDialog
+        open={confirmUpdateOpen}
+        title={t("updates.run")}
+        message={t("updates.confirm")}
+        variant="warning"
+        confirmLabel={t("updates.run")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmUpdateOpen(false)}
+        onConfirm={() => {
+          void confirmRunUpdate();
+        }}
+      />
     </div>
   );
 }

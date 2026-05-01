@@ -3,6 +3,8 @@ import { ArrowDownCircle, ArrowUpCircle, CircleDollarSign, Pencil, Plus, Receipt
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useFinancePeriod } from "../context/FinancePeriodContext";
@@ -37,6 +39,11 @@ export function ExpensesPage() {
   const [stockQty, setStockQty] = useState("0");
   const [report, setReport] = useState<MonthlyReport | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<ExpenseRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editCost, setEditCost] = useState("0");
+  const [editQty, setEditQty] = useState("0");
+  const [deleteTarget, setDeleteTarget] = useState<ExpenseRow | null>(null);
   const { period } = useFinancePeriod();
   const periodMonths = useMemo(() => getFinancePeriodMonths(period), [period]);
 
@@ -127,15 +134,22 @@ export function ExpensesPage() {
   }
 
   async function editExpense(item: ExpenseRow) {
-    const nextName = prompt(t("expenses.name"), item.name) ?? item.name;
-    const nextCostRaw = prompt(t("expenses.amount"), String(item.unit_cost ?? 0)) ?? String(item.unit_cost ?? 0);
-    const nextQtyRaw = prompt(t("expenses.qty"), String(item.stock_qty ?? 0)) ?? String(item.stock_qty ?? 0);
-    const res = await apiFetch(`/api/inventory/products/${item.id}`, {
+    setEditTarget(item);
+    setEditName(item.name);
+    setEditCost(String(item.unit_cost ?? 0));
+    setEditQty(String(item.stock_qty ?? 0));
+  }
+
+  async function saveEditExpense() {
+    if (!editTarget) return;
+    const nextName = editName.trim();
+    if (!nextName) return;
+    const res = await apiFetch(`/api/inventory/products/${editTarget.id}`, {
       method: "PATCH",
       body: JSON.stringify({
-        name: nextName.trim(),
-        unit_cost: Number(nextCostRaw || 0),
-        stock_qty: Number(nextQtyRaw || 0),
+        name: nextName,
+        unit_cost: Number(editCost || 0),
+        stock_qty: Number(editQty || 0),
       }),
     });
     if (!res.ok) {
@@ -143,11 +157,18 @@ export function ExpensesPage() {
       setMessage(formatStaffApiError(res.status, raw, t));
       return;
     }
+    setEditTarget(null);
     await load();
   }
 
   async function deleteExpense(item: ExpenseRow) {
-    if (!confirm(`${t("common.delete")} ${item.name}?`)) return;
+    setDeleteTarget(item);
+  }
+
+  async function confirmDeleteExpense() {
+    if (!deleteTarget) return;
+    const item = deleteTarget;
+    setDeleteTarget(null);
     const res = await apiFetch(`/api/inventory/products/${item.id}`, { method: "DELETE" });
     if (!res.ok) {
       const raw = await readApiError(res);
@@ -302,6 +323,37 @@ export function ExpensesPage() {
         </div>
         {items.length === 0 ? <p className="p-6 text-center text-sm opacity-60">{t("expenses.empty")}</p> : null}
       </Card>
+      <Modal
+        open={Boolean(editTarget)}
+        onClose={() => setEditTarget(null)}
+        title={t("common.edit")}
+      >
+        <div className="space-y-3">
+          <TextField label={t("expenses.name")} value={editName} onChange={(e) => setEditName(e.target.value)} />
+          <TextField label={t("expenses.amount")} value={editCost} onChange={(e) => setEditCost(e.target.value)} />
+          <TextField label={t("expenses.qty")} value={editQty} onChange={(e) => setEditQty(e.target.value)} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setEditTarget(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="button" onClick={() => void saveEditExpense()}>
+              {t("common.save")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <ActionDialog
+        open={Boolean(deleteTarget)}
+        title={t("common.delete")}
+        message={deleteTarget ? `${t("common.delete")} ${deleteTarget.name}?` : ""}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          void confirmDeleteExpense();
+        }}
+      />
     </div>
   );
 }

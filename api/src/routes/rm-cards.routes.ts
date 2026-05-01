@@ -29,7 +29,7 @@ const cardsQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
   per_page: z.coerce.number().int().min(1).max(500).default(50),
   q: z.string().trim().max(64).optional(),
-  status: z.enum(["all", "active", "expired"]).optional().default("all"),
+  status: z.enum(["all", "active", "expired", "disabled"]).optional().default("all"),
   service_id: z.coerce.number().int().min(0).optional(),
   sort_key: z
     .enum(["id", "cardnum", "series", "service_name", "value", "total_limit_mb", "generated_on", "valid_till", "status"])
@@ -59,7 +59,7 @@ const updateCardBody = z.object({
 
 function buildCardsWhere(input: {
   q?: string;
-  status?: "all" | "active" | "expired";
+  status?: "all" | "active" | "expired" | "disabled";
   service_id?: number;
   exclude_ids?: number[];
 }): { where: string[]; params: unknown[] } {
@@ -74,7 +74,9 @@ function buildCardsWhere(input: {
   if (input.status === "active") {
     where.push("c.expiration >= CURDATE() AND COALESCE(c.revoked,0) = 0 AND COALESCE(c.active,1) = 1");
   } else if (input.status === "expired") {
-    where.push("(c.expiration < CURDATE() OR COALESCE(c.revoked,0) = 1 OR COALESCE(c.active,1) = 0)");
+    where.push("c.expiration < CURDATE()");
+  } else if (input.status === "disabled") {
+    where.push("c.expiration >= CURDATE() AND (COALESCE(c.revoked,0) = 1 OR COALESCE(c.active,1) = 0)");
   }
   if (input.service_id !== undefined) {
     where.push("c.srvid = ?");
@@ -168,7 +170,8 @@ router.get("/cards", routePolicy({ allow: ["admin", "manager", "accountant", "vi
   const joinService = hasServices ? "LEFT JOIN rm_services s ON s.srvid = c.srvid" : "";
   const { where, params } = buildCardsWhere({ q, status, service_id: serviceId });
   const statusExpr = `CASE
-    WHEN c.expiration < CURDATE() OR COALESCE(c.revoked,0) = 1 OR COALESCE(c.active,1) = 0 THEN 'expired'
+    WHEN c.expiration < CURDATE() THEN 'expired'
+    WHEN COALESCE(c.revoked,0) = 1 OR COALESCE(c.active,1) = 0 THEN 'disabled'
     ELSE 'active'
   END`;
   const serviceExpr = hasServices ? "COALESCE(s.srvname, CAST(c.srvid AS CHAR))" : "CAST(c.srvid AS CHAR)";

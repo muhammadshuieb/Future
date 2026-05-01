@@ -5,6 +5,8 @@ import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
+import { ColumnVisibilityMenu, useColumnVisibility } from "../components/ui/ColumnVisibilityMenu";
 import { SelectField, TextField, TextAreaField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -183,8 +185,11 @@ function isExplicitlyDisabled(row: SubscriberRow): boolean {
 }
 
 function getDisplayState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
+  const fromState = getRowState(row);
+  // Expiration should be distinct from manual disable.
+  if (fromState === "expired") return "expired";
   if (isExplicitlyDisabled(row)) return "disabled";
-  return getRowState(row);
+  return fromState;
 }
 
 function getDisplayStatusLabel(
@@ -225,6 +230,19 @@ export function UsersPage() {
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
   const [payPackageLoadingId, setPayPackageLoadingId] = useState<string | null>(null);
   const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    title: string;
+    message: string;
+    variant: "warning" | "danger";
+    onConfirm: (() => void) | null;
+  }>({
+    open: false,
+    title: "",
+    message: "",
+    variant: "warning",
+    onConfirm: null,
+  });
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const [username, setUsername] = useState("");
@@ -248,6 +266,27 @@ export function UsersPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "expired" | "disabled">("all");
   const appliedSearch = searchParams.get("q")?.trim() ?? "";
+  const controlSelectClass =
+    "users-filter-select rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-sm text-[hsl(var(--foreground))]";
+  const userColumns = useMemo(
+    () => [
+      { key: "username", label: t("users.username") },
+      { key: "full_name", label: t("users.fullName") },
+      { key: "phone", label: t("users.phone") },
+      { key: "password", label: t("users.password"), defaultVisible: false },
+      { key: "status", label: t("users.status") },
+      { key: "package", label: t("users.package") },
+      { key: "remaining_quota", label: t("users.remainingQuota") },
+      { key: "nas_network", label: t("users.nasNetwork") },
+      { key: "region", label: t("users.region"), defaultVisible: false },
+      { key: "created_by", label: t("users.createdBy"), defaultVisible: false },
+      { key: "created_at", label: t("users.createdAt"), defaultVisible: false },
+      { key: "start_date", label: t("users.startDate"), defaultVisible: false },
+      { key: "expiration_date", label: t("users.expires") },
+    ],
+    [t]
+  );
+  const userColumnVisibility = useColumnVisibility("users", userColumns);
 
   const subscribersListQuery = useMemo(() => {
     const q = new URLSearchParams({
@@ -465,9 +504,23 @@ export function UsersPage() {
     setModal(true);
   }
 
+  function openConfirmDialog(
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    variant: "warning" | "danger" = "warning"
+  ) {
+    setConfirmDialog({ open: true, title, message, onConfirm, variant });
+  }
+
   async function recordPackagePayment(subscriberId: string) {
     if (!canPayPackage) return;
-    if (!confirm(t("users.payPackageConfirm"))) return;
+    openConfirmDialog(t("common.actions"), t("users.payPackageConfirm"), () => {
+      void confirmRecordPackagePayment(subscriberId);
+    });
+  }
+
+  async function confirmRecordPackagePayment(subscriberId: string) {
     setPayPackageLoadingId(subscriberId);
     setMsg(null);
     try {
@@ -563,7 +616,17 @@ export function UsersPage() {
 
   async function deleteOne(id: string, username: string) {
     if (!canManage) return;
-    if (!confirm(`${t("users.deleteOneConfirm")} ${username}?`)) return;
+    openConfirmDialog(
+      t("common.delete"),
+      `${t("users.deleteOneConfirm")} ${username}?`,
+      () => {
+        void confirmDeleteOne(id);
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteOne(id: string) {
     const res = await apiFetch(`/api/subscribers/${id}`, { method: "DELETE" });
     if (!res.ok) {
       const raw = await readApiError(res);
@@ -582,7 +645,12 @@ export function UsersPage() {
 
   async function deleteSelected() {
     if (!canManage || selectedIds.length === 0) return;
-    if (!confirm(t("users.deleteSelectedConfirm"))) return;
+    openConfirmDialog(t("common.delete"), t("users.deleteSelectedConfirm"), () => {
+      void confirmDeleteSelected();
+    }, "danger");
+  }
+
+  async function confirmDeleteSelected() {
     const res = await apiFetch("/api/subscribers/bulk-delete", {
       method: "POST",
       body: JSON.stringify({ ids: selectedIds }),
@@ -602,7 +670,13 @@ export function UsersPage() {
     if (!canManage) return;
     const disabled = isExplicitlyDisabled(row);
     const confirmMsg = disabled ? t("users.enableConfirm") : t("users.disableConfirm");
-    if (!confirm(confirmMsg)) return;
+    openConfirmDialog(t("common.actions"), confirmMsg, () => {
+      void confirmToggleSubscriberStatus(row);
+    }, "warning");
+  }
+
+  async function confirmToggleSubscriberStatus(row: SubscriberRow) {
+    const disabled = isExplicitlyDisabled(row);
     setToggleStatusLoadingId(row.id);
     setMsg(null);
     try {
@@ -707,7 +781,7 @@ export function UsersPage() {
             <div className="flex items-center gap-2">
               <span>{t("users.perPage")}:</span>
               <select
-                className="rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
+                className={controlSelectClass}
                 value={pageSize}
                 onChange={(e) => {
                   setPageSize(Number(e.target.value) || 25);
@@ -753,7 +827,7 @@ export function UsersPage() {
                 </Button>
               ) : null}
               <select
-                className="rounded-md border border-[hsl(var(--border))] bg-transparent px-2 py-1 text-sm"
+                className={controlSelectClass}
                 value={statusFilter}
                 onChange={(e) => {
                   setStatusFilter(e.target.value as "all" | "active" | "expired" | "disabled");
@@ -773,6 +847,14 @@ export function UsersPage() {
               <Download className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
               {t("users.exportSelected")}
             </Button>
+            <ColumnVisibilityMenu
+              title="الأعمدة"
+              columns={userColumns}
+              visibleKeys={userColumnVisibility.visibleKeys}
+              onToggle={userColumnVisibility.toggle}
+              onShowAll={userColumnVisibility.showAll}
+              onResetDefault={userColumnVisibility.resetDefault}
+            />
             {canManage ? (
               <Button type="button" variant="outline" onClick={() => void deleteSelected()} disabled={selectedIds.length === 0}>
                 <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
@@ -814,8 +896,8 @@ export function UsersPage() {
       ) : null}
 
       <div className="glass overflow-hidden rounded-2xl p-0">
-        <div className="overflow-x-auto">
-          <table className="sticky-list-table w-full text-sm">
+        <div className="max-w-full overflow-x-auto">
+          <table className="sticky-list-table users-table w-full table-fixed text-xs sm:text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs font-medium uppercase tracking-wide opacity-70">
                 <th className="sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75">
@@ -827,33 +909,59 @@ export function UsersPage() {
                     aria-label={t("users.selectAll")}
                   />
                 </th>
-                {header(t("users.username"), "username", isRtl ? "text-right" : "text-left")}
-                {header(t("users.fullName"), "full_name", isRtl ? "text-right" : "text-left")}
-                {header(t("users.phone"), "phone", isRtl ? "text-right" : "text-left")}
-                <th
-                  className={cn(
-                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
-                    isRtl ? "text-right" : "text-left"
-                  )}
-                >
-                  {t("users.password")}
-                </th>
-                {header(t("users.status"), "status", isRtl ? "text-right" : "text-left")}
-                {header(t("users.package"), "package_name", isRtl ? "text-right" : "text-left")}
-                <th
-                  className={cn(
-                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
-                    isRtl ? "text-right" : "text-left"
-                  )}
-                >
-                  {t("users.remainingQuota")}
-                </th>
-                {header(t("users.nasNetwork"), "nas_network", isRtl ? "text-right" : "text-left")}
-                {header(t("users.region"), "region_name", isRtl ? "text-right" : "text-left")}
-                {header(t("users.createdBy"), "created_by", isRtl ? "text-right" : "text-left")}
-                {header(t("users.createdAt"), "created_at", isRtl ? "text-right" : "text-left")}
-                {header(t("users.startDate"), "start_date", isRtl ? "text-right" : "text-left")}
-                {header(t("users.expires"), "expiration_date", isRtl ? "text-right" : "text-left")}
+                {userColumnVisibility.isVisible("username")
+                  ? header(t("users.username"), "username", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("full_name")
+                  ? header(t("users.fullName"), "full_name", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("phone")
+                  ? header(t("users.phone"), "phone", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("password") ? (
+                  <th
+                    className={cn(
+                      "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                      isRtl ? "text-right" : "text-left"
+                    )}
+                  >
+                    {t("users.password")}
+                  </th>
+                ) : null}
+                {userColumnVisibility.isVisible("status")
+                  ? header(t("users.status"), "status", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("package")
+                  ? header(t("users.package"), "package_name", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("remaining_quota") ? (
+                  <th
+                    className={cn(
+                      "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                      isRtl ? "text-right" : "text-left"
+                    )}
+                  >
+                    {t("users.remainingQuota")}
+                  </th>
+                ) : null}
+                {userColumnVisibility.isVisible("nas_network")
+                  ? header(t("users.nasNetwork"), "nas_network", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("region")
+                  ? header(t("users.region"), "region_name", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("created_by")
+                  ? header(t("users.createdBy"), "created_by", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("created_at")
+                  ? header(t("users.createdAt"), "created_at", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("start_date")
+                  ? header(t("users.startDate"), "start_date", isRtl ? "text-right" : "text-left")
+                  : null}
+                {userColumnVisibility.isVisible("expiration_date")
+                  ? header(t("users.expires"), "expiration_date", isRtl ? "text-right" : "text-left")
+                  : null}
                 <th
                   className={cn(
                     "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
@@ -875,7 +983,7 @@ export function UsersPage() {
                       aria-label={s.username}
                     />
                   </td>
-                  <td className="px-4 py-3">
+                  {userColumnVisibility.isVisible("username") ? <td className="px-4 py-3">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Link className="font-medium text-[hsl(var(--primary))] hover:underline" to={`/users/${s.id}`}>
                         {String(s.username)}
@@ -886,12 +994,12 @@ export function UsersPage() {
                         </span>
                       ) : null}
                     </div>
-                  </td>
-                  <td className="px-4 py-3 opacity-90">
+                  </td> : null}
+                  {userColumnVisibility.isVisible("full_name") ? <td className="px-4 py-3 opacity-90">
                     {[s.first_name, s.last_name].filter(Boolean).join(" ").trim() || String(s.nickname ?? "—")}
-                  </td>
-                  <td className="px-4 py-3 opacity-90">{String(s.phone ?? "—")}</td>
-                  <td className="px-4 py-3">
+                  </td> : null}
+                  {userColumnVisibility.isVisible("phone") ? <td className="px-4 py-3 opacity-90">{String(s.phone ?? "—")}</td> : null}
+                  {userColumnVisibility.isVisible("password") ? <td className="px-4 py-3">
                     {canRevealPassword ? (
                       <div className="flex items-center gap-2">
                         <code className="rounded bg-[hsl(var(--muted))] px-2 py-1 text-xs">
@@ -919,8 +1027,8 @@ export function UsersPage() {
                     ) : (
                       <span className="text-xs opacity-60">{t("users.passwordRestricted")}</span>
                     )}
-                  </td>
-                  <td className="px-4 py-3">
+                  </td> : null}
+                  {userColumnVisibility.isVisible("status") ? <td className="px-4 py-3">
                     <span
                       className={cn(
                         "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
@@ -935,19 +1043,19 @@ export function UsersPage() {
                     >
                       {getDisplayStatusLabel(s, t)}
                     </span>
-                  </td>
-                  <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td>
-                  <td className="px-4 py-3 font-mono text-xs opacity-90">
+                  </td> : null}
+                  {userColumnVisibility.isVisible("package") ? <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td> : null}
+                  {userColumnVisibility.isVisible("remaining_quota") ? <td className="px-4 py-3 font-mono text-xs opacity-90">
                     {formatRemainingQuota(s, t("packages.unlimited"))}
-                  </td>
-                  <td className="px-4 py-3 opacity-90">{formatNasLabel(s)}</td>
-                  <td className="px-4 py-3 opacity-90">{String(s.region_name ?? "—")}</td>
-                  <td className="px-4 py-3 opacity-90">{String(s.creator_name ?? s.creator_email ?? "—")}</td>
-                  <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.created_at)}</td>
-                  <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.start_date)}</td>
-                  <td className="px-4 py-3 font-mono text-xs opacity-80">
+                  </td> : null}
+                  {userColumnVisibility.isVisible("nas_network") ? <td className="px-4 py-3 opacity-90">{formatNasLabel(s)}</td> : null}
+                  {userColumnVisibility.isVisible("region") ? <td className="px-4 py-3 opacity-90">{String(s.region_name ?? "—")}</td> : null}
+                  {userColumnVisibility.isVisible("created_by") ? <td className="px-4 py-3 opacity-90">{String(s.creator_name ?? s.creator_email ?? "—")}</td> : null}
+                  {userColumnVisibility.isVisible("created_at") ? <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.created_at)}</td> : null}
+                  {userColumnVisibility.isVisible("start_date") ? <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.start_date)}</td> : null}
+                  {userColumnVisibility.isVisible("expiration_date") ? <td className="px-4 py-3 font-mono text-xs opacity-80">
                     {formatDate(s.expiration_date)}
-                  </td>
+                  </td> : null}
                   <td className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>
                     <div className="flex flex-wrap justify-end gap-2">
                       <Link
@@ -1120,6 +1228,20 @@ export function UsersPage() {
           </div>
         </form>
       </Modal>
+      <ActionDialog
+        open={confirmDialog.open}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmDialog({ open: false, title: "", message: "", variant: "warning", onConfirm: null })}
+        onConfirm={() => {
+          const action = confirmDialog.onConfirm;
+          setConfirmDialog({ open: false, title: "", message: "", variant: "warning", onConfirm: null });
+          action?.();
+        }}
+      />
     </div>
   );
 }

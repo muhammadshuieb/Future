@@ -14,7 +14,7 @@ const listQuerySchema = z.object({
   per_page: z.coerce.number().int().min(1).max(200).default(25),
   action: z.string().trim().max(64).optional(),
   entity_type: z.string().trim().max(64).optional(),
-  staff_id: z.string().uuid().optional(),
+  staff_id: z.string().trim().max(128).optional(),
 });
 
 router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"] }), async (req: Request, res: Response) => {
@@ -54,9 +54,13 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
   const total = Number(countRows[0]?.c ?? 0);
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT a.id, a.staff_id, a.action, a.entity_type, a.entity_id, a.payload, a.created_at,
-            su.name AS staff_name, su.email AS staff_email
+            COALESCE(rm.managername, a.staff_id) AS staff_name, rm.email AS staff_email
      FROM audit_logs a
-     LEFT JOIN staff_users su ON su.id = a.staff_id AND su.tenant_id = a.tenant_id
+     LEFT JOIN rm_managers rm
+       ON BINARY rm.managername = BINARY CASE
+         WHEN a.staff_id LIKE 'rm:%' THEN SUBSTRING(a.staff_id, 4)
+         ELSE a.staff_id
+       END
      ${whereSql}
      ORDER BY a.created_at DESC
      LIMIT ? OFFSET ?`,

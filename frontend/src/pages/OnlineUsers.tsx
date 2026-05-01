@@ -3,6 +3,7 @@ import { RefreshCw, Search, WifiOff } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { ColumnVisibilityMenu, useColumnVisibility } from "../components/ui/ColumnVisibilityMenu";
 import { Modal } from "../components/ui/Modal";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -91,6 +92,18 @@ export function OnlineUsersPage() {
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const onlineColumns = useMemo(
+    () => [
+      { key: "username", label: t("users.username") },
+      { key: "nas", label: t("onlineUsers.nas") },
+      { key: "ip", label: t("onlineUsers.ip") },
+      { key: "usage", label: t("onlineUsers.usage") },
+      { key: "duration", label: t("onlineUsers.duration") },
+      { key: "started", label: t("onlineUsers.started") },
+    ],
+    [t]
+  );
+  const onlineColumnVisibility = useColumnVisibility("online-users", onlineColumns);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -389,6 +402,14 @@ export function OnlineUsersPage() {
           <span className="opacity-70">
             {t("users.pageLabel")}: {currentPage}/{totalPages} · {t("onlineUsers.matching")}: {filteredSorted.length}
           </span>
+          <ColumnVisibilityMenu
+            title="الأعمدة"
+            columns={onlineColumns}
+            visibleKeys={onlineColumnVisibility.visibleKeys}
+            onToggle={onlineColumnVisibility.toggle}
+            onShowAll={onlineColumnVisibility.showAll}
+            onResetDefault={onlineColumnVisibility.resetDefault}
+          />
         </div>
       </Card>
 
@@ -425,12 +446,12 @@ export function OnlineUsersPage() {
                     />
                   </th>
                 ) : null}
-                {sortHeader(t("users.username"), "username", isRtl ? "text-right" : "text-left")}
-                {sortHeader(t("onlineUsers.nas"), "nas", isRtl ? "text-right" : "text-left")}
-                {sortHeader(t("onlineUsers.ip"), "ip", isRtl ? "text-right" : "text-left")}
-                {sortHeader(t("onlineUsers.usage"), "usage", isRtl ? "text-right" : "text-left")}
-                {sortHeader(t("onlineUsers.duration"), "duration", isRtl ? "text-right" : "text-left")}
-                {sortHeader(t("onlineUsers.started"), "started", isRtl ? "text-right" : "text-left")}
+                {onlineColumnVisibility.isVisible("username") ? sortHeader(t("users.username"), "username", isRtl ? "text-right" : "text-left") : null}
+                {onlineColumnVisibility.isVisible("nas") ? sortHeader(t("onlineUsers.nas"), "nas", isRtl ? "text-right" : "text-left") : null}
+                {onlineColumnVisibility.isVisible("ip") ? sortHeader(t("onlineUsers.ip"), "ip", isRtl ? "text-right" : "text-left") : null}
+                {onlineColumnVisibility.isVisible("usage") ? sortHeader(t("onlineUsers.usage"), "usage", isRtl ? "text-right" : "text-left") : null}
+                {onlineColumnVisibility.isVisible("duration") ? sortHeader(t("onlineUsers.duration"), "duration", isRtl ? "text-right" : "text-left") : null}
+                {onlineColumnVisibility.isVisible("started") ? sortHeader(t("onlineUsers.started"), "started", isRtl ? "text-right" : "text-left") : null}
                 <th className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>{t("common.actions")}</th>
               </tr>
             </thead>
@@ -447,12 +468,12 @@ export function OnlineUsersPage() {
                       />
                     </td>
                   ) : null}
-                  <td className="px-4 py-3 font-medium">{item.username}</td>
-                  <td className="px-4 py-3">{item.nasipaddress || "—"}</td>
-                  <td className="px-4 py-3">{item.framedipaddress || "—"}</td>
-                  <td className="px-4 py-3">{formatBytes(item.session_bytes)}</td>
-                  <td className="px-4 py-3 font-mono">{formatDuration(item.duration_seconds)}</td>
-                  <td className="px-4 py-3 font-mono text-xs opacity-90">{formatStart(item.acctstarttime)}</td>
+                  {onlineColumnVisibility.isVisible("username") ? <td className="px-4 py-3 font-medium">{item.username}</td> : null}
+                  {onlineColumnVisibility.isVisible("nas") ? <td className="px-4 py-3">{item.nasipaddress || "—"}</td> : null}
+                  {onlineColumnVisibility.isVisible("ip") ? <td className="px-4 py-3">{item.framedipaddress || "—"}</td> : null}
+                  {onlineColumnVisibility.isVisible("usage") ? <td className="px-4 py-3">{formatBytes(item.session_bytes)}</td> : null}
+                  {onlineColumnVisibility.isVisible("duration") ? <td className="px-4 py-3 font-mono">{formatDuration(item.duration_seconds)}</td> : null}
+                  {onlineColumnVisibility.isVisible("started") ? <td className="px-4 py-3 font-mono text-xs opacity-90">{formatStart(item.acctstarttime)}</td> : null}
                   <td className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>
                     {canDisconnect ? (
                       <Button

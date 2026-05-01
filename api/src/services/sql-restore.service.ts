@@ -1,8 +1,9 @@
 import { spawn } from "child_process";
-import { createReadStream, existsSync, promises as fs } from "fs";
+import { createReadStream, createWriteStream, existsSync, promises as fs } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pipeline } from "stream/promises";
+import { createInterface } from "readline";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
@@ -148,13 +149,222 @@ async function runPostRestoreManagerSync(): Promise<void> {
 export type SqlImportResult =
   | {
       ok: true;
-      detail: { bytes: number };
+      detail: {
+        bytes: number;
+        restore_report: {
+          executed_statements: number;
+          ignored_statements: number;
+          restored_users: number;
+          restored_networks: number;
+          restored_packages: number;
+          restored_cards: number;
+          restored_managers: number;
+        };
+      };
     }
   | { ok: false; error: string; mysql_output?: string };
 
+type SqlImportOptions = {
+  applySchemaExtensions: boolean;
+  allowedTables?: string[];
+};
+
+function extractTableName(raw: string): string {
+  const cleaned = raw.trim().replace(/[`"']/g, "");
+  const parts = cleaned.split(".");
+  return (parts[parts.length - 1] ?? "").trim().toLowerCase();
+}
+
+function collectReferencedTablesFromLine(line: string): string[] {
+  const out = new Set<string>();
+  const patterns = [
+    /\b(?:INSERT\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+([`"'A-Za-z0-9_.]+)/gi,
+    /\b(?:CREATE|DROP|ALTER|TRUNCATE)\s+TABLE(?:\s+IF\s+(?:NOT\s+)?EXISTS)?\s+([`"'A-Za-z0-9_.]+)/gi,
+    /\bLOCK\s+TABLES\s+([`"'A-Za-z0-9_.]+)/gi,
+  ];
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null = re.exec(line);
+    while (m) {
+      const table = extractTableName(m[1] ?? "");
+      if (table) out.add(table);
+      m = re.exec(line);
+    }
+  }
+  return [...out];
+}
+
+async function ensureSqlOnlyTouchesAllowedTables(
+  sqlFilePath: string,
+  allowedTables: string[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const allowed = new Set(allowedTables.map((t) => t.trim().toLowerCase()).filter(Boolean));
+  if (allowed.size === 0) return { ok: true };
+
+  const stream = createReadStream(sqlFilePath, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  let lineNumber = 0;
+
+  for await (const line of rl) {
+    lineNumber += 1;
+    const tables = collectReferencedTablesFromLine(line);
+    for (const table of tables) {
+      if (!allowed.has(table)) {
+        return {
+          ok: false,
+          error: `table_not_allowed:${table}:line_${lineNumber}`,
+        };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
+function statementShouldBeKeptWithoutTableMatch(statement: string): boolean {
+  const s = statement.trim();
+  if (!s) return false;
+  return (
+    /^SET\b/i.test(s) ||
+    /^USE\b/i.test(s) ||
+    /^START\s+TRANSACTION\b/i.test(s) ||
+    /^COMMIT\b/i.test(s) ||
+    /^ROLLBACK\b/i.test(s) ||
+    /^DELIMITER\b/i.test(s) ||
+    /^\/\*![0-9]+\s+SET\b/i.test(s) ||
+    /^UNLOCK\s+TABLES\b/i.test(s)
+  );
+}
+
+function shouldSkipLegacyCharsetRestoreStatement(statement: string): boolean {
+  const s = statement.trim();
+  return (
+    /SET\s+CHARACTER_SET_CLIENT\s*=\s*@OLD_CHARACTER_SET_CLIENT/i.test(s) ||
+    /SET\s+CHARACTER_SET_RESULTS\s*=\s*@OLD_CHARACTER_SET_RESULTS/i.test(s) ||
+    /SET\s+COLLATION_CONNECTION\s*=\s*@OLD_COLLATION_CONNECTION/i.test(s)
+  );
+}
+
+function extractInsertTargetTable(statement: string): string | null {
+  const m = /\b(?:INSERT\s+INTO|REPLACE\s+INTO)\s+([`"'A-Za-z0-9_.]+)/i.exec(statement);
+  if (!m) return null;
+  const t = extractTableName(m[1] ?? "");
+  return t || null;
+}
+
+function estimateInsertedRows(statement: string): number {
+  const upper = statement.toUpperCase();
+  const valuesIdx = upper.indexOf("VALUES");
+  if (valuesIdx < 0) return 0;
+  const valuesPart = statement.slice(valuesIdx + "VALUES".length);
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let rows = 0;
+  for (let i = 0; i < valuesPart.length; i += 1) {
+    const ch = valuesPart[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (!inDouble && ch === "'") {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (!inSingle && ch === '"') {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    if (ch === "(") {
+      if (depth === 0) rows += 1;
+      depth += 1;
+      continue;
+    }
+    if (ch === ")" && depth > 0) {
+      depth -= 1;
+    }
+  }
+  return rows;
+}
+
+async function buildFilteredSqlForAllowedTables(
+  sqlFilePath: string,
+  allowedTables: string[]
+): Promise<{
+  path: string;
+  keptStatements: number;
+  ignoredStatements: number;
+  insertedRowsByTable: Record<string, number>;
+}> {
+  const allowed = new Set(allowedTables.map((t) => t.trim().toLowerCase()).filter(Boolean));
+  const filteredPath = join(tmpdir(), `fr-restore-filtered-${Date.now()}-${process.pid}.sql`);
+  const out = createWriteStream(filteredPath, { encoding: "utf8", mode: 0o600 });
+  const input = createReadStream(sqlFilePath, { encoding: "utf8" });
+  const rl = createInterface({ input, crlfDelay: Infinity });
+
+  let buffer = "";
+  let keptStatements = 0;
+  let ignoredStatements = 0;
+  const insertedRowsByTable: Record<string, number> = {};
+
+  const flushStatement = async (statement: string): Promise<void> => {
+    const trimmed = statement.trim();
+    if (!trimmed) return;
+    if (shouldSkipLegacyCharsetRestoreStatement(trimmed)) {
+      return;
+    }
+    const touched = collectReferencedTablesFromLine(statement);
+    let keep = false;
+    if (touched.length > 0) {
+      keep = touched.every((t) => allowed.has(t));
+    } else {
+      keep = statementShouldBeKeptWithoutTableMatch(trimmed);
+    }
+    if (!keep) return;
+    await new Promise<void>((resolve, reject) => {
+      out.write(`${statement.trimEnd()}\n`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    const insertTable = extractInsertTargetTable(statement);
+    if (insertTable) {
+      insertedRowsByTable[insertTable] = (insertedRowsByTable[insertTable] ?? 0) + estimateInsertedRows(statement);
+    }
+    keptStatements += 1;
+  };
+
+  try {
+    for await (const line of rl) {
+      buffer += `${line}\n`;
+      if (line.trimEnd().endsWith(";")) {
+        const beforeKept = keptStatements;
+        await flushStatement(buffer);
+        if (keptStatements === beforeKept && buffer.trim()) ignoredStatements += 1;
+        buffer = "";
+      }
+    }
+    if (buffer.trim()) {
+      const beforeKept = keptStatements;
+      await flushStatement(buffer);
+      if (keptStatements === beforeKept) ignoredStatements += 1;
+    }
+  } finally {
+    await new Promise<void>((resolve) => out.end(() => resolve()));
+  }
+
+  return { path: filteredPath, keptStatements, ignoredStatements, insertedRowsByTable };
+}
+
 export async function importSqlFilePathIntoAppDatabase(
   sqlFilePath: string,
-  _options: { applySchemaExtensions: boolean }
+  options: SqlImportOptions
 ): Promise<SqlImportResult> {
   const st = await fs.stat(sqlFilePath);
   if (st.size < 8) {
@@ -167,7 +377,39 @@ export async function importSqlFilePathIntoAppDatabase(
   if (head[0] === 0x1f && head[1] === 0x8b) {
     return { ok: false, error: "gzip_not_supported" };
   }
-  const main = await pipeFileToMysql(sqlFilePath);
+  let importPath = sqlFilePath;
+  let filteredTmpPath: string | null = null;
+  let restoreReport = {
+    executed_statements: 0,
+    ignored_statements: 0,
+    restored_users: 0,
+    restored_networks: 0,
+    restored_packages: 0,
+    restored_cards: 0,
+    restored_managers: 0,
+  };
+  if ((options.allowedTables?.length ?? 0) > 0) {
+    const filtered = await buildFilteredSqlForAllowedTables(sqlFilePath, options.allowedTables ?? []);
+    if (filtered.keptStatements === 0) {
+      await fs.unlink(filtered.path).catch(() => undefined);
+      return { ok: false, error: "no_allowed_tables_found_in_sql" };
+    }
+    restoreReport = {
+      executed_statements: filtered.keptStatements,
+      ignored_statements: filtered.ignoredStatements,
+      restored_users: filtered.insertedRowsByTable.rm_users ?? 0,
+      restored_networks: filtered.insertedRowsByTable.nas ?? 0,
+      restored_packages: filtered.insertedRowsByTable.rm_services ?? 0,
+      restored_cards: filtered.insertedRowsByTable.rm_cards ?? 0,
+      restored_managers: filtered.insertedRowsByTable.rm_managers ?? 0,
+    };
+    importPath = filtered.path;
+    filteredTmpPath = filtered.path;
+  }
+  const main = await pipeFileToMysql(importPath);
+  if (filteredTmpPath) {
+    await fs.unlink(filteredTmpPath).catch(() => undefined);
+  }
   if (!main.ok) {
     return { ok: false, error: main.error, mysql_output: main.output };
   }
@@ -175,12 +417,12 @@ export async function importSqlFilePathIntoAppDatabase(
   invalidateColumnCache();
   await runPostRestoreManagerSync();
   await runPostRestoreAnalyze();
-  return { ok: true, detail: { bytes: st.size } };
+  return { ok: true, detail: { bytes: st.size, restore_report: restoreReport } };
 }
 
 export async function importSqlBufferIntoAppDatabase(
   buffer: Buffer,
-  options: { applySchemaExtensions: boolean }
+  options: SqlImportOptions
 ): Promise<SqlImportResult> {
   if (buffer.length < 8) {
     return { ok: false, error: "sql_too_short" };

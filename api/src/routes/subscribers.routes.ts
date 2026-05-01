@@ -20,6 +20,7 @@ import { defaultExpirationNoonFromNow, extendSubscriptionByDaysNoon } from "../l
 import { assertRadiusPush, pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
+import { getSystemSettings } from "../services/system-settings.service.js";
 import {
   chargeManagerWallet,
   chargeManagerWalletWithConnection,
@@ -64,6 +65,30 @@ async function resolveUsernameForSubscriberId(tenantId: string, id: string): Pro
     }
   }
   return null;
+}
+
+async function disconnectBySystemPolicy(
+  tenantId: string,
+  username: string,
+  mode: "activation" | "update"
+): Promise<void> {
+  try {
+    const settings = await getSystemSettings(tenantId);
+    const enabled =
+      mode === "activation" ? settings.disconnect_on_activation : settings.disconnect_on_update;
+    if (!enabled) return;
+  } catch (error) {
+    // Keep behavior safe-by-default when settings cannot be read.
+    console.warn("[subscribers] settings read failed, using default disconnect=true", error);
+  }
+  try {
+    const rep = await coa.disconnectAllSessions(username, tenantId);
+    if (rep && !rep.anyOk) {
+      console.warn(`[subscribers] ${mode}: disconnect incomplete for ${username}`);
+    }
+  } catch (error) {
+    console.error(`[subscribers] ${mode}: coa disconnect failed for ${username}`, error);
+  }
 }
 
 function pickExistingColumns(cols: Set<string>, names: string[]): string[] {
@@ -222,7 +247,8 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       } else if (statusFilter === "expired") {
         where.push("u.expiration < CURDATE()");
       } else if (statusFilter === "disabled") {
-        where.push("u.enableuser = 0");
+        // Disabled is manual stop (not date expiration).
+        where.push("u.enableuser = 0 AND u.expiration >= CURDATE()");
       }
       const sortExprByKey: Record<string, string> = {
         username: "u.username",
@@ -242,7 +268,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       const selectParts = [
         "u.username AS id",
         "u.username",
-        "CASE WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status",
+        "CASE WHEN u.expiration < CURDATE() THEN 'expired' WHEN u.enableuser = 1 THEN 'active' ELSE 'disabled' END AS status",
         "CAST(u.srvid AS CHAR) AS package_id",
         hasSvc ? "svc.srvname AS package_name" : "CAST(u.srvid AS CHAR) AS package_name",
         "NULL AS nas_server_id",
@@ -319,7 +345,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const subCols = await getTableColumns(pool, "subscribers");
     const hasPkgTbl = await hasTable(pool, "packages");
     const hasNasTbl = await hasTable(pool, "nas_servers");
-    const hasStaffTbl = await hasTable(pool, "staff_users");
+    const hasRmManagersTbl = await hasTable(pool, "rm_managers");
     const hasInvoicesTbl = await hasTable(pool, "invoices");
     const hasQuotaStateTbl = await hasTable(pool, "user_quota_state");
     const hasUsageLiveTbl = await hasTable(pool, "user_usage_live");
@@ -327,12 +353,12 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const hasRegionsTbl = await hasTable(pool, "subscriber_regions");
     const pkgCols = hasPkgTbl ? await getTableColumns(pool, "packages") : new Set<string>();
     const nasCols = hasNasTbl ? await getTableColumns(pool, "nas_servers") : new Set<string>();
-    const staffCols = hasStaffTbl ? await getTableColumns(pool, "staff_users") : new Set<string>();
+    const rmManagerCols = hasRmManagersTbl ? await getTableColumns(pool, "rm_managers") : new Set<string>();
     const usageLiveCols = hasUsageLiveTbl ? await getTableColumns(pool, "user_usage_live") : new Set<string>();
     const radCols = hasRadacctTbl ? await getTableColumns(pool, "radacct") : new Set<string>();
     const joinPkg = hasPkgTbl && subCols.has("package_id") && pkgCols.has("id");
     const joinNas = hasNasTbl && subCols.has("nas_server_id") && nasCols.has("id");
-    const joinCreator = hasStaffTbl && subCols.has("created_by") && staffCols.has("id");
+    const joinCreator = hasRmManagersTbl && subCols.has("created_by") && rmManagerCols.has("managername");
     const joinReg = hasRegionsTbl && subCols.has("region_id");
     const joinUsageLive =
       hasUsageLiveTbl &&
@@ -406,12 +432,9 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     if (hasQuotaStateTbl) selectParts.push(`CASE WHEN qs.username IS NULL THEN 0 ELSE 1 END AS quota_limited_today`);
     if (joinNas && nasCols.has("name")) selectParts.push(`n.name AS nas_name`);
     if (joinNas && nasCols.has("ip")) selectParts.push(`n.ip AS nas_ip`);
-    if (joinCreator && staffCols.has("email")) {
-      const creatorExpr = staffCols.has("name")
-        ? `COALESCE(NULLIF(TRIM(su.name), ''), su.email) AS creator_name`
-        : `su.email AS creator_name`;
-      selectParts.push(creatorExpr);
-      selectParts.push(`su.email AS creator_email`);
+    if (joinCreator) {
+      selectParts.push(`rmc.managername AS creator_name`);
+      selectParts.push(`rmc.email AS creator_email`);
     }
     if (hasRadacctTbl && subCols.has("username")) {
       const hasAcctUpdate = await hasColumn(pool, "radacct", "acctupdatetime");
@@ -442,7 +465,15 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     const joins: string[] = [];
     if (joinPkg) joins.push(`LEFT JOIN packages p ON p.id = s.package_id`);
     if (joinNas) joins.push(`LEFT JOIN nas_servers n ON n.id = s.nas_server_id`);
-    if (joinCreator) joins.push(`LEFT JOIN staff_users su ON su.id = s.created_by AND su.tenant_id = s.tenant_id`);
+    if (joinCreator) {
+      joins.push(
+        `LEFT JOIN rm_managers rmc
+         ON BINARY rmc.managername = BINARY CASE
+             WHEN s.created_by LIKE 'rm:%' THEN SUBSTRING(s.created_by, 4)
+             ELSE s.created_by
+           END`
+      );
+    }
     if (joinReg) {
       joins.push(
         `LEFT JOIN subscriber_regions reg ON reg.id = s.region_id AND reg.tenant_id = s.tenant_id`
@@ -518,8 +549,8 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       if (joinPkg && pkgCols.has("name")) searchParts.push(`p.name LIKE ?`);
       if (joinNas && nasCols.has("name")) searchParts.push(`n.name LIKE ?`);
       if (joinNas && nasCols.has("ip")) searchParts.push(`n.ip LIKE ?`);
-      if (joinCreator && staffCols.has("name")) searchParts.push(`su.name LIKE ?`);
-      if (joinCreator && staffCols.has("email")) searchParts.push(`su.email LIKE ?`);
+      if (joinCreator) searchParts.push(`rmc.managername LIKE ?`);
+      if (joinCreator && rmManagerCols.has("email")) searchParts.push(`rmc.email LIKE ?`);
       if (joinReg) searchParts.push(`reg.name LIKE ?`);
       if (searchParts.length) {
         where.push(`(${searchParts.join(" OR ")})`);
@@ -540,7 +571,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
       package_name: joinPkg && pkgCols.has("name") ? "p.name" : "s.username",
       nas_network: joinNas && nasCols.has("name") ? "n.name" : joinNas && nasCols.has("ip") ? "n.ip" : "s.username",
       region_name: joinReg ? "reg.name" : "s.username",
-      created_by: joinCreator && staffCols.has("name") ? "su.name" : joinCreator && staffCols.has("email") ? "su.email" : "s.username",
+      created_by: joinCreator ? "rmc.managername" : "s.username",
       created_at: subCols.has("created_at") ? "s.created_at" : "s.username",
       start_date: subCols.has("start_date") ? "s.start_date" : "s.username",
       expiration_date: subCols.has("expiration_date") ? "s.expiration_date" : "s.username",
@@ -1640,7 +1671,14 @@ router.post(
       let radiusWarning: string | null = null;
       try {
         const pr = await pushRadiusForSubscriber(pool, radius, tenant, subscriberId);
-        if (!pr.ok) radiusWarning = pr.reason;
+        if (!pr.ok) {
+          radiusWarning = pr.reason;
+        } else {
+          const un = await resolveUsernameForSubscriberId(tenant, subscriberId);
+          if (un) {
+            await disconnectBySystemPolicy(tenant, un, "activation");
+          }
+        }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         radiusWarning = msg;
@@ -1759,6 +1797,7 @@ router.patch(
               framedPool: b.pool ?? null,
               expirationDate: Number.isNaN(expPatch.getTime()) ? null : expPatch,
             });
+            await disconnectBySystemPolicy(tenant, String(row.username), "update");
           }
         }
       }
@@ -1875,6 +1914,7 @@ router.patch(
             framedPool: row.pool as string | null,
             expirationDate: Number.isNaN(expPatch.getTime()) ? null : expPatch,
           });
+          await disconnectBySystemPolicy(tenant, String(row.username), "update");
         }
       }
     }
@@ -2228,6 +2268,7 @@ router.post(
     const un = await resolveUsernameForSubscriberId(tenant, req.params.id);
     if (un) {
       await pool.execute(`UPDATE rm_users SET enableuser = 1 WHERE username = ?`, [un]);
+      await disconnectBySystemPolicy(tenant, un, "activation");
     }
   } catch {
     /* ignore */
@@ -2318,6 +2359,10 @@ router.post(
   }
   try {
     assertRadiusPush(await pushRadiusForSubscriber(pool, radius, tenant, req.params.id));
+    const un = await resolveUsernameForSubscriberId(tenant, req.params.id);
+    if (un) {
+      await disconnectBySystemPolicy(tenant, un, "activation");
+    }
   } catch (e) {
     console.error("[subscribers] renew: radius push failed", e);
     res.status(502).json({

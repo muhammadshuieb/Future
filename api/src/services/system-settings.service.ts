@@ -13,7 +13,6 @@ export type SystemSettingsView = {
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
   billing_currency: "USD" | "SYP" | "TRY";
-  disconnection_method: "nas" | "remote";
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -29,7 +28,6 @@ export type SystemSettingsView = {
 
 type RmBillingSettings = {
   billing_currency: "USD" | "SYP" | "TRY";
-  disconnection_method: "nas" | "remote";
 };
 
 function normalizeRmCurrency(raw: unknown): "USD" | "SYP" | "TRY" {
@@ -39,14 +37,9 @@ function normalizeRmCurrency(raw: unknown): "USD" | "SYP" | "TRY" {
   return "USD";
 }
 
-function normalizeRmDisconnectionMethod(raw: unknown): "nas" | "remote" {
-  const n = Number(raw ?? 1);
-  return n === 0 ? "nas" : "remote";
-}
-
 async function getRmBillingSettings(): Promise<RmBillingSettings> {
   if (!(await hasTable(pool, "rm_settings"))) {
-    return { billing_currency: "USD", disconnection_method: "remote" };
+    return { billing_currency: "USD" };
   }
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT currency, disconnmethod FROM rm_settings LIMIT 1`
@@ -54,7 +47,6 @@ async function getRmBillingSettings(): Promise<RmBillingSettings> {
   const row = rows[0] ?? {};
   return {
     billing_currency: normalizeRmCurrency(row.currency),
-    disconnection_method: normalizeRmDisconnectionMethod(row.disconnmethod),
   };
 }
 
@@ -122,7 +114,6 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
       ? Boolean(Number(row.disconnect_on_update ?? 1))
       : true,
     billing_currency: "USD",
-    disconnection_method: "remote",
     subscription_license_note: col.has("subscription_license_note")
       ? String(row.subscription_license_note ?? "")
       : "",
@@ -177,7 +168,6 @@ export type SystemSettingsInput = {
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
   billing_currency: "USD" | "SYP" | "TRY";
-  disconnection_method: "nas" | "remote";
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -283,7 +273,7 @@ export async function updateSystemSettings(
        LIMIT 1`,
       [
         normalizeRmCurrency(input.billing_currency),
-        input.disconnection_method === "nas" ? 0 : 1,
+        1,
       ]
     );
   }

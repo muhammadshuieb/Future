@@ -4,6 +4,7 @@ import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -48,6 +49,7 @@ export function PackagesPage() {
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -189,8 +191,13 @@ export function PackagesPage() {
   }
 
   async function onDelete(id: string) {
-    const confirmed = window.confirm(t("packages.deleteConfirm"));
-    if (!confirmed) return;
+    setConfirmDeleteId(id);
+  }
+
+  async function confirmDeletePackage() {
+    const id = confirmDeleteId;
+    setConfirmDeleteId(null);
+    if (!id) return;
     setLoadError(null);
     setDeletingId(id);
     try {
@@ -431,6 +438,18 @@ export function PackagesPage() {
           </div>
         </form>
       </Modal>
+      <ActionDialog
+        open={Boolean(confirmDeleteId)}
+        title={t("common.delete")}
+        message={t("packages.deleteConfirm")}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => {
+          void confirmDeletePackage();
+        }}
+      />
     </div>
   );
 }

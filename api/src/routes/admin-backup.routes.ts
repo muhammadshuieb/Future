@@ -16,7 +16,6 @@ const TABLES = [
   "nas_servers",
   "user_usage_live",
   "user_usage_daily",
-  "staff_users",
   "audit_logs",
   "inventory_categories",
   "inventory_products",

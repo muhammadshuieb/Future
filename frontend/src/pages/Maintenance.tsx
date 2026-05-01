@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Link2, Play, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Database, Download, Link2, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
 
@@ -37,6 +38,13 @@ type RcloneStatus = {
   schedule_time_2: string | null;
   schedule_timezone: string;
   retention_days: number;
+};
+
+type DatabaseSizeInfo = {
+  data_bytes?: number;
+  index_bytes?: number;
+  total_bytes: number;
+  table_count: number;
 };
 
 function fmtBytes(n: number | null): string {
@@ -81,6 +89,18 @@ export function MaintenancePage() {
   const [deletingMany, setDeletingMany] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [pruneYear, setPruneYear] = useState<number>(new Date().getFullYear() - 1);
+  const [prunePreviewLoading, setPrunePreviewLoading] = useState(false);
+  const [pruneRunning, setPruneRunning] = useState(false);
+  const [prunePreview, setPrunePreview] = useState<{
+    year: number;
+    from: string;
+    to_exclusive: string;
+    radacct_rows: number;
+    rm_radacct_rows: number;
+    radacct_distinct_users: number;
+    rm_radacct_distinct_users: number;
+  } | null>(null);
   const [restoreInfo, setRestoreInfo] = useState<{
     max_bytes: number;
     schema_extensions_resolved: string | null;
@@ -97,6 +117,20 @@ export function MaintenancePage() {
       mysql_output_excerpt?: string | null;
     } | null;
   } | null>(null);
+  const [databaseSize, setDatabaseSize] = useState<DatabaseSizeInfo | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    variant: "warning" | "danger";
+    action: (() => void) | null;
+  }>({
+    message: "",
+    variant: "warning",
+    action: null,
+  });
+
+  function openConfirm(message: string, action: () => void, variant: "warning" | "danger" = "warning") {
+    setConfirmDialog({ message, action, variant });
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,6 +152,13 @@ export function MaintenancePage() {
         setScheduleTime1((gj.status.schedule_time_1 || "03:00").slice(0, 5));
         setScheduleTime2((gj.status.schedule_time_2 || "15:00").slice(0, 5));
         setRetentionDays(Number(gj.status.retention_days || 7));
+      }
+      const dbSizeRes = await apiFetch("/api/maintenance/database-size");
+      if (dbSizeRes.ok) {
+        const dbSizeJson = (await dbSizeRes.json()) as DatabaseSizeInfo;
+        setDatabaseSize(dbSizeJson);
+      } else {
+        setDatabaseSize(null);
       }
       setSelectedBackupIds([]);
     } finally {
@@ -219,7 +260,16 @@ export function MaintenancePage() {
   }
 
   async function deleteBackup(item: BackupItem) {
-    if (!window.confirm(t("maintenance.deleteConfirm"))) return;
+    openConfirm(
+      t("maintenance.deleteConfirm"),
+      () => {
+        void confirmDeleteBackup(item);
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteBackup(item: BackupItem) {
     setError(null);
     setInfo(null);
     const res = await apiFetch(`/api/maintenance/backups/${item.id}`, { method: "DELETE" });
@@ -236,9 +286,86 @@ export function MaintenancePage() {
       setError(t("maintenance.restorePickFile"));
       return;
     }
-    if (!window.confirm(t("maintenance.restoreConfirm"))) {
+    openConfirm(t("maintenance.restoreConfirm"), () => void confirmRunSqlRestore());
+  }
+
+  async function previewRadacctPrune() {
+    setPrunePreviewLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/radacct/prune-year/preview", {
+        method: "POST",
+        body: JSON.stringify({ year: pruneYear }),
+      });
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      const j = (await res.json()) as {
+        ok: boolean;
+        preview: {
+          year: number;
+          from: string;
+          to_exclusive: string;
+          radacct_rows: number;
+          rm_radacct_rows: number;
+          radacct_distinct_users: number;
+          rm_radacct_distinct_users: number;
+        };
+      };
+      setPrunePreview(j.preview);
+    } finally {
+      setPrunePreviewLoading(false);
+    }
+  }
+
+  async function runRadacctPrune() {
+    if (!prunePreview) {
+      setError("اعمل معاينة أولاً قبل التنفيذ.");
       return;
     }
+    openConfirm(
+      `سيتم حذف جلسات سنة ${prunePreview.year} من radacct و rm_radacct فقط. لا يتم تعديل جداول البطاقات أو المشتركين. هل تريد المتابعة؟`,
+      () => {
+        void confirmRunRadacctPrune();
+      },
+      "danger"
+    );
+  }
+
+  async function confirmRunRadacctPrune() {
+    setPruneRunning(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/radacct/prune-year/run", {
+        method: "POST",
+        body: JSON.stringify({ year: pruneYear, confirm: true }),
+      });
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      const j = (await res.json()) as {
+        ok: boolean;
+        deleted: {
+          year: number;
+          radacct_rows: number;
+          rm_radacct_rows: number;
+        };
+      };
+      setInfo(
+        `تم حذف جلسات السنة ${j.deleted.year}: radacct=${j.deleted.radacct_rows}, rm_radacct=${j.deleted.rm_radacct_rows}.`
+      );
+      await previewRadacctPrune();
+    } finally {
+      setPruneRunning(false);
+    }
+  }
+
+  async function confirmRunSqlRestore() {
+    if (!restoreFile) return;
     setRestoring(true);
     setError(null);
     setInfo(null);
@@ -426,7 +553,17 @@ export function MaintenancePage() {
 
   async function deleteSelectedBackups() {
     if (selectedBackupIds.length === 0) return;
-    if (!window.confirm(t("maintenance.deleteSelectedConfirm").replace("{count}", String(selectedBackupIds.length)))) return;
+    openConfirm(
+      t("maintenance.deleteSelectedConfirm").replace("{count}", String(selectedBackupIds.length)),
+      () => {
+        void confirmDeleteSelectedBackups();
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteSelectedBackups() {
+    if (selectedBackupIds.length === 0) return;
     setDeletingMany(true);
     setError(null);
     setInfo(null);
@@ -468,6 +605,13 @@ export function MaintenancePage() {
     if (status === "success") return "text-emerald-400";
     if (status === "failed") return "text-red-400";
     return "text-amber-300";
+  };
+
+  const driveUploadLabel = (item: BackupItem) => {
+    if (!rcloneStatus?.enabled || !rcloneStatus.connected) return t("maintenance.driveDisconnected");
+    if (item.drive_uploaded) return t("maintenance.uploaded");
+    if (item.status === "running") return t("maintenance.drivePending");
+    return t("maintenance.driveUploadFailed");
   };
 
   return (
@@ -556,6 +700,43 @@ export function MaintenancePage() {
             <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
             {restoring ? t("common.loading") : t("maintenance.restoreRun")}
           </Button>
+        </Card>
+      ) : null}
+
+      {user?.role === "admin" ? (
+        <Card className="space-y-4 border-red-500/30">
+          <div className="font-semibold text-red-200">تنظيف جلسات المحاسبة حسب السنة (آمن)</div>
+          <p className="text-sm opacity-80">
+            هذه العملية تحذف فقط من <code>radacct</code> و <code>rm_radacct</code> حسب السنة المحددة. لا تمس جداول البطاقات أو المشتركين.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="mb-1 block text-xs opacity-80">السنة</label>
+              <input
+                type="number"
+                min={2000}
+                max={2100}
+                className="rounded-lg border border-[hsl(var(--border))] bg-transparent px-2 py-1.5 text-sm"
+                value={pruneYear}
+                onChange={(e) => setPruneYear(Math.max(2000, Math.min(2100, Number(e.target.value || 2000))))}
+              />
+            </div>
+            <Button type="button" variant="outline" onClick={() => void previewRadacctPrune()} disabled={prunePreviewLoading}>
+              {prunePreviewLoading ? t("common.loading") : "معاينة قبل الحذف"}
+            </Button>
+            <Button type="button" onClick={() => void runRadacctPrune()} disabled={pruneRunning || !prunePreview}>
+              {pruneRunning ? t("common.loading") : "تنفيذ الحذف للسنة"}
+            </Button>
+          </div>
+          {prunePreview ? (
+            <div className="rounded-xl border border-[hsl(var(--border))]/60 bg-[hsl(var(--muted))]/20 p-3 text-sm">
+              <div>النطاق: {prunePreview.from} → {prunePreview.to_exclusive}</div>
+              <div>صفوف `radacct` المرشحة: {prunePreview.radacct_rows}</div>
+              <div>صفوف `rm_radacct` المرشحة: {prunePreview.rm_radacct_rows}</div>
+              <div>عدد مستخدمي `radacct` المتأثرين: {prunePreview.radacct_distinct_users}</div>
+              <div>عدد مستخدمي `rm_radacct` المتأثرين: {prunePreview.rm_radacct_distinct_users}</div>
+            </div>
+          ) : null}
         </Card>
       ) : null}
 
@@ -692,8 +873,27 @@ export function MaintenancePage() {
 
       <Card className="overflow-hidden p-0">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[hsl(var(--border))]/70 px-4 py-3">
-          <div className="text-sm opacity-80">
-            {t("maintenance.selectedBackups").replace("{count}", String(selectedBackupIds.length))}
+          <div className="space-y-1 text-sm opacity-80">
+            <div>{t("maintenance.selectedBackups").replace("{count}", String(selectedBackupIds.length))}</div>
+            {databaseSize ? (
+              <div className="rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/20 p-3 text-[hsl(var(--foreground))]">
+                <div className="flex items-center gap-2 text-[13px] opacity-90">
+                  <Database className="h-4 w-4 text-[hsl(var(--primary))]" />
+                  <span>{t("maintenance.databaseSize")}</span>
+                </div>
+                <div className="mt-1 text-lg font-semibold">
+                  {fmtBytes(databaseSize.total_bytes)}
+                </div>
+                <div className="text-xs opacity-80">
+                  {databaseSize.table_count} {t("maintenance.tablesCount")} — {t("maintenance.databaseData")}:{" "}
+                  {fmtBytes(databaseSize.data_bytes ?? null)} — {t("maintenance.databaseIndexes")}:{" "}
+                  {fmtBytes(databaseSize.index_bytes ?? null)}
+                </div>
+                <div className="mt-1 text-[11px] opacity-70">
+                  {t("maintenance.databaseSizeHint")}
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="flex gap-2">
             <Button type="button" variant="outline" onClick={() => toggleSelectAll()} disabled={items.length === 0}>
@@ -744,7 +944,7 @@ export function MaintenancePage() {
                   <td className="px-4 py-3">
                     <div className={`font-semibold ${statusClass(item.status)}`}>{statusLabel(item.status)}</div>
                     <div className="text-xs opacity-75">
-                      {t("maintenance.drive")}: {item.drive_uploaded ? t("maintenance.uploaded") : t("maintenance.notUploaded")}
+                      {t("maintenance.drive")}: {driveUploadLabel(item)}
                     </div>
                   </td>
                   <td className="px-4 py-3">{fmtDate(item.started_at)}</td>
@@ -784,6 +984,20 @@ export function MaintenancePage() {
           </table>
         </div>
       </Card>
+      <ActionDialog
+        open={Boolean(confirmDialog.action)}
+        title={t("common.actions")}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmDialog({ message: "", variant: "warning", action: null })}
+        onConfirm={() => {
+          const action = confirmDialog.action;
+          setConfirmDialog({ message: "", variant: "warning", action: null });
+          action?.();
+        }}
+      />
     </div>
   );
 }

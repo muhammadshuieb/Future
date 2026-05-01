@@ -4,6 +4,7 @@ import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
@@ -28,6 +29,7 @@ export function NasPage() {
   const [secretShown, setSecretShown] = useState<Record<string, boolean>>({});
   const [secretValues, setSecretValues] = useState<Record<string, string | undefined>>({});
   const [secretLoading, setSecretLoading] = useState<Record<string, boolean>>({});
+  const [deleteTarget, setDeleteTarget] = useState<NasRow | null>(null);
 
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
@@ -58,7 +60,13 @@ export function NasPage() {
   }, [t]);
 
   async function onDeleteNas(n: NasRow) {
-    if (!window.confirm(t("nas.deleteConfirm"))) return;
+    setDeleteTarget(n);
+  }
+
+  async function confirmDeleteNas() {
+    const n = deleteTarget;
+    setDeleteTarget(null);
+    if (!n) return;
     setLoadError(null);
     try {
       const r = await apiFetch(`/api/nas/${String(n.id)}`, { method: "DELETE" });
@@ -411,6 +419,18 @@ export function NasPage() {
           </div>
         </form>
       </Modal>
+      <ActionDialog
+        open={Boolean(deleteTarget)}
+        title={t("common.delete")}
+        message={t("nas.deleteConfirm")}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          void confirmDeleteNas();
+        }}
+      />
     </div>
   );
 }

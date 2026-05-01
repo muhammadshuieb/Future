@@ -11,6 +11,8 @@
     "worker": "tsx watch src/workers/index.ts",
     "validate:dma-schema": "tsx src/scripts/validate-dma-schema.ts",
     "verify:rm-restore": "tsx src/scripts/verify-rm-restore.ts",
+    "snapshot:restore-tables": "tsx src/scripts/snapshot-restore-tables.ts",
+    "compare:restore-snapshots": "tsx src/scripts/compare-restore-snapshots.ts",
     "verify:dma-enforcement": "tsx src/scripts/verify-dma-enforcement.ts",
     "verify:dma-enforcement:dist": "node dist/scripts/verify-dma-enforcement.js",
     "seed:staff": "tsx src/scripts/seed-staff.ts"

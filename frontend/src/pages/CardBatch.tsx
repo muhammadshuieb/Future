@@ -3,6 +3,7 @@ import { Download, FileText, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField, SelectField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { canManageOperations } from "../lib/permissions";
@@ -64,6 +65,12 @@ export function CardBatchPage() {
   const [working, setWorking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busySeries, setBusySeries] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    message: string;
+    variant: "warning" | "danger";
+    action: (() => void) | null;
+  }>({ open: false, message: "", variant: "warning", action: null });
   const [selectedSeries, setSelectedSeries] = useState<string[]>([]);
   const [pageSize, setPageSize] = useState<number>(25);
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -314,8 +321,21 @@ export function CardBatchPage() {
     setBusySeries(null);
   }
 
+  function openConfirm(message: string, action: () => void, variant: "warning" | "danger" = "warning") {
+    setConfirmDialog({ open: true, message, variant, action });
+  }
+
   async function deleteSeries(series: string) {
-    if (!confirm(t("prepaid.series.confirmDeleteOne").replace("{series}", series))) return;
+    openConfirm(
+      t("prepaid.series.confirmDeleteOne").replace("{series}", series),
+      () => {
+        void confirmDeleteSeries(series);
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteSeries(series: string) {
     setBusySeries(series);
     setErr(null);
     setMsg(null);
@@ -336,7 +356,17 @@ export function CardBatchPage() {
   }
   async function deleteSelectedSeries() {
     if (!selectedSeries.length) return;
-    if (!confirm(t("prepaid.series.confirmDeleteSelected").replace("{count}", String(selectedSeries.length)))) return;
+    openConfirm(
+      t("prepaid.series.confirmDeleteSelected").replace("{count}", String(selectedSeries.length)),
+      () => {
+        void confirmDeleteSelectedSeries();
+      },
+      "danger"
+    );
+  }
+
+  async function confirmDeleteSelectedSeries() {
+    if (!selectedSeries.length) return;
     setBusySeries("__bulk__");
     try {
       for (const series of selectedSeries) {
@@ -607,6 +637,20 @@ export function CardBatchPage() {
           {t("users.nextPage")}
         </Button>
       </div>
+      <ActionDialog
+        open={confirmDialog.open}
+        title={t("common.actions")}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setConfirmDialog({ open: false, message: "", variant: "warning", action: null })}
+        onConfirm={() => {
+          const action = confirmDialog.action;
+          setConfirmDialog({ open: false, message: "", variant: "warning", action: null });
+          action?.();
+        }}
+      />
     </div>
   );
 }

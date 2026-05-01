@@ -76,6 +76,47 @@ function canManage() {
   return r === "admin" || r === "manager";
 }
 
+/**
+ * Inline page dialog instead of browser popups.
+ * @param {{ title: string; message: string; confirmText?: string; cancelText?: string; danger?: boolean }} options
+ * @returns {Promise<boolean>}
+ */
+function showInlineConfirm(options) {
+  const {
+    title,
+    message,
+    confirmText = "تأكيد",
+    cancelText = "إلغاء",
+    danger = false,
+  } = options;
+  return new Promise((resolve) => {
+    const root = document.createElement("div");
+    root.className = "modal-backdrop";
+    root.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h2>${esc(title)}</h2>
+        <div style="margin:10px 0 14px;border:1px solid ${danger ? "rgba(239,68,68,.45)" : "rgba(245,158,11,.45)"};background:${danger ? "rgba(127,29,29,.28)" : "rgba(120,53,15,.24)"};border-radius:12px;padding:10px 12px;">
+          <strong style="display:block;margin-bottom:4px;">⚠️ ${esc(title)}</strong>
+          <div>${esc(message)}</div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-cancel>${esc(cancelText)}</button>
+          <button type="button" class="btn ${danger ? "btn-danger" : "btn-primary"}" data-confirm>${esc(confirmText)}</button>
+        </div>
+      </div>`;
+    const close = (result) => {
+      root.remove();
+      resolve(result);
+    };
+    root.querySelector("[data-cancel]")?.addEventListener("click", () => close(false));
+    root.querySelector("[data-confirm]")?.addEventListener("click", () => close(true));
+    root.addEventListener("click", (ev) => {
+      if (ev.target === root) close(false);
+    });
+    document.body.appendChild(root);
+  });
+}
+
 const views = {
   dashboard: renderDashboard,
   subscribers: renderSubscribers,
@@ -369,7 +410,14 @@ async function renderSubscribers(el) {
     el.querySelectorAll("[data-disable]").forEach((b) => {
       b.addEventListener("click", async () => {
         const id = b.getAttribute("data-disable");
-        if (!id || !confirm("تأكيد تعطيل هذا المشترك؟")) return;
+        if (!id) return;
+        const confirmed = await showInlineConfirm({
+          title: "تعطيل مشترك",
+          message: "تأكيد تعطيل هذا المشترك؟",
+          confirmText: "تعطيل",
+          danger: true,
+        });
+        if (!confirmed) return;
         await api(`/api/subscribers/${encodeURIComponent(id)}/disable`, { method: "PATCH" });
         await renderSubscribers(el);
       });
@@ -382,7 +430,12 @@ function openSubscriberModal(parent) {
   const root = parent.querySelector("#sub-modal-root");
   if (!root) return;
   if (!_packagesCache.length) {
-    alert("أنشئ باقة أولاً من صفحة الباقات.");
+    void showInlineConfirm({
+      title: "تنبيه",
+      message: "أنشئ باقة أولاً من صفحة الباقات.",
+      confirmText: "حسناً",
+      cancelText: "إغلاق",
+    });
     return;
   }
   const opts = _packagesCache
@@ -432,7 +485,13 @@ function openSubscriberModal(parent) {
       const main = document.getElementById("main");
       if (main) await renderSubscribers(main);
     } catch {
-      alert("تعذر الإنشاء — تحقق من الصلاحيات أو البيانات.");
+      void showInlineConfirm({
+        title: "فشل العملية",
+        message: "تعذر الإنشاء — تحقق من الصلاحيات أو البيانات.",
+        confirmText: "موافق",
+        cancelText: "إغلاق",
+        danger: true,
+      });
     }
   });
 }
@@ -522,7 +581,13 @@ async function renderPackages(el) {
         const main = document.getElementById("main");
         if (main) await renderPackages(main);
       } catch {
-        alert("تعذر إنشاء الباقة.");
+        void showInlineConfirm({
+          title: "فشل الإنشاء",
+          message: "تعذر إنشاء الباقة.",
+          confirmText: "موافق",
+          cancelText: "إغلاق",
+          danger: true,
+        });
       }
     });
   });
@@ -699,7 +764,13 @@ async function renderNas(el) {
         const main = document.getElementById("main");
         if (main) await renderNas(main);
       } catch {
-        alert("تعذر حفظ NAS.");
+        void showInlineConfirm({
+          title: "فشل الحفظ",
+          message: "تعذر حفظ NAS.",
+          confirmText: "موافق",
+          cancelText: "إغلاق",
+          danger: true,
+        });
       }
     });
   });

@@ -3,6 +3,7 @@ import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { useI18n } from "../context/LocaleContext";
@@ -113,6 +114,7 @@ export function SubscriberZonesPage() {
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [modal, setModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [parentId, setParentId] = useState<string>("");
   const [newName, setNewName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -204,9 +206,15 @@ export function SubscriberZonesPage() {
 
   async function onDelete(id: string, name: string) {
     if (!canManage) return;
-    if (!confirm(`${t("subscriberZones.deleteConfirm")}\n${name}`)) return;
+    setDeleteTarget({ id, name });
+  }
+
+  async function confirmDelete() {
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    if (!target) return;
     setMsg(null);
-    const r = await apiFetch(`/api/regions/${id}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/regions/${target.id}`, { method: "DELETE" });
     if (!r.ok) {
       const raw = await readApiError(r);
       setMsg({ type: "err", text: formatStaffApiError(r.status, raw, t) });
@@ -308,6 +316,18 @@ export function SubscriberZonesPage() {
           </div>
         </form>
       </Modal>
+      <ActionDialog
+        open={Boolean(deleteTarget)}
+        title={t("common.delete")}
+        message={deleteTarget ? `${t("subscriberZones.deleteConfirm")}\n${deleteTarget.name}` : ""}
+        variant="danger"
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          void confirmDelete();
+        }}
+      />
     </div>
   );
 }

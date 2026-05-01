@@ -6,6 +6,20 @@ import { config } from "../config.js";
 import * as SqlRestore from "../services/sql-restore.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
+const RESTORE_ALLOWED_TABLES = [
+  "nas",
+  "radacct",
+  "radcheck",
+  "rm_allowedmanagers",
+  "rm_allowednases",
+  "rm_cards",
+  "rm_changesrv",
+  "rm_managers",
+  "rm_services",
+  "rm_usergroups",
+  "rm_users",
+] as const;
+
 const router = Router();
 const uploadSql = multer({
   storage: multer.diskStorage({
@@ -47,6 +61,7 @@ router.post(
         ).toLowerCase() === "true";
       const result = await SqlRestore.importSqlFilePathIntoAppDatabase(f.path, {
         applySchemaExtensions: applyExt,
+        allowedTables: [...RESTORE_ALLOWED_TABLES],
       });
       const tenantId = req.auth!.tenantId;
       const staffId = req.auth!.sub ?? null;
@@ -106,6 +121,7 @@ router.post(
         ok: true,
         restored_at: restoredAt,
         bytes: result.detail.bytes,
+        restore_report: result.detail.restore_report,
         database: config.databaseName,
         target_database: config.db.database,
       });

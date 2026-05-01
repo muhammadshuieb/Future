@@ -6,6 +6,8 @@ import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
 import { RadiusService } from "../services/radius.service.js";
+import { CoaService } from "../services/coa.service.js";
+import { getSystemSettings } from "../services/system-settings.service.js";
 import { pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
 import {
@@ -19,6 +21,7 @@ import type { RowDataPacket } from "mysql2";
 
 const router = Router();
 const radius = new RadiusService(pool);
+const coa = new CoaService(pool);
 const currencySchema = z.enum(["USD", "SYP", "TRY"]);
 
 router.use(requireAuth);
@@ -198,6 +201,26 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       if (!pr.ok) {
         radiusSync = "failed";
         radiusReason = pr.reason;
+      } else {
+        const [subRows] = await pool.query<RowDataPacket[]>(
+          `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+          [tx.subscriberId, t]
+        );
+        const username = subRows[0]?.username != null ? String(subRows[0].username) : null;
+        if (username) {
+          let shouldDisconnect = true;
+          try {
+            const settings = await getSystemSettings(t);
+            shouldDisconnect = settings.disconnect_on_activation;
+          } catch (error) {
+            console.warn("[invoices] settings read failed, using default disconnect=true", error);
+          }
+          if (shouldDisconnect) {
+            await coa.disconnectAllSessions(username, t).catch((error) => {
+              console.error(`[invoices] activation disconnect failed for ${username}`, error);
+            });
+          }
+        }
       }
     } catch (error) {
       radiusSync = "failed";
