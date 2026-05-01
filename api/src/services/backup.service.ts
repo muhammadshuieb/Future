@@ -10,6 +10,8 @@ import type { RowDataPacket } from "mysql2";
 import { createGzip } from "zlib";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
+import { getSystemSettings } from "./system-settings.service.js";
+import { resolveWhatsAppSessionOwnerPhone, sendOperationalAlertWhatsApp } from "./whatsapp.service.js";
 
 type BackupStatus = "running" | "success" | "failed";
 type TriggeredBy = "system" | "manual";
@@ -140,6 +142,52 @@ function toSqlDate(date: Date): string {
 function toBackupFilename(now = new Date()): string {
   const stamp = now.toISOString().replaceAll(":", "-");
   return `${BACKUP_PREFIX}${stamp}.sql.gz`;
+}
+
+async function notifyBackupRunWhatsApp(input: {
+  tenantId: string;
+  triggeredBy: TriggeredBy;
+  status: BackupStatus;
+  fileName: string;
+  fileSizeBytes: number | null;
+  driveEnabled: boolean;
+  driveUploaded: boolean;
+  errorMessage?: string | null;
+}): Promise<void> {
+  if (input.triggeredBy !== "system") return;
+  try {
+    const s = await getSystemSettings(input.tenantId);
+    if (!s.backup_alert_enabled) return;
+    let target = (s.backup_alert_phone || "").trim() || null;
+    if (s.backup_alert_use_session_owner) {
+      const owner = await resolveWhatsAppSessionOwnerPhone(input.tenantId).catch(() => null);
+      if (owner) target = owner;
+    }
+    if (!target) return;
+
+    const sizeMb =
+      input.fileSizeBytes && input.fileSizeBytes > 0
+        ? `${(input.fileSizeBytes / (1024 * 1024)).toFixed(2)} MB`
+        : "غير معروف";
+    const driveLine = input.driveEnabled
+      ? input.driveUploaded
+        ? "Google Drive: تم الرفع بنجاح."
+        : "Google Drive: لم يتم الرفع."
+      : "Google Drive: غير مفعّل.";
+
+    const message =
+      input.status === "success"
+        ? `تنبيه النسخ الاحتياطي (تلقائي)\nالحالة: ناجح\nالملف: ${input.fileName}\nالحجم: ${sizeMb}\n${driveLine}`
+        : `تنبيه النسخ الاحتياطي (تلقائي)\nالحالة: فشل\nالملف: ${input.fileName}\n${driveLine}\nالخطأ: ${String(
+            input.errorMessage ?? "unknown_error"
+          ).slice(0, 240)}`;
+
+    await sendOperationalAlertWhatsApp(input.tenantId, target, message, {
+      preferSessionOwner: false,
+    });
+  } catch (error) {
+    console.warn("[backup] whatsapp backup alert failed", error);
+  }
 }
 
 function normalizeRemotePath(value: string | null): string {
@@ -504,8 +552,8 @@ export async function runDatabaseBackup(opts: {
   const fileName = toBackupFilename();
   const filePath = path.join(dir, fileName);
   const rawSqlPath = filePath.replace(/\.gz$/, "");
-  const settings = await getRcloneSettings(tenantId);
-  const retentionDays = settings.retentionDays;
+  const rcloneSettings = await getRcloneSettings(tenantId);
+  const retentionDays = rcloneSettings.retentionDays;
 
   await mkdir(dir, { recursive: true });
   await pool.execute(
@@ -520,7 +568,7 @@ export async function runDatabaseBackup(opts: {
     await unlink(rawSqlPath).catch(() => {});
     const info = await stat(filePath);
     let remoteRef: string | null = null;
-    if (settings.enabled) {
+    if (rcloneSettings.enabled) {
       remoteRef = await uploadToRemote(filePath, tenantId);
       await setRcloneCheckResult(tenantId, true, null);
     }
@@ -554,11 +602,20 @@ export async function runDatabaseBackup(opts: {
         id,
       ]
     );
+    await notifyBackupRunWhatsApp({
+      tenantId,
+      triggeredBy,
+      status: "success",
+      fileName,
+      fileSizeBytes: info.size,
+      driveEnabled: rcloneSettings.enabled,
+      driveUploaded: Boolean(remoteRef),
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     await unlink(rawSqlPath).catch(() => {});
-    const settings = await getRcloneSettings(tenantId);
-    if (settings.enabled) {
+    const latestRcloneSettings = await getRcloneSettings(tenantId);
+    if (latestRcloneSettings.enabled) {
       await setRcloneCheckResult(tenantId, false, message.slice(0, 4000));
     }
     await pool.execute(
@@ -567,6 +624,16 @@ export async function runDatabaseBackup(opts: {
        WHERE id = ?`,
       [filePath, fileName, message.slice(0, 4000), id]
     );
+    await notifyBackupRunWhatsApp({
+      tenantId,
+      triggeredBy,
+      status: "failed",
+      fileName,
+      fileSizeBytes: null,
+      driveEnabled: latestRcloneSettings.enabled,
+      driveUploaded: false,
+      errorMessage: message,
+    });
   }
 
   const [rows] = await pool.query<BackupRunRow[]>(

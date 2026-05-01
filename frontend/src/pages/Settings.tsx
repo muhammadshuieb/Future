@@ -11,6 +11,9 @@ type SystemSettings = {
   critical_alert_enabled: boolean;
   critical_alert_phone: string;
   critical_alert_use_session_owner: boolean;
+  backup_alert_enabled: boolean;
+  backup_alert_phone: string;
+  backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
@@ -32,6 +35,9 @@ export function SettingsPage() {
     critical_alert_enabled: false,
     critical_alert_phone: "",
     critical_alert_use_session_owner: true,
+    backup_alert_enabled: false,
+    backup_alert_phone: "",
+    backup_alert_use_session_owner: true,
     server_log_retention_days: 14,
     user_idle_timeout_minutes: 4,
     mikrotik_interim_update_minutes: 1,
@@ -308,6 +314,57 @@ export function SettingsPage() {
           <Button type="button" variant="soft" onClick={sendTestAlert}>
             <Send className="h-4 w-4" />
             {t("settings.sendTestAlert")}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <Bell className="h-4 w-4 text-violet-500" />
+          {t("settings.backupAlerts")}
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.backup_alert_enabled}
+            onChange={(e) =>
+              setSettings((prev) => ({ ...prev, backup_alert_enabled: e.target.checked }))
+            }
+          />
+          {t("settings.enableBackupAlerts")}
+        </label>
+        <TextField
+          label={t("settings.backupAlertPhone")}
+          value={settings.backup_alert_phone}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              backup_alert_phone: e.target.value,
+            }))
+          }
+          hint={t("settings.backupAlertPhoneHint")}
+        />
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.backup_alert_use_session_owner}
+            onChange={(e) =>
+              setSettings((prev) => ({
+                ...prev,
+                backup_alert_use_session_owner: e.target.checked,
+              }))
+            }
+          />
+          {t("settings.backupUseSessionOwner")}
+        </label>
+        <p className="text-[11px] opacity-60">{t("settings.backupAlertsHint")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={save} disabled={saving || loading}>
+            <Save className="h-4 w-4" />
+            {saving ? t("common.loading") : t("common.save")}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void load()} disabled={loading}>
+            {t("common.refresh")}
           </Button>
         </div>
       </Card>

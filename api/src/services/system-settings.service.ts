@@ -7,6 +7,9 @@ export type SystemSettingsView = {
   critical_alert_enabled: boolean;
   critical_alert_phone: string;
   critical_alert_use_session_owner: boolean;
+  backup_alert_enabled: boolean;
+  backup_alert_phone: string;
+  backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
@@ -57,6 +60,9 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       critical_alert_enabled TINYINT(1) NOT NULL DEFAULT 0,
       critical_alert_phone VARCHAR(32) DEFAULT NULL,
       critical_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
+      backup_alert_enabled TINYINT(1) NOT NULL DEFAULT 0,
+      backup_alert_phone VARCHAR(32) DEFAULT NULL,
+      backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
       server_log_retention_days INT NOT NULL DEFAULT 14,
       wireguard_vpn_enabled TINYINT(1) NOT NULL DEFAULT 1,
       wireguard_server_host VARCHAR(128) DEFAULT NULL,
@@ -75,6 +81,40 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
      ON DUPLICATE KEY UPDATE tenant_id = tenant_id`,
     [tenantId]
   );
+  const col = await getTableColumns(pool, "system_settings");
+  if (!col.has("backup_alert_enabled")) {
+    try {
+      await pool.query(
+        `ALTER TABLE system_settings
+           ADD COLUMN backup_alert_enabled TINYINT(1) NOT NULL DEFAULT 0`
+      );
+    } catch (error) {
+      const e = error as { code?: string; errno?: number };
+      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
+    }
+  }
+  if (!col.has("backup_alert_phone")) {
+    try {
+      await pool.query(
+        `ALTER TABLE system_settings
+           ADD COLUMN backup_alert_phone VARCHAR(32) DEFAULT NULL`
+      );
+    } catch (error) {
+      const e = error as { code?: string; errno?: number };
+      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
+    }
+  }
+  if (!col.has("backup_alert_use_session_owner")) {
+    try {
+      await pool.query(
+        `ALTER TABLE system_settings
+           ADD COLUMN backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1`
+      );
+    } catch (error) {
+      const e = error as { code?: string; errno?: number };
+      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
+    }
+  }
 }
 
 function normalizePhone(raw: string | null | undefined): string {
@@ -100,6 +140,15 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     critical_alert_enabled: Boolean(Number(row.critical_alert_enabled ?? 0)),
     critical_alert_phone: normalizePhone(String(row.critical_alert_phone ?? "")),
     critical_alert_use_session_owner: Boolean(Number(row.critical_alert_use_session_owner ?? 1)),
+    backup_alert_enabled: col.has("backup_alert_enabled")
+      ? Boolean(Number(row.backup_alert_enabled ?? 0))
+      : false,
+    backup_alert_phone: col.has("backup_alert_phone")
+      ? normalizePhone(String(row.backup_alert_phone ?? ""))
+      : "",
+    backup_alert_use_session_owner: col.has("backup_alert_use_session_owner")
+      ? Boolean(Number(row.backup_alert_use_session_owner ?? 1))
+      : true,
     server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 14))),
     user_idle_timeout_minutes: col.has("user_idle_timeout_minutes")
       ? Math.max(2, Math.min(10_080, Number(row.user_idle_timeout_minutes ?? 4)))
@@ -162,6 +211,9 @@ export type SystemSettingsInput = {
   critical_alert_enabled: boolean;
   critical_alert_phone: string;
   critical_alert_use_session_owner: boolean;
+  backup_alert_enabled: boolean;
+  backup_alert_phone: string;
+  backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
@@ -190,12 +242,18 @@ export async function updateSystemSettings(
     "critical_alert_enabled = ?",
     "critical_alert_phone = ?",
     "critical_alert_use_session_owner = ?",
+    "backup_alert_enabled = ?",
+    "backup_alert_phone = ?",
+    "backup_alert_use_session_owner = ?",
     "server_log_retention_days = ?",
   ];
   const baseVals: (string | number | Buffer | null)[] = [
     input.critical_alert_enabled ? 1 : 0,
     normalizePhone(input.critical_alert_phone) || null,
     input.critical_alert_use_session_owner ? 1 : 0,
+    input.backup_alert_enabled ? 1 : 0,
+    normalizePhone(input.backup_alert_phone) || null,
+    input.backup_alert_use_session_owner ? 1 : 0,
     Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 14))),
   ];
   if (col.has("user_idle_timeout_minutes")) {

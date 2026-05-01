@@ -47,7 +47,7 @@ export function ActionDialog({
           className={
             danger
               ? "rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
-              : "rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
+              : "rounded-xl border border-amber-500/50 bg-amber-500/15 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
           }
         >
           <div className="mb-1 flex items-center gap-2 font-semibold">

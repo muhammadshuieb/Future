@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, existsSync, promises as fs } from 
 import { tmpdir } from "os";
 import { join } from "path";
 import { pipeline } from "stream/promises";
+import { Transform } from "stream";
 import { createInterface } from "readline";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
@@ -56,7 +57,10 @@ function mysqlClientOutputIndicatesError(combined: string, exitCode: number): st
   return null;
 }
 
-async function pipeFileToMysql(sqlPath: string): Promise<{ ok: true } | { ok: false; error: string; output: string }> {
+async function pipeFileToMysql(
+  sqlPath: string,
+  opts?: { totalBytes?: number; onBytesProgress?: (bytesDone: number, totalBytes: number) => void }
+): Promise<{ ok: true } | { ok: false; error: string; output: string }> {
   const args: string[] = [
     "-h",
     config.db.host,
@@ -87,7 +91,16 @@ async function pipeFileToMysql(sqlPath: string): Promise<{ ok: true } | { ok: fa
     child.once("close", (c) => resolve(c ?? 1));
   });
   try {
-    await pipeline(createReadStream(sqlPath), child.stdin);
+    const totalBytes = Math.max(1, Number(opts?.totalBytes ?? 0));
+    let bytesDone = 0;
+    const meter = new Transform({
+      transform(chunk, _encoding, callback) {
+        bytesDone += chunk.length;
+        opts?.onBytesProgress?.(bytesDone, totalBytes);
+        callback(null, chunk);
+      },
+    });
+    await pipeline(createReadStream(sqlPath), meter, child.stdin);
   } catch (e) {
     return {
       ok: false,
@@ -167,7 +180,13 @@ export type SqlImportResult =
 type SqlImportOptions = {
   applySchemaExtensions: boolean;
   allowedTables?: string[];
+  onProgress?: (event: { percent: number; stage: string; message?: string }) => void;
 };
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
 
 function extractTableName(raw: string): string {
   const cleaned = raw.trim().replace(/[`"']/g, "");
@@ -295,7 +314,8 @@ function estimateInsertedRows(statement: string): number {
 
 async function buildFilteredSqlForAllowedTables(
   sqlFilePath: string,
-  allowedTables: string[]
+  allowedTables: string[],
+  onReadProgress?: (bytesDone: number, totalBytes: number) => void
 ): Promise<{
   path: string;
   keptStatements: number;
@@ -311,6 +331,9 @@ async function buildFilteredSqlForAllowedTables(
   let buffer = "";
   let keptStatements = 0;
   let ignoredStatements = 0;
+  let scannedBytes = 0;
+  const srcStat = await fs.stat(sqlFilePath);
+  const totalBytes = Math.max(1, Number(srcStat.size || 0));
   const insertedRowsByTable: Record<string, number> = {};
 
   const flushStatement = async (statement: string): Promise<void> => {
@@ -342,6 +365,8 @@ async function buildFilteredSqlForAllowedTables(
 
   try {
     for await (const line of rl) {
+      scannedBytes += Buffer.byteLength(line, "utf8") + 1;
+      onReadProgress?.(Math.min(scannedBytes, totalBytes), totalBytes);
       buffer += `${line}\n`;
       if (line.trimEnd().endsWith(";")) {
         const beforeKept = keptStatements;
@@ -377,6 +402,11 @@ export async function importSqlFilePathIntoAppDatabase(
   if (head[0] === 0x1f && head[1] === 0x8b) {
     return { ok: false, error: "gzip_not_supported" };
   }
+  options.onProgress?.({
+    percent: 5,
+    stage: "prepare",
+    message: "validating_sql_file",
+  });
   let importPath = sqlFilePath;
   let filteredTmpPath: string | null = null;
   let restoreReport = {
@@ -389,7 +419,23 @@ export async function importSqlFilePathIntoAppDatabase(
     restored_managers: 0,
   };
   if ((options.allowedTables?.length ?? 0) > 0) {
-    const filtered = await buildFilteredSqlForAllowedTables(sqlFilePath, options.allowedTables ?? []);
+    options.onProgress?.({
+      percent: 10,
+      stage: "filter",
+      message: "filtering_allowed_tables",
+    });
+    const filtered = await buildFilteredSqlForAllowedTables(
+      sqlFilePath,
+      options.allowedTables ?? [],
+      (bytesDone, totalBytes) => {
+        const ratio = totalBytes > 0 ? bytesDone / totalBytes : 0;
+        options.onProgress?.({
+          percent: clampPercent(10 + ratio * 45),
+          stage: "filter",
+          message: "filtering_allowed_tables",
+        });
+      }
+    );
     if (filtered.keptStatements === 0) {
       await fs.unlink(filtered.path).catch(() => undefined);
       return { ok: false, error: "no_allowed_tables_found_in_sql" };
@@ -406,7 +452,23 @@ export async function importSqlFilePathIntoAppDatabase(
     importPath = filtered.path;
     filteredTmpPath = filtered.path;
   }
-  const main = await pipeFileToMysql(importPath);
+  options.onProgress?.({
+    percent: 58,
+    stage: "import",
+    message: "importing_into_mysql",
+  });
+  const importSize = Math.max(1, Number((await fs.stat(importPath)).size || 0));
+  const main = await pipeFileToMysql(importPath, {
+    totalBytes: importSize,
+    onBytesProgress: (bytesDone, totalBytes) => {
+      const ratio = totalBytes > 0 ? bytesDone / totalBytes : 0;
+      options.onProgress?.({
+        percent: clampPercent(58 + ratio * 35),
+        stage: "import",
+        message: "importing_into_mysql",
+      });
+    },
+  });
   if (filteredTmpPath) {
     await fs.unlink(filteredTmpPath).catch(() => undefined);
   }
@@ -415,8 +477,18 @@ export async function importSqlFilePathIntoAppDatabase(
   }
   invalidateTableExistenceCache();
   invalidateColumnCache();
+  options.onProgress?.({
+    percent: 95,
+    stage: "post_restore",
+    message: "post_restore_sync",
+  });
   await runPostRestoreManagerSync();
   await runPostRestoreAnalyze();
+  options.onProgress?.({
+    percent: 100,
+    stage: "done",
+    message: "restore_completed",
+  });
   return { ok: true, detail: { bytes: st.size, restore_report: restoreReport } };
 }
 

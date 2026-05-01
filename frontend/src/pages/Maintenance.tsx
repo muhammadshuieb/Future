@@ -89,6 +89,33 @@ export function MaintenancePage() {
   const [deletingMany, setDeletingMany] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [restoreJob, setRestoreJob] = useState<{
+    id: string;
+    status: "running" | "success" | "failed";
+    progress_percent: number;
+    stage: string;
+    message: string | null;
+    error: string | null;
+    finished_at: string | null;
+    result: {
+      bytes: number;
+      restore_report: {
+        executed_statements: number;
+        ignored_statements: number;
+        restored_users: number;
+        restored_networks: number;
+        restored_packages: number;
+        restored_cards: number;
+        restored_managers: number;
+      };
+    } | null;
+  } | null>(null);
+  const [restoreSummary, setRestoreSummary] = useState<{
+    restored_users: number;
+    restored_cards: number;
+    restored_networks: number;
+    restored_managers: number;
+  } | null>(null);
   const [pruneYear, setPruneYear] = useState<number>(new Date().getFullYear() - 1);
   const [prunePreviewLoading, setPrunePreviewLoading] = useState(false);
   const [pruneRunning, setPruneRunning] = useState(false);
@@ -289,6 +316,79 @@ export function MaintenancePage() {
     openConfirm(t("maintenance.restoreConfirm"), () => void confirmRunSqlRestore());
   }
 
+  async function pollRestoreSqlJob(jobId: string) {
+    let done = false;
+    while (!done) {
+      const res = await apiFetch(`/api/maintenance/restore-sql/progress/${jobId}`);
+      if (!res.ok) {
+        setError(await readApiError(res));
+        setRestoring(false);
+        return;
+      }
+      const json = (await res.json()) as {
+        ok: boolean;
+        job: {
+          id: string;
+          status: "running" | "success" | "failed";
+          progress_percent: number;
+          stage: string;
+          message: string | null;
+          error: string | null;
+          finished_at: string | null;
+          result: {
+            bytes: number;
+            restore_report: {
+              executed_statements: number;
+              ignored_statements: number;
+              restored_users: number;
+              restored_networks: number;
+              restored_packages: number;
+              restored_cards: number;
+              restored_managers: number;
+            };
+          } | null;
+        };
+      };
+      setRestoreJob(json.job);
+      if (json.job.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+      done = true;
+      if (json.job.status === "success") {
+        const at = json.job.finished_at ? fmtDate(json.job.finished_at) : fmtDate(new Date().toISOString());
+        const bytes = fmtBytes(json.job.result?.bytes ?? restoreFile?.size ?? null);
+        const detail = t("maintenance.restoreSuccessDetail")
+          .replace("{db}", restoreInfo?.target_database ?? "?")
+          .replace("{at}", at)
+          .replace("{bytes}", bytes);
+        setInfo(`${t("maintenance.restoreSuccess")} ${detail}`);
+        const report = json.job.result?.restore_report;
+        if (report) {
+          setRestoreSummary({
+            restored_users: Number(report.restored_users ?? 0),
+            restored_cards: Number(report.restored_cards ?? 0),
+            restored_networks: Number(report.restored_networks ?? 0),
+            restored_managers: Number(report.restored_managers ?? 0),
+          });
+        } else {
+          setRestoreSummary(null);
+        }
+        setRestoreFile(null);
+      } else {
+        setRestoreSummary(null);
+        setError(
+          [t("maintenance.restoreFailed"), json.job.error ?? ""]
+            .filter(Boolean)
+            .join("\n")
+            .trim()
+        );
+      }
+      setRestoring(false);
+      await loadRestoreInfo();
+    }
+  }
+
   async function previewRadacctPrune() {
     setPrunePreviewLoading(true);
     setError(null);
@@ -367,6 +467,8 @@ export function MaintenancePage() {
   async function confirmRunSqlRestore() {
     if (!restoreFile) return;
     setRestoring(true);
+    setRestoreJob(null);
+    setRestoreSummary(null);
     setError(null);
     setInfo(null);
     try {
@@ -377,59 +479,52 @@ export function MaintenancePage() {
       const text = await res.text();
       let j: {
         ok?: boolean;
-        detail?: string;
-        error?: string;
-        mysql_output?: string | null;
-        target_database?: string;
-        restored_at?: string;
-        bytes?: number;
-        database?: string;
-        dma_subscriber_sync?: { usernamesConsidered: number; created: number; updated: number } | null;
-        applied_schema_extensions?: boolean;
+        accepted?: boolean;
+        job_id?: string;
+        status?: {
+          id: string;
+          status: "running" | "success" | "failed";
+          progress_percent: number;
+          stage: string;
+          message: string | null;
+          error: string | null;
+          finished_at: string | null;
+          result: {
+            bytes: number;
+            restore_report: {
+              executed_statements: number;
+              ignored_statements: number;
+              restored_users: number;
+              restored_networks: number;
+              restored_packages: number;
+              restored_cards: number;
+              restored_managers: number;
+            };
+          } | null;
+        };
       } = {};
       try {
         j = text ? (JSON.parse(text) as typeof j) : {};
       } catch {
-        if (res.status === 404 && /Cannot POST\s+\/api\/maintenance\/restore-sql/i.test(text)) {
-          setError(t("maintenance.restoreEndpoint404"));
-        } else {
-          setError(text.slice(0, 500) || res.statusText);
-        }
+        setError(text.slice(0, 500) || res.statusText);
+        setRestoring(false);
         return;
       }
       if (!res.ok) {
-        const parts = [
-          j.error === "restore_sql_failed" ? t("maintenance.restoreFailed") : j.error ?? "",
-          j.detail ?? "",
-          j.mysql_output ? `\n--- mysql ---\n${j.mysql_output}` : "",
-          j.target_database ? `\nDB: ${j.target_database}` : "",
-        ].filter(Boolean);
-        setError(parts.join("\n").trim() || (await readApiError(res)));
-        await loadRestoreInfo();
+        setError((j as { error?: string }).error ?? (await readApiError(res)));
+        setRestoring(false);
         return;
       }
-      if (j.ok) {
-        const db = j.target_database ?? j.database ?? "?";
-        const at = j.restored_at ? fmtDate(j.restored_at) : fmtDate(new Date().toISOString());
-        const bytes = fmtBytes(j.bytes ?? restoreFile.size);
-        const detail = t("maintenance.restoreSuccessDetail")
-          .replace("{db}", db)
-          .replace("{at}", at)
-          .replace("{bytes}", bytes);
-        const sync =
-          j.dma_subscriber_sync != null
-            ? `\n${t("maintenance.restoreDmaSyncSummary")
-                .replace("{n}", String(j.dma_subscriber_sync.usernamesConsidered))
-                .replace("{c}", String(j.dma_subscriber_sync.created))
-                .replace("{u}", String(j.dma_subscriber_sync.updated))}`
-            : "";
-        setInfo(`${t("maintenance.restoreSuccess")} ${detail}${sync}`);
-        setRestoreFile(null);
-        await loadRestoreInfo();
-      } else {
+      if (!j.job_id || !j.status) {
         setError(t("maintenance.restoreFailed"));
+        setRestoring(false);
+        return;
       }
-    } finally {
+      setRestoreJob(j.status);
+      setInfo(t("maintenance.restoreStartedWithProgress"));
+      await pollRestoreSqlJob(j.job_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setRestoring(false);
     }
   }
@@ -696,6 +791,37 @@ export function MaintenancePage() {
           <p className="text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">
             {t("maintenance.restoreAutoFollowup")}
           </p>
+          {restoreJob ? (
+            <div className="space-y-2 rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/20 p-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="opacity-80">{t("maintenance.restoreProgressTitle")}</span>
+                <span className="font-semibold">{Math.max(0, Math.min(100, restoreJob.progress_percent))}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+                <div
+                  className="h-full rounded-full bg-[hsl(var(--primary))] transition-all"
+                  style={{ width: `${Math.max(0, Math.min(100, restoreJob.progress_percent))}%` }}
+                />
+              </div>
+              <div className="text-xs opacity-75">
+                {restoreJob.status === "running"
+                  ? t("maintenance.restoreInProgress")
+                  : restoreJob.status === "success"
+                    ? t("maintenance.restoreProgressDone")
+                    : t("maintenance.restoreProgressFailed")}
+              </div>
+              {restoreJob.error ? <div className="text-xs text-red-300">{restoreJob.error}</div> : null}
+            </div>
+          ) : null}
+          {restoreSummary ? (
+            <div className="space-y-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+              <div className="font-semibold text-emerald-300">{t("maintenance.restoreSummaryTitle")}</div>
+              <div>{t("maintenance.restoreSummaryUsers").replace("{count}", String(restoreSummary.restored_users))}</div>
+              <div>{t("maintenance.restoreSummaryCards").replace("{count}", String(restoreSummary.restored_cards))}</div>
+              <div>{t("maintenance.restoreSummaryNas").replace("{count}", String(restoreSummary.restored_networks))}</div>
+              <div>{t("maintenance.restoreSummaryManagers").replace("{count}", String(restoreSummary.restored_managers))}</div>
+            </div>
+          ) : null}
           <Button type="button" onClick={() => void runSqlRestore()} disabled={restoring || !restoreFile}>
             <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
             {restoring ? t("common.loading") : t("maintenance.restoreRun")}
