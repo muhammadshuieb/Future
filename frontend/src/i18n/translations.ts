@@ -156,6 +156,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.add": "إضافة NAS",
     "nas.name": "الاسم",
     "nas.ip": "عنوان IP / الهوست",
+    "nas.ipHint":
+      "يجب أن يطابق عنوان المصدر الذي تراه الحزم قادمة منه نحو السيرفر (عمود nasname في FreeRADIUS)، وليس بالضرورة عنوان السيرفر. عبر WireGuard غالباً هو IP الميكروتيك على النفق (مثلاً 10.20.0.2). إن ظهر في radius.log «unknown client» فهذا الحقل خطأ أو ناقص.",
     "nas.secret": "السر (Shared Secret)",
     "nas.secretHint": "اتركه فارغاً عند التعديل إن لم ترد تغييره",
     "nas.password": "كلمة المرور (StarOS)",
@@ -177,6 +179,8 @@ export const translations: Record<Locale, Record<string, string>> = {
       "• Secret في الراوتر يجب أن يطابق السر المحفوظ هنا لنفس IP الـNAS (عمود IP في البطاقة = nasname في قاعدة FreeRADIUS).\n" +
       "• إن غيّرت AES_SECRET_KEY في .env أعد إدخال سر الـNAS من التعديل ليعاد تشفيره، ويجب أن يكون نفس المفتاح لـ api و worker.\n" +
       "• زد مهلة Timeout في MikroTik (مثلاً 3000–5000 ms) إن كان الاتصال عبر إنترنت بطيء.\n" +
+      "• WireGuard أو أي VPN: ضع هنا عنوان الميكروتيك على النفق (مصدر UDP)، وليس عنوان السيرفر. إذا كان اللوج يعرض unknown client ثم تجاهلاً للطلب، أضف NAS بهذا العنوان مع نفس Secret ثم أعد تشغيل الحاوية: docker compose restart freeradius.\n" +
+      "• تشخيص من الخادم: sudo tcpdump -ni wg0 udp port 1812 (استبدل wg0)، أو docker compose exec freeradius tail -n 80 /var/log/freeradius/radius.log\n" +
       "• حالة «أوفلاين» في لوحة المستقبل تعني غالباً فشل ping/API وليست بالضرورة فشل RADIUS — راجع النقاط أعلاه.",
     "nas.delete": "حذف NAS",
     "nas.deleteConfirm": "حذف هذا الـ NAS نهائياً من النظام وجدول FreeRADIUS؟ لا يمكن التراجع.",
@@ -1042,6 +1046,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "nas.add": "Add NAS",
     "nas.name": "Name",
     "nas.ip": "IP / hostname",
+    "nas.ipHint":
+      "Must match the packet source IP the server sees (FreeRADIUS nasname), not necessarily the RADIUS server IP. Over WireGuard this is usually the router's tunnel IP (e.g. 10.20.0.2). If radius.log shows unknown client, fix or add this NAS IP.",
     "nas.secret": "Shared secret",
     "nas.secretHint": "Leave empty when editing to keep current secret",
     "nas.password": "Password (StarOS)",
@@ -1063,6 +1069,8 @@ export const translations: Record<Locale, Record<string, string>> = {
       "• The router Secret must match the secret stored here for this NAS IP (card IP = nasname in the FreeRADIUS `nas` table).\n" +
       "• If you changed AES_SECRET_KEY in `.env`, re-save the NAS secret in the UI (same key must be set for both `api` and `worker`).\n" +
       "• Increase MikroTik Timeout (e.g. 3000–5000 ms) on slow links.\n" +
+      "• WireGuard / VPN: use the router's tunnel IP (UDP source toward the server), not the server's own address. If logs show unknown client and requests are ignored, add a NAS row for that IP with the same Secret, then: docker compose restart freeradius.\n" +
+      "• Server checks: sudo tcpdump -ni wg0 udp port 1812 (adjust interface), or docker compose exec freeradius tail -n 80 /var/log/freeradius/radius.log\n" +
       "• \"Offline\" in this app usually reflects ping/API health, not RADIUS auth — verify the items above.",
     "nas.delete": "Delete NAS",
     "nas.deleteConfirm": "Permanently remove this NAS from the app and FreeRADIUS nas table? This cannot be undone.",

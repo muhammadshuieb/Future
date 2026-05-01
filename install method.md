@@ -186,3 +186,25 @@ Installation is considered complete when:
 - `worker` is up without crash loop.
 - Frontend/UI is reachable on configured port.
 
+## 11) RADIUS + NAS (required for MikroTik auth)
+
+FreeRADIUS loads NAS clients from the MySQL table `nas`. The **`nasname`** column (shown as **IP** in the admin UI) must be the **source IP of RADIUS packets as seen by the server**, not the RADIUS server address you type in the router.
+
+- **Plain routing / LAN:** usually the MikroTik interface IP that faces the RADIUS host.
+- **WireGuard in this stack:** often the peer address (example `10.20.0.2`) while the server listens on `10.20.0.1`. If this row is missing or wrong, `/var/log/freeradius/radius.log` shows `unknown client` and the router sees **timeouts** (no Accept/Reject).
+
+After adding or changing a NAS in the DB, restart RADIUS:
+
+```bash
+docker compose restart freeradius
+```
+
+Quick verification while a PPPoE user tries to connect:
+
+```bash
+sudo tcpdump -ni wg0 udp port 1812 -c 5
+docker compose exec freeradius tail -n 40 /var/log/freeradius/radius.log
+```
+
+Use `FREERADIUS_DEBUG=1` in `.env` for verbose output, then recreate the `freeradius` service.
+

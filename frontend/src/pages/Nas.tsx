@@ -353,7 +353,13 @@ export function NasPage() {
             </div>
           ) : null}
           <TextField label={t("nas.name")} value={name} onChange={(e) => setName(e.target.value)} required />
-          <TextField label={t("nas.ip")} value={ip} onChange={(e) => setIp(e.target.value)} required />
+          <TextField
+            label={t("nas.ip")}
+            value={ip}
+            onChange={(e) => setIp(e.target.value)}
+            required
+            hint={t("nas.ipHint")}
+          />
           <TextField label={t("nas.type")} value={nasType} onChange={(e) => setNasType(e.target.value)} />
           <div className="space-y-1.5">
             <label className="block text-xs font-medium text-[hsl(var(--foreground))]/80">{t("nas.secret")}</label>

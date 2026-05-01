@@ -58,6 +58,13 @@ FreeRADIUS 3.2.x (Debian bookworm)
   - يتطلب تعريف group_attribute في كتلة sql (مضبوط في mods-available/sql.template)؛
     بدونه يفشل التحميل برسالة: Reference "${group_attribute}" not found في queries.conf.
 
+NAS IP (WireGuard / «unknown client»)
+-------------------------------------
+  عمود nasname يجب أن يطابق مصدر حزم UDP 1812 كما يراه السيرفر (وليس عنوان حقل Address في الميكروتيك).
+  مثال: سيرفر النفق 10.20.0.1 والميكروتيك 10.20.0.2 → سجّل في nas نفس السرّ مع nasname = 10.20.0.2.
+  إن ظهر في radius.log: Ignoring request ... unknown client <ip> فأضف ذلك الـ ip في جدول nas ثم:
+  docker compose restart freeradius
+
 ملاحظات
 -------
 - مصادقة المستخدمين من radcheck / radreply؛ أسرار NAS من جدول nas (read_clients = yes).
