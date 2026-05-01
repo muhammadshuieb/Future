@@ -2,7 +2,10 @@ import type { Pool } from "mysql2/promise";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { config } from "../config.js";
-import { formatRadiusExpirationUtc } from "../lib/radius-attr-format.js";
+import {
+  formatMikrotikRateLimitFromRmBytesPerSec,
+  formatRadiusExpirationUtc,
+} from "../lib/radius-attr-format.js";
 
 /** حقول الباقة المستخدمة في radreply — ليست صف RowDataPacket خام من mysql2 */
 export type PackageRow = {
@@ -237,12 +240,7 @@ export class RadiusService {
     if (!r) return null;
     const down = Number(r.downrate ?? 0);
     const up = Number(r.uprate ?? 0);
-    let mikrotik_rate_limit: string | null = null;
-    if (down > 0 || up > 0) {
-      const dm = Math.max(0, Math.round(down / 1048576));
-      const um = Math.max(0, Math.round(up / 1048576));
-      mikrotik_rate_limit = `${dm}M/${um}M`;
-    }
+    const mikrotik_rate_limit = formatMikrotikRateLimitFromRmBytesPerSec(down, up);
     const poolname = r.poolname != null ? String(r.poolname).trim() : "";
     return {
       id: String(r.srvid),

@@ -208,3 +208,9 @@ docker compose exec freeradius tail -n 40 /var/log/freeradius/radius.log
 
 Use `FREERADIUS_DEBUG=1` in `.env` for verbose output, then recreate the `freeradius` service.
 
+## 12) PPPoE speed / MikroTik queue (RADIUS reply)
+
+DMA mode maps **`rm_services.downrate` / `uprate`** (bytes per second, Radius Manager convention) into the RADIUS attribute **`Mikrotik-Rate-Limit`**. Services with **both rates zero** (e.g. template “Access list” profiles) send **no** rate attribute, so the router queue stays empty.
+
+After changing a subscriber’s package or fixing service rates in `rm_services`, **push RADIUS again** from the admin UI (subscriber “sync RADIUS” / save) or `PATCH` the subscriber so `radreply` is rebuilt. Then reconnect the PPPoE session (or disconnect) so MikroTik applies the new reply.
+
