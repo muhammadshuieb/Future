@@ -119,6 +119,10 @@ services:
       APP_UPDATE_COMPOSE_REMOVE_ORPHANS: ${APP_UPDATE_COMPOSE_REMOVE_ORPHANS:-true}
       APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT: ${APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT:-true}
       APP_UPDATE_COMPOSE_RECYCLE_SERVICES: ${APP_UPDATE_COMPOSE_RECYCLE_SERVICES:-mysql,waha}
+      # Explicit stack name so updates recycle the same containers that bind 3306/3001 (else orphan/other-project binds cause persistent conflicts).
+      APP_UPDATE_COMPOSE_PROJECT_NAME: ${APP_UPDATE_COMPOSE_PROJECT_NAME:-}
+      APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES: ${APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES:-2}
+      APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE: ${APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE:-false}
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro

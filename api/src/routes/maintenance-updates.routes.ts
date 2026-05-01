@@ -33,6 +33,13 @@ function getUpdateConfig() {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => /^[a-zA-Z0-9_-]+$/.test(s));
+  const composeProjectName = process.env.APP_UPDATE_COMPOSE_PROJECT_NAME?.trim() || "";
+  const composeRecycleMaxPasses = Math.min(
+    5,
+    Math.max(1, Number.parseInt(process.env.APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES ?? "2", 10) || 2)
+  );
+  const composeKillBeforeRecycle =
+    String(process.env.APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE ?? "false").toLowerCase() === "true";
   return {
     branch,
     remote,
@@ -51,6 +58,9 @@ function getUpdateConfig() {
     composeRemoveOrphans,
     composeRetryRecycleOnPortConflict,
     composeRecycleServices,
+    composeProjectName,
+    composeRecycleMaxPasses,
+    composeKillBeforeRecycle,
   };
 }
 
@@ -175,8 +185,10 @@ function portConflictHints(ports: string[]): string[] {
   return [
     `تعارض منافذ على المضيف (${list}). غالباً حاوية أخرى أو نسخة ثانية من نفس المشروع، أو MySQL مثبت على النظام يستخدم 3306.`,
     `Host port conflict (${list}). Another container, a second stack, or host mysqld may already bind these ports.`,
-    `التحديث يعيد المحاولة تلقائياً مرة بعد إيقاف وإزالة حاويات mysql وwaha (volumes تبقى). إن استمر الخطأ فالمنافذ محجوزة من خدمة أخرى: APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT=false لتعطيل ذلك.`,
-    `Updates retry once after compose stop+rm for mysql,waha (data volumes kept). If it still fails, another process holds the ports. Set APP_UPDATE_COMPOSE_RETRY_RECYCLE_ON_PORT_CONFLICT=false to disable.`,
+    `إن كان هناك مشروعان Compose مختلفان الاسم على نفس المضيف، عيّن APP_UPDATE_COMPOSE_PROJECT_NAME ليطابق بادئة الحاويات (مثل future-radius من future-radius_mysql_1).`,
+    `If two Compose stacks exist on the host, set APP_UPDATE_COMPOSE_PROJECT_NAME to match container prefixes (e.g. future-radius from future-radius_mysql_1).`,
+    `التحديث يعيد المحاولة بعد إيقاف/إزالة حاويات mysql وwaha (افتراضياً مرّتان مع إزالة أقوى في الثانية؛ volumes تبقى). APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES و APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE.`,
+    `Updates recycle mysql,waha then retries compose up (default 2 passes; second pass uses kill if needed). Tune APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES / APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE.`,
     `على الخادم: docker ps --format "table {{.Names}}\\t{{.Ports}}" ثم أوقف الحاوية التي تعرض 3306 أو 3001 (docker stop <name>).`,
     `On the host: docker ps --format "table {{.Names}}\\t{{.Ports}}" and docker stop the container publishing the conflicting port.`,
   ];
@@ -186,16 +198,35 @@ function composeFileArgs(cfg: ReturnType<typeof getUpdateConfig>): string[] {
   return cfg.composeFile ? ["-f", cfg.composeFile] : [];
 }
 
+/** `-p project` so recycle/up target the same stack as production (fixes duplicate dirs / COMPOSE_PROJECT_NAME drift). */
+function composeProjectArgs(cfg: ReturnType<typeof getUpdateConfig>): string[] {
+  return cfg.composeProjectName ? ["-p", cfg.composeProjectName] : [];
+}
+
+function composeLeadArgs(
+  compose: { cmd: string; baseArgs: string[] },
+  cfg: ReturnType<typeof getUpdateConfig>
+): string[] {
+  return [...compose.baseArgs, ...composeProjectArgs(cfg), ...composeFileArgs(cfg)];
+}
+
 /** Stop and remove named compose services (containers only; named volumes unchanged). */
 async function runComposeRecycle(
   compose: { cmd: string; baseArgs: string[] },
   cfg: ReturnType<typeof getUpdateConfig>,
-  services: string[]
+  services: string[],
+  opts: { aggressive?: boolean }
 ): Promise<void> {
   if (services.length === 0) return;
-  const base = [...compose.baseArgs, ...composeFileArgs(cfg)];
-  await runCommand(compose.cmd, [...base, "stop", ...services], cfg.composeDir);
-  await runCommand(compose.cmd, [...base, "rm", "-f", ...services], cfg.composeDir);
+  const base = composeLeadArgs(compose, cfg);
+  const aggressive = Boolean(opts.aggressive) || cfg.composeKillBeforeRecycle;
+  if (aggressive) {
+    await runCommand(compose.cmd, [...base, "kill", ...services], cfg.composeDir).catch(() => {});
+  }
+  await runCommand(compose.cmd, [...base, "rm", "-sf", ...services], cfg.composeDir).catch(async () => {
+    await runCommand(compose.cmd, [...base, "stop", "-t", "5", ...services], cfg.composeDir).catch(() => {});
+    await runCommand(compose.cmd, [...base, "rm", "-f", ...services], cfg.composeDir).catch(() => {});
+  });
 }
 
 async function resolveCommitDate(gitBin: string, cwd: string, commit: string): Promise<string | null> {
@@ -223,25 +254,29 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
   if (cfg.composeEnabled) {
     const compose = await resolveComposeCommand(cfg);
     const upTail = ["up", "-d", "--build", ...(cfg.composeRemoveOrphans ? (["--remove-orphans"] as const) : [])];
-    const composeUpArgs = [...compose.baseArgs, ...composeFileArgs(cfg), ...upTail];
+    const composeUpArgs = [...composeLeadArgs(compose, cfg), ...upTail];
     steps.push(`docker compose ${upTail.join(" ")}`);
-    try {
-      await runCommand(compose.cmd, composeUpArgs, cfg.composeDir);
-    } catch (firstUpErr) {
-      const msg = firstUpErr instanceof Error ? firstUpErr.message : String(firstUpErr);
-      if (
-        cfg.composeRetryRecycleOnPortConflict &&
-        isDockerPortBindConflict(msg) &&
-        cfg.composeRecycleServices.length > 0
-      ) {
-        steps.push(`compose recycle ${cfg.composeRecycleServices.join(",")} (port conflict) + retry up`);
-        await runComposeRecycle(compose, cfg, cfg.composeRecycleServices);
+    for (let pass = 0; pass <= cfg.composeRecycleMaxPasses; pass += 1) {
+      try {
         await runCommand(compose.cmd, composeUpArgs, cfg.composeDir);
-      } else {
-        throw firstUpErr;
+        break;
+      } catch (upErr) {
+        const msg = upErr instanceof Error ? upErr.message : String(upErr);
+        const canRecycle =
+          cfg.composeRetryRecycleOnPortConflict &&
+          isDockerPortBindConflict(msg) &&
+          cfg.composeRecycleServices.length > 0 &&
+          pass < cfg.composeRecycleMaxPasses;
+        if (!canRecycle) throw upErr;
+        steps.push(
+          `compose recycle ${cfg.composeRecycleServices.join(",")} (port conflict pass ${pass + 1}/${cfg.composeRecycleMaxPasses}) + retry up`
+        );
+        await runComposeRecycle(compose, cfg, cfg.composeRecycleServices, {
+          aggressive: pass > 0 || cfg.composeKillBeforeRecycle,
+        });
       }
     }
-    const psArgs = [...compose.baseArgs, ...composeFileArgs(cfg), "ps"];
+    const psArgs = [...composeLeadArgs(compose, cfg), "ps"];
     steps.push("docker compose ps");
     const ps = await runCommand(compose.cmd, psArgs, cfg.composeDir);
     composeStatus = ps.stdout;
