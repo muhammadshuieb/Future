@@ -5,6 +5,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
+    "types": ["vite/client", "vite-plugin-pwa/client"],
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,

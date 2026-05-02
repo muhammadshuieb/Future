@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="c" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="55%" stop-color="#7c3aed" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+    <linearGradient id="a" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0.15" />
+    </linearGradient>
+    <radialGradient id="g" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <circle cx="64" cy="64" r="58" fill="url(#g)" />
+  <g fill="none" stroke-linecap="round" stroke="url(#a)">
+    <path d="M28 64a36 36 0 0 1 72 0" stroke-width="6" opacity="0.9" />
+    <path d="M18 64a46 46 0 0 1 92 0" stroke-width="4" opacity="0.55" />
+    <path d="M8 64a56 56 0 0 1 112 0" stroke-width="2.5" opacity="0.3" />
+  </g>
+  <g>
+    <polygon
+      points="64,22 100,42 100,86 64,106 28,86 28,42"
+      fill="url(#c)"
+      stroke="rgba(255,255,255,0.25)"
+      stroke-width="1.5"
+    />
+    <polygon
+      points="64,30 94,46 94,82 64,98 34,82 34,46"
+      fill="none"
+      stroke="rgba(255,255,255,0.35)"
+      stroke-width="1"
+    />
+    <path
+      d="M54 48 L78 64 L54 80"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
+  <g fill="#ffffff" opacity="0.95">
+    <circle cx="64" cy="22" r="2.2" />
+    <circle cx="100" cy="42" r="2.2" />
+    <circle cx="100" cy="86" r="2.2" />
+    <circle cx="64" cy="106" r="2.2" />
+    <circle cx="28" cy="86" r="2.2" />
+    <circle cx="28" cy="42" r="2.2" />
+  </g>
+</svg>

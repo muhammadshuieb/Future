@@ -2,6 +2,21 @@
 
 This guide covers a full installation on Ubuntu server, starting from Docker installation to running all services successfully.
 
+## Before you start (terminal paste issues)
+
+> **Do not paste this whole file into the terminal.** Bash will try to run headings, bullets, and English sentences as commands. You will see errors like `command not found`, `syntax error near unexpected token '('` (from lines containing parentheses), or `This: command not found` (from words at the start of a line).
+
+These commands are meant for **Ubuntu (or Debian-based) Linux** in **Bash**—for example a VPS, bare-metal Ubuntu, or **WSL2** with the Ubuntu app. They **do not run in Windows PowerShell or CMD** (`apt`, paths like `/home/...`, and `sudo` behavior are Linux-specific).
+
+**How to copy correctly**
+
+1. Scroll to one step (for example **1) System Update**).
+2. Find the grey code box under it. Copy **only** the lines that are valid shell commands (they usually start with `sudo`, `apt`, `cd`, `docker`, `curl`, etc.).
+3. Do **not** copy: the `##` headings, numbered explanations, bullet lists, links in parentheses, or the triple-backtick lines around the box.
+4. Paste that **one** block, press Enter, wait for it to finish, then move to the next step.
+5. In [section 4](#4-clone-project), replace `<your-user>` with your real Linux username (e.g. `prince` on your server).
+6. Multi-line blocks (for example the `cat <<'EOF'` block in [section 7](#7-if-build-fails-with-ipv6docker-hub-error)) must be pasted as a **single** chunk in Bash on Linux; do not mix them with text from another section (that produces broken fragments like random words glued to a command).
+
 ## 1) System Update
 
 ```bash
