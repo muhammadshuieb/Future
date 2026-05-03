@@ -12,6 +12,7 @@ import { config } from "../config.js";
 import { invalidateTableExistenceCache } from "../db/table-exists.js";
 import { hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
 import { syncStaffUsersFromRmManagers } from "./rm-legacy-staff.service.js";
+import { ensureBillingTables } from "./billing-schema-bootstrap.service.js";
 
 /** حد أقصى ~2GB؛ يضبط عبر RESTORE_MAX_SQL_BYTES ويتوافق مع client_max_body_size في nginx */
 const MAX_BYTES = Math.min(
@@ -24,7 +25,8 @@ function mysqlBin(): string {
 }
 
 /**
- * اكتشاف مسار `sql/schema_extensions.sql` (للعرض فقط — الاستعادة لا تعيد تشغيله).
+ * اكتشاف مسار `sql/schema_extensions.sql` (للتطبيق الاختياري عبر واجهة الاستعادة عند applySchemaExtensions=true؛
+ * جداول الفوترة الحديثة تُضمن أيضاً برمجياً بعد الاستعادة عبر ensureBillingTables).
  */
 export function resolveSchemaExtensionsPath(): string | null {
   const fromEnv = process.env.FUTURERADIUS_SQL_DIR?.trim();
@@ -477,6 +479,11 @@ export async function importSqlFilePathIntoAppDatabase(
   }
   invalidateTableExistenceCache();
   invalidateColumnCache();
+  try {
+    await ensureBillingTables();
+  } catch (e) {
+    console.error("[sql-restore] ensureBillingTables failed", e);
+  }
   options.onProgress?.({
     percent: 95,
     stage: "post_restore",

@@ -44,6 +44,7 @@ import {
   logRadiusManagerUserCount,
 } from "./services/portal-schema-bootstrap.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
+import { ensureBillingTables } from "./services/billing-schema-bootstrap.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
 import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
 import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
@@ -187,6 +188,11 @@ async function start() {
     );
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);
+  }
+  try {
+    await ensureBillingTables();
+  } catch (error) {
+    console.error("[bootstrap] billing schema ensure failed", error);
   }
   try {
     await logRadiusManagerUserCount();

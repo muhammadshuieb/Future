@@ -31,6 +31,7 @@ import { listenEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
+import { ensureBillingTables } from "../services/billing-schema-bootstrap.service.js";
 
 const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 const publisher = connection.duplicate();
@@ -222,6 +223,11 @@ async function bootstrapRepeatables() {
 
 async function main() {
   await waitForDbReady();
+  try {
+    await ensureBillingTables();
+  } catch (error) {
+    console.error("[worker] billing schema ensure failed", error);
+  }
   markDbReady();
   log.info("worker boot", {}, "bootstrap");
   await connection.set(workerHeartbeatKey, new Date().toISOString());

@@ -64,6 +64,9 @@ export function formatStaffApiError(status: number, raw: string, t: (key: string
   if (status === 401) return t("api.error_401");
   if (status === 403) return t("api.error_403");
   const low = raw.toLowerCase();
+  if (low.includes("billing_tables_missing") || low.includes("invoices_table_missing")) {
+    return t("api.error_billing_tables");
+  }
   if (
     status >= 500 ||
     low.includes("db_error") ||
