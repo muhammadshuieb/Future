@@ -200,6 +200,8 @@ services:
       PMA_AUTH_TYPE: cookie
       PMA_ALLOW_NO_PASSWORD: "0"
       UPLOAD_LIMIT: 512M
+    volumes:
+      - ./docker/phpmyadmin/config.user.inc.php:/etc/phpmyadmin/config.user.inc.php:ro
     depends_on:
       mysql:
         condition: service_healthy
