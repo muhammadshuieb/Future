@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Columns3 } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { useI18n } from "../../context/LocaleContext";
 
 export type ColumnOption = {
   key: string;
@@ -79,6 +80,7 @@ export function ColumnVisibilityMenu(props: {
   onShowAll: () => void;
   onResetDefault: () => void;
 }) {
+  const { t } = useI18n();
   const { title, columns, visibleKeys, onToggle, onShowAll, onResetDefault } = props;
 
   return (
@@ -117,14 +119,14 @@ export function ColumnVisibilityMenu(props: {
             className="rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs hover:bg-[hsl(var(--muted))]/40"
             onClick={onShowAll}
           >
-            إظهار الكل
+            {t("table.showAllColumns")}
           </button>
           <button
             type="button"
             className="rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs hover:bg-[hsl(var(--muted))]/40"
             onClick={onResetDefault}
           >
-            افتراضي
+            {t("table.resetColumnsDefault")}
           </button>
         </div>
       </div>

@@ -7,24 +7,37 @@ type EnsureDefaultAdminOptions = {
   overwritePassword?: boolean;
 };
 
+function envTruthy(v: string | undefined): boolean {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes";
+}
+
 export async function ensureDefaultAdminUser(
   options: EnsureDefaultAdminOptions = {}
 ): Promise<{ status: "created" | "updated" | "skipped"; email: string }> {
-  const overwritePassword = options.overwritePassword === true;
+  const resetViaEnv = envTruthy(process.env.RM_ROOT_PASSWORD_RESET);
+  const overwritePassword = options.overwritePassword === true || resetViaEnv;
   /** Default panel login when `rm_managers` exists (Radius Manager / DMA): MD5 in DB, plaintext here only at bootstrap. */
   const name = "root";
   const email = "";
-  const password = "muhammadshuieb";
+  const password =
+    process.env.RM_BOOTSTRAP_ROOT_PLAINTEXT?.trim() || "muhammadshuieb";
 
   const rmManagersExists = await hasTable(pool, "rm_managers");
   if (rmManagersExists) {
     const rmCols = await getTableColumns(pool, "rm_managers");
     const md5 = createHash("md5").update(password, "utf8").digest("hex");
     const [existingRm] = await pool.query<RowDataPacket[]>(
-      `SELECT managername FROM rm_managers WHERE managername = ? LIMIT 1`,
+      `SELECT managername, password FROM rm_managers WHERE managername = ? LIMIT 1`,
       [name]
     );
     if (existingRm[0]) {
+      const pwd = String((existingRm[0] as RowDataPacket).password ?? "").trim();
+      if (!/^[a-f0-9]{32}$/i.test(pwd)) {
+        console.warn(
+          "[bootstrap] rm_managers.root password is not a 32-char MD5 hex; panel login will fail until fixed. Set RM_ROOT_PASSWORD_RESET=1 (and optional RM_BOOTSTRAP_ROOT_PLAINTEXT) then restart the API, or set password to MD5(plaintext) in MySQL."
+        );
+      }
       if (overwritePassword) {
         await pool.execute(
           `UPDATE rm_managers

@@ -1,6 +1,5 @@
 import { pool } from "../db/pool.js";
-import { config } from "../config.js";
-import { hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
+import { invalidateColumnCache } from "../db/schemaGuards.js";
 
 /** Idempotent DDL — keep in sync with `sql/schema_extensions.sql` (invoices / payments). */
 const INVOICES_DDL = `
@@ -39,15 +38,12 @@ CREATE TABLE IF NOT EXISTS \`payments\` (
 `.trim();
 
 /**
- * Ensures modern invoices / payments tables exist after a Radius/DMA restore (which omits them).
- * Skipped in pure DMA without a subscribers table (hybrid billing unused).
+ * Ensures modern `invoices` / `payments` tables exist after a Radius/DMA restore (which omits them).
+ * Always runs in DMA too — package invoice + payment from `/users` need these tables even when only `rm_users` exists.
  * Set SKIP_BILLING_SCHEMA_BOOTSTRAP=1 to disable.
  */
 export async function ensureBillingTables(): Promise<void> {
   if (String(process.env.SKIP_BILLING_SCHEMA_BOOTSTRAP ?? "").trim() === "1") {
-    return;
-  }
-  if (config.dmaMode && !(await hasTable(pool, "subscribers"))) {
     return;
   }
   const conn = await pool.getConnection();

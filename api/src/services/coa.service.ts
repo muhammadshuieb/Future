@@ -134,7 +134,25 @@ export class CoaService {
         message: `No RADIUS secret for NAS ${nasIp}`,
       };
     }
-    return this.disconnectUser(username, host, secret, acctSessionId, framedIp, port);
+    const coa = await this.disconnectUser(username, host, secret, acctSessionId, framedIp, port);
+    if (coa.ok || !config.coaMikrotikFallback) {
+      return coa;
+    }
+    const mk = await mikrotikKickUsername({ pool: this.pool, tenantId, nasIp, username });
+    if (mk.ok) {
+      return {
+        host,
+        port,
+        ok: true,
+        message: `coa_failed_udp_then_mikrotik_ok: ${coa.message} → ${mk.message}`,
+      };
+    }
+    return {
+      host,
+      port,
+      ok: false,
+      message: `${coa.message}; mikrotik_fallback=${mk.message}`,
+    };
   }
 
   /**

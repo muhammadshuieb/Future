@@ -23,10 +23,22 @@ export function LoginPage() {
     setErr("");
     setLoading(true);
     try {
-      await login(email, password);
-      nav("/");
+      const result = await login(email, password);
+      if (result.ok) {
+        nav("/");
+        return;
+      }
+      const { status, detail } = result;
+      const low = detail.toLowerCase();
+      if (status === 429 || low.includes("rate_limited")) {
+        setErr(t("login.error_rate_limited"));
+      } else if (status === 401 || low.includes("invalid_credentials")) {
+        setErr(t("login.error"));
+      } else {
+        setErr(`${t("login.error_server")} (HTTP ${status})`);
+      }
     } catch {
-      setErr(t("login.error"));
+      setErr(t("login.error_network"));
     } finally {
       setLoading(false);
     }
@@ -93,8 +105,8 @@ export function LoginPage() {
                 value={locale}
                 onChange={(e) => setLocale(e.target.value as "ar" | "en")}
               >
-                <option value="ar">العربية</option>
-                <option value="en">English</option>
+                <option value="ar">{t("locale.optionAr")}</option>
+                <option value="en">{t("locale.optionEn")}</option>
               </select>
             </div>
             {err ? (

@@ -10,4 +10,6 @@ export const loginRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "rate_limited" },
+  // Do not throw if a proxy adds X-Forwarded-For before Express trust proxy runs (defense in depth).
+  validate: { xForwardedForHeader: false },
 });

@@ -23,8 +23,8 @@ function guardSqlArg(first: unknown): void {
 const rawPool = mysql.createPool({
   ...config.db,
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+  connectionLimit: config.dbPoolConnectionLimit,
+  queueLimit: config.dbPoolQueueLimit,
   namedPlaceholders: true,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,

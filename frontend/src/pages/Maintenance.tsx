@@ -422,11 +422,11 @@ export function MaintenancePage() {
 
   async function runRadacctPrune() {
     if (!prunePreview) {
-      setError("اعمل معاينة أولاً قبل التنفيذ.");
+      setError(t("maintenance.radacctPrune.previewFirst"));
       return;
     }
     openConfirm(
-      `سيتم حذف جلسات سنة ${prunePreview.year} من radacct و rm_radacct فقط. لا يتم تعديل جداول البطاقات أو المشتركين. هل تريد المتابعة؟`,
+      t("maintenance.radacctPrune.confirmBody").replace("{year}", String(prunePreview.year)),
       () => {
         void confirmRunRadacctPrune();
       },
@@ -456,7 +456,10 @@ export function MaintenancePage() {
         };
       };
       setInfo(
-        `تم حذف جلسات السنة ${j.deleted.year}: radacct=${j.deleted.radacct_rows}, rm_radacct=${j.deleted.rm_radacct_rows}.`
+        t("maintenance.radacctPrune.doneInfo")
+          .replace("{year}", String(j.deleted.year))
+          .replace("{radacct_rows}", String(j.deleted.radacct_rows))
+          .replace("{rm_radacct_rows}", String(j.deleted.rm_radacct_rows))
       );
       await previewRadacctPrune();
     } finally {
@@ -831,13 +834,11 @@ export function MaintenancePage() {
 
       {user?.role === "admin" ? (
         <Card className="space-y-4 border-red-500/30">
-          <div className="font-semibold text-red-200">تنظيف جلسات المحاسبة حسب السنة (آمن)</div>
-          <p className="text-sm opacity-80">
-            هذه العملية تحذف فقط من <code>radacct</code> و <code>rm_radacct</code> حسب السنة المحددة. لا تمس جداول البطاقات أو المشتركين.
-          </p>
+          <div className="font-semibold text-red-200">{t("maintenance.radacctPrune.title")}</div>
+          <p className="text-sm opacity-80">{t("maintenance.radacctPrune.description")}</p>
           <div className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="mb-1 block text-xs opacity-80">السنة</label>
+              <label className="mb-1 block text-xs opacity-80">{t("maintenance.radacctPrune.yearLabel")}</label>
               <input
                 type="number"
                 min={2000}
@@ -848,19 +849,30 @@ export function MaintenancePage() {
               />
             </div>
             <Button type="button" variant="outline" onClick={() => void previewRadacctPrune()} disabled={prunePreviewLoading}>
-              {prunePreviewLoading ? t("common.loading") : "معاينة قبل الحذف"}
+              {prunePreviewLoading ? t("common.loading") : t("maintenance.radacctPrune.previewButton")}
             </Button>
             <Button type="button" onClick={() => void runRadacctPrune()} disabled={pruneRunning || !prunePreview}>
-              {pruneRunning ? t("common.loading") : "تنفيذ الحذف للسنة"}
+              {pruneRunning ? t("common.loading") : t("maintenance.radacctPrune.runButton")}
             </Button>
           </div>
           {prunePreview ? (
             <div className="rounded-xl border border-[hsl(var(--border))]/60 bg-[hsl(var(--muted))]/20 p-3 text-sm">
-              <div>النطاق: {prunePreview.from} → {prunePreview.to_exclusive}</div>
-              <div>صفوف `radacct` المرشحة: {prunePreview.radacct_rows}</div>
-              <div>صفوف `rm_radacct` المرشحة: {prunePreview.rm_radacct_rows}</div>
-              <div>عدد مستخدمي `radacct` المتأثرين: {prunePreview.radacct_distinct_users}</div>
-              <div>عدد مستخدمي `rm_radacct` المتأثرين: {prunePreview.rm_radacct_distinct_users}</div>
+              <div>
+                {t("maintenance.radacctPrune.range")
+                  .replace("{from}", prunePreview.from)
+                  .replace("{to}", prunePreview.to_exclusive)}
+              </div>
+              <div>{t("maintenance.radacctPrune.radacctRows").replace("{count}", String(prunePreview.radacct_rows))}</div>
+              <div>{t("maintenance.radacctPrune.rmRadacctRows").replace("{count}", String(prunePreview.rm_radacct_rows))}</div>
+              <div>
+                {t("maintenance.radacctPrune.radacctUsers").replace("{count}", String(prunePreview.radacct_distinct_users))}
+              </div>
+              <div>
+                {t("maintenance.radacctPrune.rmRadacctUsers").replace(
+                  "{count}",
+                  String(prunePreview.rm_radacct_distinct_users)
+                )}
+              </div>
             </div>
           ) : null}
         </Card>

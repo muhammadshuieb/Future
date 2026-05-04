@@ -1,13 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleDollarSign, Clock3, ReceiptText, Wallet } from "lucide-react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
+import { Button } from "../components/ui/Button";
+import { TextField } from "../components/ui/TextField";
+import { ActionDialog } from "../components/ui/ActionDialog";
 import { useFinancePeriod } from "../context/FinancePeriodContext";
 import { getFinancePeriodMonths, inFinancePeriod } from "../lib/finance-period";
 import { FinancePeriodFilter } from "../components/finance/FinancePeriodFilter";
+import { BillingDashboard } from "../components/BillingDashboard";
+import { useI18n } from "../context/LocaleContext";
+import { useAuth } from "../context/AuthContext";
+import { cn } from "../lib/utils";
 
 type InvoiceRow = {
   id?: string | number;
+  subscriber_id?: string | null;
   invoice_no?: string;
   status?: string;
   amount?: number | string;
@@ -32,19 +40,34 @@ function formatMoney(value: number, currency?: string) {
   return `${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency ?? ""}`.trim();
 }
 
+function canWriteFinance(role: string | undefined) {
+  return role === "admin" || role === "manager" || role === "accountant";
+}
+
 export function BillingPage() {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  const financeWrite = canWriteFinance(user?.role);
   const { period } = useFinancePeriod();
   const periodMonthSet = useMemo(() => new Set(getFinancePeriodMonths(period)), [period]);
   const [inv, setInv] = useState<InvoiceRow[]>([]);
   const [pay, setPay] = useState<PaymentRow[]>([]);
+  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [packageRef, setPackageRef] = useState("");
+  const [packageConfirmOpen, setPackageConfirmOpen] = useState(false);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
+  const packagePayPendingRef = useRef("");
+
+  const reload = useCallback(async () => {
+    const [a, b] = await Promise.all([apiFetch("/api/invoices/"), apiFetch("/api/payments/")]);
+    if (a.ok) setInv(((await a.json()) as { items?: InvoiceRow[] }).items ?? []);
+    if (b.ok) setPay(((await b.json()) as { items?: PaymentRow[] }).items ?? []);
+  }, []);
 
   useEffect(() => {
-    void (async () => {
-      const [a, b] = await Promise.all([apiFetch("/api/invoices/"), apiFetch("/api/payments/")]);
-      if (a.ok) setInv(((await a.json()) as { items?: InvoiceRow[] }).items ?? []);
-      if (b.ok) setPay(((await b.json()) as { items?: PaymentRow[] }).items ?? []);
-    })();
-  }, []);
+    void reload();
+  }, [reload]);
 
   const invoices = useMemo(
     () =>
@@ -74,33 +97,123 @@ export function BillingPage() {
     return `${base} bg-amber-500/10 text-amber-600`;
   }
 
+  function openPackageConfirm() {
+    const id = packageRef.trim();
+    if (!id) {
+      setMsg({ type: "err", text: t("common.required") });
+      return;
+    }
+    packagePayPendingRef.current = id;
+    setPackageConfirmOpen(true);
+  }
+
+  async function confirmPackagePayment() {
+    const subId = packagePayPendingRef.current.trim();
+    setPackageConfirmOpen(false);
+    if (!subId || !financeWrite) return;
+    setPackageLoading(true);
+    setMsg(null);
+    try {
+      const enc = encodeURIComponent(subId);
+      const r = await apiFetch(`/api/subscribers/${enc}/record-package-payment`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setMsg({ type: "err", text: formatStaffApiError(r.status, raw, t) });
+        return;
+      }
+      setMsg({ type: "ok", text: t("users.packagePaid") });
+      await reload();
+    } finally {
+      setPackageLoading(false);
+    }
+  }
+
+  async function onPayInvoice(invoiceId: string) {
+    if (!financeWrite) return;
+    setPayingInvoiceId(invoiceId);
+    setMsg(null);
+    try {
+      const res = await apiFetch(`/api/invoices/${invoiceId}/mark-paid`, {
+        method: "POST",
+        body: JSON.stringify({ payment_method: "manual" }),
+      });
+      if (!res.ok) {
+        const raw = await readApiError(res);
+        setMsg({ type: "err", text: formatStaffApiError(res.status, raw, t) });
+        return;
+      }
+      setMsg({ type: "ok", text: t("profile.invoicePaid") });
+      await reload();
+    } finally {
+      setPayingInvoiceId(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Billing</h1>
-        <p className="text-sm opacity-70">Professional invoice and payment tracking for daily finance operations.</p>
+        <h1 className="text-2xl font-bold">{t("billing.title")}</h1>
+        <p className="text-sm opacity-70">{t("billing.subtitle")}</p>
       </div>
 
+      {msg ? (
+        <div
+          className={cn(
+            "rounded-xl border px-3 py-2 text-sm",
+            msg.type === "ok"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
+              : "border-red-500/40 bg-red-500/10 text-red-800 dark:text-red-200"
+          )}
+        >
+          {msg.text}
+        </div>
+      ) : null}
+
       <FinancePeriodFilter />
+
+      <BillingDashboard />
+
+      {financeWrite ? (
+        <Card className="space-y-3 p-4">
+          <h2 className="font-semibold">{t("billing.packageSection")}</h2>
+          <p className="text-sm opacity-70">{t("billing.packagePayHint")}</p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="min-w-0 flex-1">
+              <TextField
+                label={t("billing.subscriberRef")}
+                placeholder={t("billing.subscriberRefPlaceholder")}
+                value={packageRef}
+                onChange={(e) => setPackageRef(e.target.value)}
+              />
+            </div>
+            <Button type="button" onClick={openPackageConfirm} disabled={packageLoading}>
+              {packageLoading ? t("common.loading") : t("users.payPackage")}
+            </Button>
+          </div>
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card variant="solid" className="p-4">
           <div className="mb-2 flex items-center justify-between text-xs uppercase opacity-60">
-            <span>Total Invoiced</span>
+            <span>{t("billing.totalInvoiced")}</span>
             <ReceiptText className="h-4 w-4 text-blue-500" />
           </div>
           <div className="text-2xl font-bold">{formatMoney(totalInvoiced)}</div>
         </Card>
         <Card variant="solid" className="p-4">
           <div className="mb-2 flex items-center justify-between text-xs uppercase opacity-60">
-            <span>Total Paid</span>
+            <span>{t("billing.totalPaid")}</span>
             <Wallet className="h-4 w-4 text-emerald-500" />
           </div>
           <div className="text-2xl font-bold">{formatMoney(totalPaid)}</div>
         </Card>
         <Card variant="solid" className="p-4">
           <div className="mb-2 flex items-center justify-between text-xs uppercase opacity-60">
-            <span>Pending Invoices</span>
+            <span>{t("billing.pendingInvoices")}</span>
             <Clock3 className="h-4 w-4 text-amber-500" />
           </div>
           <div className="text-2xl font-bold">{pendingCount.toLocaleString()}</div>
@@ -109,35 +222,61 @@ export function BillingPage() {
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Card className="space-y-3">
-          <h2 className="font-semibold">Invoices in selected period</h2>
+          <h2 className="font-semibold">{t("billing.invoicesInPeriod")}</h2>
           <div className="max-h-[430px] overflow-auto">
             <ul className="space-y-2 text-sm">
-              {invoices.map((i) => (
-                <li key={String(i.id ?? i.invoice_no)} className="flex items-center justify-between rounded-xl border border-[hsl(var(--border))]/50 px-3 py-2">
-                  <div>
-                    <div className="font-medium">{String(i.invoice_no ?? "—")}</div>
-                    <div className="mt-1">
-                      <span className={statusBadge(i.status)}>{String(i.status ?? "pending")}</span>
+              {invoices.map((i) => {
+                const idStr = i.id != null ? String(i.id) : "";
+                const unpaid = String(i.status ?? "").toLowerCase() !== "paid";
+                return (
+                  <li
+                    key={idStr || String(i.invoice_no)}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[hsl(var(--border))]/50 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">{String(i.invoice_no ?? "—")}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span className={statusBadge(i.status)}>{String(i.status ?? "pending")}</span>
+                        {i.subscriber_id ? (
+                          <span className="text-xs opacity-60">
+                            {String(i.subscriber_id)}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right font-semibold">
-                    <span className="inline-flex items-center gap-1">
-                      <CircleDollarSign className="h-4 w-4 opacity-60" />
-                      {formatMoney(asAmount(i.amount), i.currency)}
-                    </span>
-                  </div>
-                </li>
-              ))}
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="inline-flex items-center gap-1 font-semibold">
+                        <CircleDollarSign className="h-4 w-4 opacity-60" />
+                        {formatMoney(asAmount(i.amount), i.currency)}
+                      </span>
+                      {financeWrite && unpaid && idStr ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="whitespace-nowrap px-2 py-1 text-xs"
+                          onClick={() => void onPayInvoice(idStr)}
+                          disabled={payingInvoiceId === idStr}
+                        >
+                          {payingInvoiceId === idStr ? t("common.loading") : t("profile.payInvoice")}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </Card>
 
         <Card className="space-y-3">
-          <h2 className="font-semibold">Payments in selected period</h2>
+          <h2 className="font-semibold">{t("billing.paymentsInPeriod")}</h2>
           <div className="max-h-[430px] overflow-auto">
             <ul className="space-y-2 text-sm">
               {payments.map((p) => (
-                <li key={String(p.id ?? `${p.invoice_no}-${p.paid_at}`)} className="flex items-center justify-between rounded-xl border border-[hsl(var(--border))]/50 px-3 py-2">
+                <li
+                  key={String(p.id ?? `${p.invoice_no}-${p.paid_at}`)}
+                  className="flex items-center justify-between rounded-xl border border-[hsl(var(--border))]/50 px-3 py-2"
+                >
                   <div>
                     <div className="font-medium">{String(p.invoice_no ?? "—")}</div>
                     <div className="mt-1 inline-flex items-center gap-1 text-xs opacity-70">
@@ -145,13 +284,25 @@ export function BillingPage() {
                       {String(p.paid_at ?? "—")}
                     </div>
                   </div>
-                  <div className="text-right font-semibold">{formatMoney(asAmount(p.amount), p.currency)}</div>
+                  <div className="text-end font-semibold">{formatMoney(asAmount(p.amount), p.currency)}</div>
                 </li>
               ))}
             </ul>
           </div>
         </Card>
       </div>
+
+      <ActionDialog
+        open={packageConfirmOpen}
+        title={t("users.payPackage")}
+        message={t("users.payPackageConfirm")}
+        confirmLabel={t("common.confirm")}
+        cancelLabel={t("common.cancel")}
+        onClose={() => setPackageConfirmOpen(false)}
+        onConfirm={() => {
+          void confirmPackagePayment();
+        }}
+      />
     </div>
   );
 }

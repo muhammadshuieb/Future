@@ -655,7 +655,7 @@ export function PrepaidCardsListPage() {
             {t("users.clearSelection")}
           </Button>
           <ColumnVisibilityMenu
-            title="الأعمدة"
+            title={t("table.columns")}
             columns={prepaidColumns}
             visibleKeys={prepaidColumnVisibility.visibleKeys}
             onToggle={prepaidColumnVisibility.toggle}

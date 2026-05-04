@@ -32,6 +32,7 @@ import { Events } from "../events/eventTypes.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import { ensureBillingTables } from "../services/billing-schema-bootstrap.service.js";
+import { syncMikrotikSessionsFromNasTable } from "../services/mikrotik-ros-sync.service.js";
 
 const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 const publisher = connection.duplicate();
@@ -203,7 +204,12 @@ async function bootstrapRepeatables() {
       console.warn("repeat cron job", name, e);
     }
   };
-  await add("update-usage", updateUsageEvery);
+  if (String(process.env.SKIP_BULLMQ_UPDATE_USAGE ?? "").trim() !== "1") {
+    await add("update-usage", updateUsageEvery);
+  } else {
+    await replaceRepeatablesByName("update-usage");
+    console.warn("[worker] SKIP_BULLMQ_UPDATE_USAGE=1 — update-usage removed from queue (run usage-standalone worker)");
+  }
   await add("nas-health", everyMin);
   await add("generate-invoices", everyDay);
   await replaceRepeatablesByName("daily-backup");
@@ -230,6 +236,18 @@ async function main() {
   }
   markDbReady();
   log.info("worker boot", {}, "bootstrap");
+
+  const mikrotikSyncMs = Math.max(0, parseInt(process.env.MIKROTIK_API_SYNC_MS ?? "0", 10) || 0);
+  if (mikrotikSyncMs >= 60_000) {
+    const tick = () => {
+      syncMikrotikSessionsFromNasTable(pool).catch((err) => {
+        log.warn(`mikrotik_sync_tick_failed ${String((err as Error)?.message ?? err)}`, {}, "mikrotik-sync");
+      });
+    };
+    tick();
+    setInterval(tick, mikrotikSyncMs).unref();
+  }
+
   await connection.set(workerHeartbeatKey, new Date().toISOString());
   setInterval(() => {
     connection.set(workerHeartbeatKey, new Date().toISOString()).catch(() => {});

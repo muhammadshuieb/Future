@@ -1,5 +1,5 @@
 import { Router } from "express";
-import jwt from "jsonwebtoken";
+import jwt, { type SignOptions } from "jsonwebtoken";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
@@ -8,7 +8,11 @@ import { requireAuth } from "../middleware/auth.js";
 import { parseManagerPermissions, parsePermissionsObject } from "../lib/manager-permissions.js";
 import type { RowDataPacket } from "mysql2";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
-import { tryLoginViaRmManagers } from "../services/rm-legacy-staff.service.js";
+import {
+  syncStaffUsersFromRmManagers,
+  tryLoginViaRmManagers,
+  tryLoginViaStaffUsers,
+} from "../services/rm-legacy-staff.service.js";
 
 const router = Router();
 
@@ -24,12 +28,19 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     return;
   }
   const { email, password } = parsed.data;
-  // `email` field is treated as login identifier (managername) for backward compatibility with frontend payload.
-  let row = (await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password)) ?? undefined;
+  // `email` field is treated as login identifier (managername or email) for backward compatibility with frontend payload.
+  let row =
+    (await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password)) ??
+    (await tryLoginViaStaffUsers(pool, config.defaultTenantId, email, password)) ??
+    undefined;
   if (!row?.active) {
     res.status(401).json({ error: "invalid_credentials" });
     return;
   }
+  // Legacy compatibility: after first successful manager login, hydrate staff_users when table exists.
+  void syncStaffUsersFromRmManagers(pool, config.defaultTenantId).catch((error) => {
+    console.warn("[auth] rm_managers -> staff_users sync skipped", error);
+  });
   let roleTemplate: Record<string, boolean> = {};
   try {
     const [rolePermRows] = await pool.query<RowDataPacket[]>(
@@ -50,16 +61,24 @@ router.post("/login", loginRateLimiter, async (req, res) => {
   const userOverrides = parsePermissionsObject(row.permissions_json);
   const mergedPermissions = parseManagerPermissions({ ...roleTemplate, ...userOverrides });
 
+  const managerLabel = row.name != null ? String(row.name).trim() : "";
+  const rawEmail = String(row.email ?? "").trim();
+  // DMA managers often have no email; JWT + frontend require a non-empty stable "login email" claim.
+  const loginEmail =
+    rawEmail || (managerLabel ? `${managerLabel}@radius.local` : "root@radius.local");
+
   const payload: JwtPayload = {
     sub: row.id as string,
     name: row.name != null ? String(row.name) : undefined,
-    email: row.email as string,
+    email: loginEmail,
     role: row.role as Role,
     tenantId: row.tenant_id as string,
     permissions: mergedPermissions,
     walletBalance: Number(row.wallet_balance ?? 0),
   };
-  const token = jwt.sign(payload, config.jwtSecret, { expiresIn: "12h" });
+  const token = jwt.sign(payload, config.jwtSecret, {
+    expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"],
+  });
   res.json({
     token,
     user: {

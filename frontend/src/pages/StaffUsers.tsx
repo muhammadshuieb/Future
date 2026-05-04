@@ -346,7 +346,7 @@ export function StaffUsersPage() {
             {t("staff.add")}
           </Button>
           <ColumnVisibilityMenu
-            title="الأعمدة"
+            title={t("table.columns")}
             columns={staffColumns}
             visibleKeys={staffColumnVisibility.visibleKeys}
             onToggle={staffColumnVisibility.toggle}

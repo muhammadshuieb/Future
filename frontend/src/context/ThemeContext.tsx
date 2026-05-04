@@ -6,14 +6,22 @@ const ThemeCtx = createContext<{ theme: Theme; toggle: () => void } | null>(null
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
-    const s = localStorage.getItem("fr_theme") as Theme | null;
-    if (s === "dark" || s === "light") return s;
+    try {
+      const s = localStorage.getItem("fr_theme") as Theme | null;
+      if (s === "dark" || s === "light") return s;
+    } catch {
+      /* private mode / blocked storage */
+    }
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
-    localStorage.setItem("fr_theme", theme);
+    try {
+      localStorage.setItem("fr_theme", theme);
+    } catch {
+      /* ignore */
+    }
   }, [theme]);
 
   return (

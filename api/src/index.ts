@@ -4,7 +4,7 @@ import { installLogger, log, markDbReady } from "./services/logger.service.js";
 
 installLogger({ source: "api" });
 
-import cors from "cors";
+import cors, { type CorsOptions } from "cors";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import { WebSocketServer, WebSocket as WsClient } from "ws";
@@ -38,6 +38,7 @@ import systemSettingsRoutes from "./routes/system-settings.routes.js";
 import wireguardRoutes from "./routes/wireguard.routes.js";
 import regionsRoutes from "./routes/regions.routes.js";
 import rmCardsRoutes from "./routes/rm-cards.routes.js";
+import billingStatsRoutes from "./routes/billing-stats.routes.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import {
   ensurePortalTenantAndStaffTables,
@@ -52,14 +53,36 @@ import { logDmaSchemaSnapshot } from "./services/dma-schema-snapshot.service.js"
 import { DmaForbiddenHybridSqlError } from "./dma/dma-sql-guard.js";
 
 const app = express();
+// nginx (web / api-proxy) sets X-Forwarded-*; required or express-rate-limit throws on /login.
+app.set("trust proxy", process.env.TRUST_PROXY === "0" ? false : 1);
 app.use(helmet());
-app.use(
-  cors(
-    config.corsOrigins === "all"
-      ? { origin: true, credentials: true }
-      : { origin: config.corsOrigins, credentials: true }
-  )
-);
+
+function corsOptions(): CorsOptions {
+  if (config.corsOrigins === "all") {
+    return { origin: true, credentials: true };
+  }
+  const allowed = config.corsOrigins;
+  return {
+    credentials: true,
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, config.nodeEnv !== "production");
+        return;
+      }
+      if (allowed.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      if (config.nodeEnv !== "production") {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("CORS not allowed"));
+    },
+  };
+}
+
+app.use(cors(corsOptions()));
 app.use(express.json({ limit: "4mb" }));
 
 app.get("/", (_req, res) => {
@@ -101,6 +124,7 @@ app.use("/api/system-settings", systemSettingsRoutes);
 app.use("/api/wireguard", wireguardRoutes);
 app.use("/api/regions", regionsRoutes);
 app.use("/api/rm-cards", rmCardsRoutes);
+app.use("/api/billing", billingStatsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
 // Must be declared AFTER all routes.

@@ -110,6 +110,21 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
          AND expiration IS NOT NULL
          AND expiration < NOW()`
     );
+    // Accounts disabled in RM (enableuser=0) must not keep stale RADIUS rows or they could still authenticate.
+    if (await hasTable(pool, "radcheck")) {
+      await pool.query(
+        `DELETE rc FROM radcheck rc
+         INNER JOIN rm_users u ON u.username = rc.username
+         WHERE COALESCE(u.enableuser, 0) = 0`
+      );
+    }
+    if (await hasTable(pool, "radreply")) {
+      await pool.query(
+        `DELETE rr FROM radreply rr
+         INNER JOIN rm_users u ON u.username = rr.username
+         WHERE COALESCE(u.enableuser, 0) = 0`
+      );
+    }
     const [expiredCountRows] = await pool.query<RowDataPacket[]>(
       `SELECT COUNT(*) AS c
        FROM rm_users
@@ -261,6 +276,32 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     }
   }
 
+  // Strip RADIUS credentials for disabled or already-expired portal subscribers (covers DB edits outside the API).
+  if (await hasTable(pool, "radcheck")) {
+    await pool.query(
+      `DELETE rc FROM radcheck rc
+       INNER JOIN subscribers s ON s.username = rc.username
+       WHERE s.tenant_id = ?
+         AND (
+           LOWER(TRIM(COALESCE(s.status, ''))) <> 'active'
+           OR (s.expiration_date IS NOT NULL AND s.expiration_date < NOW())
+         )`,
+      [tenantId]
+    );
+  }
+  if (await hasTable(pool, "radreply")) {
+    await pool.query(
+      `DELETE rr FROM radreply rr
+       INNER JOIN subscribers s ON s.username = rr.username
+       WHERE s.tenant_id = ?
+         AND (
+           LOWER(TRIM(COALESCE(s.status, ''))) <> 'active'
+           OR (s.expiration_date IS NOT NULL AND s.expiration_date < NOW())
+         )`,
+      [tenantId]
+    );
+  }
+
   const [due] = await pool.query<RowDataPacket[]>(
     `SELECT id, username FROM subscribers
      WHERE tenant_id = ? AND status = 'active' AND expiration_date < NOW()`,
@@ -289,6 +330,35 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       /* rm_users optional */
     }
     expiredDisabledCount += 1;
+  }
+
+  let overdueInvoiceDenyCount = 0;
+  if (await hasTable(pool, "invoices")) {
+    const [overdueSubs] = await pool.query<RowDataPacket[]>(
+      `SELECT s.username
+       FROM subscribers s
+       WHERE s.tenant_id = ?
+         AND LOWER(TRIM(COALESCE(s.status, ''))) = 'active'
+         AND EXISTS (
+           SELECT 1 FROM invoices i
+           WHERE i.tenant_id = s.tenant_id
+             AND i.subscriber_id = s.id
+             AND i.status = 'sent'
+             AND i.due_date < CURDATE()
+         )`,
+      [tenantId]
+    );
+    for (const row of overdueSubs) {
+      const username = String(row.username ?? "");
+      if (!username) continue;
+      await coa.disconnectAllSessions(username, tenantId).catch((e) =>
+        console.error("[usage-worker] coa on overdue invoice for", username, e)
+      );
+      await radius.disableRadiusUser(username).catch((e) =>
+        console.error("[usage-worker] disableRadius on overdue invoice for", username, e)
+      );
+      overdueInvoiceDenyCount += 1;
+    }
   }
 
   const octMax = await buildSessionOctetMaxExpr();
@@ -408,7 +478,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     await pool.execute(`DELETE FROM user_quota_state WHERE tenant_id = ? AND username = ?`, [tenantId, username]);
   }
   console.info(
-    `[usage-worker] cycle summary: expired_disabled=${expiredDisabledCount} quota_denied_today=${quotaDeniedCount} restored_next_day=${restoreRows.length}`
+    `[usage-worker] cycle summary: expired_disabled=${expiredDisabledCount} overdue_invoice_radius_cleared=${overdueInvoiceDenyCount} quota_denied_today=${quotaDeniedCount} restored_next_day=${restoreRows.length}`
   );
 }
 

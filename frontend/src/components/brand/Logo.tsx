@@ -1,4 +1,5 @@
 import { cn } from "../../lib/utils";
+import { useI18n } from "../../context/LocaleContext";
 
 type LogoSize = "sm" | "md" | "lg" | "xl";
 
@@ -126,6 +127,7 @@ export function LogoLockup({
   className?: string;
   stacked?: boolean;
 }) {
+  const { t } = useI18n();
   const s = sizeMap[size];
   return (
     <div
@@ -145,9 +147,7 @@ export function LogoLockup({
         >
           Future Radius
         </div>
-        <div className={cn("mt-1 font-semibold text-[hsl(var(--muted-foreground))]", s.sub)}>
-          شركة المستقبل · ISP Control Suite
-        </div>
+        <div className={cn("mt-1 font-semibold text-[hsl(var(--muted-foreground))]", s.sub)}>{t("brand.tagline")}</div>
       </div>
     </div>
   );

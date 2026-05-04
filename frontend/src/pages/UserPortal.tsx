@@ -194,8 +194,8 @@ export function UserPortalLogin() {
               value={locale}
               onChange={(e) => setLocale(e.target.value as "ar" | "en")}
             >
-              <option value="ar">العربية</option>
-              <option value="en">English</option>
+              <option value="ar">{t("locale.optionAr")}</option>
+              <option value="en">{t("locale.optionEn")}</option>
             </select>
             {err ? <p className="text-sm text-red-500 dark:text-red-400">{err}</p> : null}
             <Button type="submit" className="w-full">

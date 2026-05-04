@@ -1,0 +1,17 @@
+[mysqld]
+# Optional host tuning for larger installs. Override via custom cnf or MySQL operator if needed.
+max_connections = 512
+thread_cache_size = 64
+table_open_cache = 4000
+table_definition_cache = 2000
+
+# InnoDB (MySQL 8 has no query cache — do not enable query_cache_*)
+innodb_buffer_pool_size = 512M
+innodb_log_buffer_size = 32M
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method = O_DIRECT
+
+# Enable on production hosts with a writable log path (datadir is safest).
+# slow_query_log = 1
+# slow_query_log_file = slow-query.log
+# long_query_time = 2

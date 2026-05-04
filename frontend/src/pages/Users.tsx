@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Banknote, Download, Eye, EyeOff, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Download, Eye, EyeOff, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -212,9 +212,6 @@ export function UsersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const canManage = canManageOperations(user?.role);
   const canRevealPassword = user?.role === "admin" || user?.role === "manager";
-  const canPayPackage =
-    user?.role === "admin" || user?.role === "manager" || user?.role === "accountant";
-
   const [items, setItems] = useState<SubscriberRow[]>([]);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [nasList, setNasList] = useState<Nas[]>([]);
@@ -228,7 +225,6 @@ export function UsersPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
-  const [payPackageLoadingId, setPayPackageLoadingId] = useState<string | null>(null);
   const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
@@ -511,33 +507,6 @@ export function UsersPage() {
     variant: "warning" | "danger" = "warning"
   ) {
     setConfirmDialog({ open: true, title, message, onConfirm, variant });
-  }
-
-  async function recordPackagePayment(subscriberId: string) {
-    if (!canPayPackage) return;
-    openConfirmDialog(t("common.actions"), t("users.payPackageConfirm"), () => {
-      void confirmRecordPackagePayment(subscriberId);
-    });
-  }
-
-  async function confirmRecordPackagePayment(subscriberId: string) {
-    setPayPackageLoadingId(subscriberId);
-    setMsg(null);
-    try {
-      const r = await apiFetch(`/api/subscribers/${subscriberId}/record-package-payment`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      if (!r.ok) {
-        const raw = await readApiError(r);
-        setMsg({ type: "err", text: formatStaffApiError(r.status, raw, t) });
-        return;
-      }
-      setMsg({ type: "ok", text: t("users.packagePaid") });
-      await load();
-    } finally {
-      setPayPackageLoadingId(null);
-    }
   }
 
   function toggleOne(id: string) {
@@ -834,10 +803,10 @@ export function UsersPage() {
                   setCurrentPage(1);
                 }}
               >
-                <option value="all">الكل</option>
-                <option value="active">نشيط</option>
-                <option value="expired">منتهي</option>
-                <option value="disabled">معطل</option>
+                <option value="all">{t("users.statusFilter.all")}</option>
+                <option value="active">{t("users.statusFilter.active")}</option>
+                <option value="expired">{t("users.statusFilter.expired")}</option>
+                <option value="disabled">{t("users.statusFilter.disabled")}</option>
               </select>
             </form>
             <Button type="button" variant="outline" onClick={toggleAll} disabled={visibleItems.length === 0}>
@@ -848,7 +817,7 @@ export function UsersPage() {
               {t("users.exportSelected")}
             </Button>
             <ColumnVisibilityMenu
-              title="الأعمدة"
+              title={t("table.columns")}
               columns={userColumns}
               visibleKeys={userColumnVisibility.visibleKeys}
               onToggle={userColumnVisibility.toggle}
@@ -1064,18 +1033,6 @@ export function UsersPage() {
                       >
                         {t("users.profile")}
                       </Link>
-                      {canPayPackage ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="px-2 py-1 text-xs"
-                          onClick={() => void recordPackagePayment(s.id)}
-                          disabled={payPackageLoadingId === s.id}
-                        >
-                          <Banknote className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
-                          {payPackageLoadingId === s.id ? t("common.loading") : t("users.payPackage")}
-                        </Button>
-                      ) : null}
                       {canManage ? (
                         <Button
                           type="button"

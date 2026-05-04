@@ -46,15 +46,6 @@ type Row = {
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
 type Nas = { id: string; name: string; ip: string };
-type InvoiceRow = {
-  id: string;
-  invoice_no: string | null;
-  amount: number | string | null;
-  currency: string | null;
-  status: string | null;
-  issue_date: string | null;
-};
-
 type TrafficPoint = {
   period: string;
   sessions_count: number;
@@ -106,8 +97,6 @@ export function UserProfilePage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
   const canManage = canManageOperations(user?.role);
-  const canPayInvoice = user?.role === "admin" || user?.role === "manager" || user?.role === "accountant";
-  const canCreateInvoice = canPayInvoice;
   const [regions, setRegions] = useState<RegionOpt[]>([]);
 
   const regionSelectOptions = useMemo(() => {
@@ -136,14 +125,8 @@ export function UserProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
-  const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [creatingInvoice, setCreatingInvoice] = useState(false);
-  const [createInvoiceOpen, setCreateInvoiceOpen] = useState(false);
-  const [invoiceAmount, setInvoiceAmount] = useState("");
-  const [invoiceCurrency, setInvoiceCurrency] = useState<"USD" | "SYP">("USD");
   const [traffic, setTraffic] = useState<TrafficReport | null>(null);
   const [trafficFrom, setTrafficFrom] = useState("");
   const [trafficTo, setTrafficTo] = useState("");
@@ -231,23 +214,7 @@ export function UserProfilePage() {
           setPhone(String(found.phone ?? ""));
           setAddress(String(found.address ?? ""));
           setRegionId(found.region_id ? String(found.region_id) : "");
-          const pkg = pkgItems.find((x) => x.id === String(found.package_id ?? ""));
-          if (pkg) {
-            const p = Number(pkg.price ?? 0);
-            setInvoiceAmount(Number.isFinite(p) && p > 0 ? String(p) : "");
-            setInvoiceCurrency(String(pkg.currency ?? "USD").toUpperCase() === "SYP" ? "SYP" : "USD");
-          } else {
-            setInvoiceAmount("");
-            setInvoiceCurrency("USD");
-          }
         }
-      }
-      const invRes = await apiFetch(`/api/invoices/?subscriber_id=${id}`);
-      if (invRes.ok) {
-        const invJson = (await invRes.json()) as { items: InvoiceRow[] };
-        setInvoices(invJson.items ?? []);
-      } else {
-        setInvoices([]);
       }
     } finally {
       setLoading(false);
@@ -380,58 +347,6 @@ export function UserProfilePage() {
       return;
     }
     navigate("/users");
-  }
-
-  async function onPayInvoice(invoiceId: string) {
-    if (!canPayInvoice) return;
-    setPayingInvoiceId(invoiceId);
-    setMsg(null);
-    try {
-      const res = await apiFetch(`/api/invoices/${invoiceId}/mark-paid`, {
-        method: "POST",
-        body: JSON.stringify({ payment_method: "manual" }),
-      });
-      if (!res.ok) {
-        const raw = await readApiError(res);
-        setMsg(formatStaffApiError(res.status, raw, t));
-        return;
-      }
-      setMsg(t("profile.invoicePaid"));
-      await load();
-    } finally {
-      setPayingInvoiceId(null);
-    }
-  }
-
-  async function onCreateInvoice() {
-    if (!id || !canCreateInvoice) return;
-    const amount = Number(invoiceAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setMsg(t("profile.invoiceAmountInvalid"));
-      return;
-    }
-    setCreatingInvoice(true);
-    setMsg(null);
-    try {
-      const res = await apiFetch("/api/invoices/generate-monthly", {
-        method: "POST",
-        body: JSON.stringify({
-          subscriber_id: id,
-          amount,
-          currency: invoiceCurrency,
-        }),
-      });
-      if (!res.ok) {
-        const raw = await readApiError(res);
-        setMsg(formatStaffApiError(res.status, raw, t));
-        return;
-      }
-      setMsg(t("profile.invoiceCreated"));
-      setCreateInvoiceOpen(false);
-      await load();
-    } finally {
-      setCreatingInvoice(false);
-    }
   }
 
   function onClose() {
@@ -851,70 +766,6 @@ export function UserProfilePage() {
             </dl>
           </Card>
 
-          <Card>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold opacity-80">{t("profile.invoices")}</h2>
-              {canCreateInvoice ? (
-                <Button type="button" variant="outline" onClick={() => setCreateInvoiceOpen((x) => !x)}>
-                  {t("profile.createInvoice")}
-                </Button>
-              ) : null}
-            </div>
-            {canCreateInvoice && createInvoiceOpen ? (
-              <div className="mb-3 grid gap-2 rounded-lg border border-[hsl(var(--border))] p-3 sm:grid-cols-3">
-                <TextField
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  label={t("profile.invoiceAmount")}
-                  value={invoiceAmount}
-                  onChange={(e) => setInvoiceAmount(e.target.value)}
-                />
-                <SelectField
-                  label={t("packages.currency")}
-                  value={invoiceCurrency}
-                  onChange={(e) => setInvoiceCurrency(e.target.value === "SYP" ? "SYP" : "USD")}
-                >
-                  <option value="USD">USD</option>
-                  <option value="SYP">SYP</option>
-                </SelectField>
-                <div className="flex items-end">
-                  <Button type="button" onClick={() => void onCreateInvoice()} disabled={creatingInvoice}>
-                    {creatingInvoice ? t("common.loading") : t("profile.createInvoice")}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            {invoices.length === 0 ? (
-              <p className="text-sm opacity-70">{t("profile.noInvoices")}</p>
-            ) : (
-              <div className="space-y-2">
-                {invoices.map((invoice) => (
-                  <div
-                    key={invoice.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm"
-                  >
-                    <div className="space-y-0.5">
-                      <div className="font-medium">{String(invoice.invoice_no ?? invoice.id)}</div>
-                      <div className="opacity-70">
-                        {String(invoice.amount ?? "-")} {String(invoice.currency ?? "")} · {String(invoice.status ?? "-")}
-                      </div>
-                    </div>
-                    {canPayInvoice && invoice.status !== "paid" ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void onPayInvoice(invoice.id)}
-                        disabled={payingInvoiceId === invoice.id}
-                      >
-                        {payingInvoiceId === invoice.id ? t("common.loading") : t("profile.payInvoice")}
-                      </Button>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
         </>
       ) : null}
 

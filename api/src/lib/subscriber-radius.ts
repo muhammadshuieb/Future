@@ -32,6 +32,30 @@ export function assertRadiusPush(
   }
 }
 
+async function countOverdueSentInvoices(
+  pool: Pool,
+  tenantId: string,
+  subscriberRowId: string
+): Promise<number> {
+  if (!(await hasTable(pool, "invoices"))) return 0;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS c FROM invoices
+     WHERE tenant_id = ? AND subscriber_id = ? AND status = 'sent' AND due_date < CURDATE()`,
+    [tenantId, subscriberRowId]
+  );
+  return Number(rows[0]?.c ?? 0);
+}
+
+async function hasQuotaEnforcedToday(pool: Pool, tenantId: string, username: string): Promise<boolean> {
+  if (!(await hasTable(pool, "user_quota_state"))) return false;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT 1 AS ok FROM user_quota_state
+     WHERE tenant_id = ? AND username = ? AND quota_date = CURDATE() LIMIT 1`,
+    [tenantId, username]
+  );
+  return Boolean(rows[0]);
+}
+
 export async function loadSubscriberForRadius(
   pool: Pool,
   tenantId: string,
@@ -83,9 +107,19 @@ export async function pushRadiusForSubscriber(
   const sub = await loadSubscriberForRadius(pool, tenantId, subscriberId);
   if (!sub) return { ok: false, reason: "not_found" };
   if (sub.status !== "active") return { ok: false, reason: "not_active" };
-  const exp = new Date(sub.expiration_date as string);
-  if (exp.getTime() < Date.now()) return { ok: false, reason: "expired" };
+  let expirationForRadius: Date | null = null;
+  if (sub.expiration_date != null && String(sub.expiration_date).trim() !== "") {
+    const exp = new Date(sub.expiration_date as string);
+    if (Number.isNaN(exp.getTime())) return { ok: false, reason: "invalid_expiration" };
+    if (exp.getTime() < Date.now()) return { ok: false, reason: "expired" };
+    expirationForRadius = exp;
+  }
   if (!sub.package_id) return { ok: false, reason: "no_package" };
+  const overdue = await countOverdueSentInvoices(pool, tenantId, sub.id);
+  if (overdue > 0) return { ok: false, reason: "overdue_invoices" };
+  if (await hasQuotaEnforcedToday(pool, tenantId, sub.username)) {
+    return { ok: false, reason: "quota_limited_today" };
+  }
   const pkg = await radius.getPackage(tenantId, sub.package_id);
   if (!pkg) return { ok: false, reason: "invalid_package" };
 
@@ -109,7 +143,7 @@ export async function pushRadiusForSubscriber(
     framedIp: sub.ip_address,
     macLock: sub.mac_address,
     framedPool: sub.pool,
-    expirationDate: exp,
+    expirationDate: expirationForRadius,
   });
 
   return { ok: true };

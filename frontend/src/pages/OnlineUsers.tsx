@@ -403,7 +403,7 @@ export function OnlineUsersPage() {
             {t("users.pageLabel")}: {currentPage}/{totalPages} · {t("onlineUsers.matching")}: {filteredSorted.length}
           </span>
           <ColumnVisibilityMenu
-            title="الأعمدة"
+            title={t("table.columns")}
             columns={onlineColumns}
             visibleKeys={onlineColumnVisibility.visibleKeys}
             onToggle={onlineColumnVisibility.toggle}

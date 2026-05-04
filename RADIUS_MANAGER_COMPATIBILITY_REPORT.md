@@ -135,4 +135,15 @@
 
 ---
 
+## 6. إنتاج وتوسّع (ملخص تقني)
+
+- **تسجيل دخول المدراء (DMA):** يتم عبر `rm_managers` + MD5 في `api/src/services/rm-legacy-staff.service.ts` ومسار `POST /api/auth/login` في `auth.routes.ts` (مزامنة اختيارية إلى `staff_users`).
+- **CoA:** إعادة إرسال UDP مُعرَّفة في `config.coaRetryCount` / `coaRetryDelayMs`؛ وعند الفشل يمكن استدعاء **MikroTik REST kick** كـ fallback (`COA_MIKROTIK_FALLBACK`) من `coa.service.ts`.
+- **تجمع اتصالات MySQL:** `connectionLimit` / `queueLimit` من `MYSQL_POOL_*` في `api/src/lib/db.ts`.
+- **nginx أمام API:** `upstream` مع `resolver` و`resolve` في `frontend/nginx.conf` و`docker/nginx/api-proxy.conf` لدعم `--scale api=N` مع Docker DNS.
+- **عزل دورة الاستخدام:** خدمة `worker-usage` (profile `split-workers`) + `SKIP_BULLMQ_UPDATE_USAGE` على الـ worker الرئيسي؛ انظر `docker-compose.yml`.
+- **تجزئة radacct:** قالب تعليقات فقط في `sql/ops/radacct-partitioning-template.sql` (تنفيذ يدوي بعد مراجعة DBA).
+
+---
+
 *نهاية التقرير.*

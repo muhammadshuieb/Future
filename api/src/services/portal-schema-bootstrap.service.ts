@@ -58,6 +58,25 @@ export async function ensurePortalTenantAndStaffTables(): Promise<void> {
        ADD COLUMN \`allowed_negative_balance\` DECIMAL(14,2) NOT NULL DEFAULT 0.00`
     );
   }
+  const [staffPresent] = await pool.query<RowDataPacket[]>(
+    `SELECT 1 AS ok
+     FROM information_schema.tables
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_users'
+     LIMIT 1`
+  );
+  if (staffPresent[0]) {
+    const [rmMngrCol] = await pool.query<RowDataPacket[]>(
+      `SELECT 1 AS ok
+       FROM information_schema.columns
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'staff_users' AND COLUMN_NAME = 'rm_managername'
+       LIMIT 1`
+    );
+    if (!rmMngrCol[0]) {
+      await pool.query(
+        `ALTER TABLE \`staff_users\` ADD COLUMN \`rm_managername\` VARCHAR(128) NULL`
+      );
+    }
+  }
   // staff_users table intentionally not bootstrapped; auth/staff use rm_managers as source of truth.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS \`manager_wallet_transactions\` (
