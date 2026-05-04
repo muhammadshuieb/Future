@@ -1469,14 +1469,35 @@ router.post(
       res.status(503).json({ error: "invoices_table_missing" });
       return;
     }
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT s.package_id, p.price, p.currency, p.billing_period_days
-       FROM subscribers s
-       LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
-       WHERE s.id = ? AND s.tenant_id = ?
-       LIMIT 1`,
-      [subscriberId, tenant]
-    );
+    const portal = await usePortalSubscribersData(tenant);
+    let rows: RowDataPacket[];
+    if (portal) {
+      const [r] = await pool.query<RowDataPacket[]>(
+        `SELECT s.package_id, p.price, p.currency, p.billing_period_days
+         FROM subscribers s
+         LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
+         WHERE s.id = ? AND s.tenant_id = ?
+         LIMIT 1`,
+        [subscriberId, tenant]
+      );
+      rows = r as RowDataPacket[];
+    } else if (await hasTable(pool, "rm_users")) {
+      const hasSrv = await hasTable(pool, "rm_services");
+      const [r] = await pool.query<RowDataPacket[]>(
+        hasSrv
+          ? `SELECT CAST(u.srvid AS CHAR) AS package_id, p.unitprice AS price, 'USD' AS currency, 30 AS billing_period_days
+             FROM rm_users u
+             LEFT JOIN rm_services p ON p.srvid = u.srvid
+             WHERE u.username = ? LIMIT 1`
+          : `SELECT CAST(u.srvid AS CHAR) AS package_id, 0 AS price, 'USD' AS currency, 30 AS billing_period_days
+             FROM rm_users u WHERE u.username = ? LIMIT 1`,
+        [subscriberId]
+      );
+      rows = r as RowDataPacket[];
+    } else {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
     const sub = rows[0];
     if (!sub) {
       res.status(404).json({ error: "not_found" });
@@ -1542,16 +1563,38 @@ router.post(
       res.status(503).json({ error: "billing_tables_missing" });
       return;
     }
+    const portal = await usePortalSubscribersData(tenant);
     try {
       const tx = await withTransaction(async (conn) => {
-        const [subRows] = await conn.query<RowDataPacket[]>(
-          `SELECT s.package_id, p.price, p.currency, p.billing_period_days, s.expiration_date
-           FROM subscribers s
-           LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
-           WHERE s.id = ? AND s.tenant_id = ?
-           LIMIT 1 FOR UPDATE`,
-          [subscriberId, tenant]
-        );
+        let subRows: RowDataPacket[];
+        if (portal) {
+          const [r] = await conn.query<RowDataPacket[]>(
+            `SELECT s.package_id, p.price, p.currency, p.billing_period_days, s.expiration_date
+             FROM subscribers s
+             LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
+             WHERE s.id = ? AND s.tenant_id = ?
+             LIMIT 1 FOR UPDATE`,
+            [subscriberId, tenant]
+          );
+          subRows = r as RowDataPacket[];
+        } else if (await hasTable(pool, "rm_users")) {
+          const hasSrv = await hasTable(pool, "rm_services");
+          const [r] = await conn.query<RowDataPacket[]>(
+            hasSrv
+              ? `SELECT CAST(u.srvid AS CHAR) AS package_id, p.unitprice AS price, 'USD' AS currency,
+                        30 AS billing_period_days, u.expiration AS expiration_date
+                 FROM rm_users u
+                 LEFT JOIN rm_services p ON p.srvid = u.srvid
+                 WHERE u.username = ? LIMIT 1 FOR UPDATE`
+              : `SELECT CAST(u.srvid AS CHAR) AS package_id, 0 AS price, 'USD' AS currency,
+                        30 AS billing_period_days, u.expiration AS expiration_date
+                 FROM rm_users u WHERE u.username = ? LIMIT 1 FOR UPDATE`,
+            [subscriberId]
+          );
+          subRows = r as RowDataPacket[];
+        } else {
+          return { kind: "not_found" as const };
+        }
         const sub = subRows[0];
         if (!sub) return { kind: "not_found" as const };
         const packageId = sub.package_id ? String(sub.package_id) : "";
@@ -1639,10 +1682,17 @@ router.post(
         }
         const current = new Date(sub.expiration_date as string);
         const nextExpiration = extendSubscriptionByDaysNoon(current, metaDays);
-        await conn.execute(
-          `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
-          [nextExpiration, subscriberId, tenant]
-        );
+        if (portal) {
+          await conn.execute(
+            `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
+            [nextExpiration, subscriberId, tenant]
+          );
+        } else if (await hasTable(pool, "rm_users")) {
+          await conn.execute(`UPDATE rm_users SET expiration = ?, enableuser = 1 WHERE username = ?`, [
+            nextExpiration,
+            subscriberId,
+          ]);
+        }
 
         return {
           kind: "ok" as const,
@@ -1717,6 +1767,8 @@ const patchBody = z.object({
   address: z.string().max(255).nullable().optional(),
   region_id: z.string().uuid().nullable().optional(),
   package_id: z.string().min(1).max(64).optional(),
+  /** RADIUS login password: updates `rm_users.password` (DMA) and/or encrypted column + radcheck when active. */
+  password: z.string().min(1).max(128).optional(),
 });
 
 router.patch(
@@ -1773,6 +1825,15 @@ router.patch(
           valsRm.push(srv);
         }
       }
+      if (b.password !== undefined) {
+        const rmColPw = await getTableColumns(pool, "rm_users");
+        if (!rmColPw.has("password")) {
+          res.status(400).json({ error: "password_not_supported" });
+          return;
+        }
+        setsRm.push("password = ?");
+        valsRm.push(b.password);
+      }
       if (setsRm.length) {
         await pool.query(`UPDATE rm_users SET ${setsRm.join(", ")} WHERE username = ?`, [...valsRm, u]);
       }
@@ -1801,13 +1862,14 @@ router.patch(
           }
         }
       }
+      const auditRm = { ...parsed.data, ...(parsed.data.password !== undefined ? { password: "[redacted]" } : {}) };
       await writeAuditLog(pool, {
         tenantId: tenant,
         staffId: req.auth!.sub,
         action: "update",
         entityType: "subscriber",
         entityId: req.params.id,
-        payload: parsed.data,
+        payload: auditRm,
       });
       res.json({ ok: true });
       return;
@@ -1878,6 +1940,14 @@ router.patch(
       sets.push("package_id = ?");
       vals.push(b.package_id);
     }
+    if (b.password !== undefined) {
+      if (!subCols.has("radius_password_encrypted")) {
+        res.status(400).json({ error: "password_not_supported" });
+        return;
+      }
+      sets.push("radius_password_encrypted = ?");
+      vals.push(encryptSecret(b.password));
+    }
     if (sets.length) {
       const updateSql = `UPDATE subscribers SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`;
       await pool.query(updateSql, [...vals, req.params.id, tenant]);
@@ -1918,13 +1988,14 @@ router.patch(
         }
       }
     }
+    const auditSub = { ...parsed.data, ...(parsed.data.password !== undefined ? { password: "[redacted]" } : {}) };
     await writeAuditLog(pool, {
       tenantId: tenant,
       staffId: req.auth!.sub,
       action: "update",
       entityType: "subscriber",
       entityId: req.params.id,
-      payload: parsed.data,
+      payload: auditSub,
     });
     res.json({ ok: true });
   }
@@ -2253,9 +2324,9 @@ router.post(
   routePolicy({ allow: ["admin", "manager"], managerPermission: "manage_subscribers" }),
   async (req, res) => {
   const tenant = req.auth!.tenantId;
-  const r = await pushRadiusForSubscriber(pool, radius, tenant, req.params.id);
-  if (!r.ok) {
-    res.status(400).json({ error: r.reason });
+  const un = await resolveUsernameForSubscriberId(tenant, req.params.id);
+  if (!un) {
+    res.status(404).json({ error: "not_found" });
     return;
   }
   if (await usePortalSubscribersData(tenant)) {
@@ -2265,11 +2336,17 @@ router.post(
     ]);
   }
   try {
-    const un = await resolveUsernameForSubscriberId(tenant, req.params.id);
-    if (un) {
-      await pool.execute(`UPDATE rm_users SET enableuser = 1 WHERE username = ?`, [un]);
-      await disconnectBySystemPolicy(tenant, un, "activation");
-    }
+    await pool.execute(`UPDATE rm_users SET enableuser = 1 WHERE username = ?`, [un]);
+  } catch {
+    /* rm_users may not exist */
+  }
+  const r = await pushRadiusForSubscriber(pool, radius, tenant, req.params.id);
+  if (!r.ok) {
+    res.status(400).json({ error: r.reason });
+    return;
+  }
+  try {
+    await disconnectBySystemPolicy(tenant, un, "activation");
   } catch {
     /* ignore */
   }

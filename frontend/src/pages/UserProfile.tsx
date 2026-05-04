@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, FileText, X, Trash2 } from "lucide-react";
+import { ArrowLeft, Download, Eye, EyeOff, FileText, X, Trash2 } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -150,6 +150,13 @@ export function UserProfilePage() {
   const [trafficLoading, setTrafficLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "traffic">("details");
 
+  const [revealedPw, setRevealedPw] = useState<string | null>(null);
+  const [passwordRevealLoading, setPasswordRevealLoading] = useState(false);
+  const [showPasswordEditor, setShowPasswordEditor] = useState(false);
+  const [newPwd, setNewPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+
   const [packageId, setPackageId] = useState("");
   const [nasId, setNasId] = useState("");
   const [pool, setPool] = useState("");
@@ -189,6 +196,7 @@ export function UserProfilePage() {
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
+    setRevealedPw(null);
     try {
       const [rSub, rPkg, rNas, rReg] = await Promise.all([
         apiFetch("/api/subscribers/"),
@@ -291,14 +299,70 @@ export function UserProfilePage() {
   async function confirmDisable() {
     setDisableConfirmOpen(false);
     if (!id || !canManage) return;
+    setMsg(null);
     const r = await apiFetch(`/api/subscribers/${id}/disable`, { method: "POST" });
     if (r.ok) await load();
+    else setMsg(formatStaffApiError(r.status, await readApiError(r), t));
   }
 
   async function onEnable() {
     if (!id || !canManage) return;
+    setMsg(null);
     const r = await apiFetch(`/api/subscribers/${id}/enable`, { method: "POST" });
     if (r.ok) await load();
+    else setMsg(formatStaffApiError(r.status, await readApiError(r), t));
+  }
+
+  async function toggleRevealPassword() {
+    if (!id || !canManage) return;
+    if (revealedPw != null) {
+      setRevealedPw(null);
+      return;
+    }
+    setPasswordRevealLoading(true);
+    setMsg(null);
+    try {
+      const res = await apiFetch(`/api/subscribers/${id}/password`);
+      if (!res.ok) {
+        setMsg(formatStaffApiError(res.status, await readApiError(res), t));
+        return;
+      }
+      const data = (await res.json()) as { password?: string };
+      setRevealedPw(data.password ?? "");
+    } finally {
+      setPasswordRevealLoading(false);
+    }
+  }
+
+  async function savePasswordChange() {
+    if (!id || !canManage) return;
+    if (newPwd.length < 1) {
+      setMsg(t("profile.passwordEmpty"));
+      return;
+    }
+    if (newPwd !== confirmPwd) {
+      setMsg(t("profile.passwordMismatch"));
+      return;
+    }
+    setPasswordBusy(true);
+    setMsg(null);
+    try {
+      const res = await apiFetch(`/api/subscribers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ password: newPwd }),
+      });
+      if (!res.ok) {
+        setMsg(formatStaffApiError(res.status, await readApiError(res), t));
+        return;
+      }
+      setMsg(t("profile.passwordUpdated"));
+      setNewPwd("");
+      setConfirmPwd("");
+      setRevealedPw(null);
+      await load();
+    } finally {
+      setPasswordBusy(false);
+    }
   }
 
   async function onDelete() {
@@ -607,6 +671,84 @@ export function UserProfilePage() {
 
       {activeTab === "details" ? (
         <>
+          {canManage ? (
+            <Card className="space-y-4">
+              <h2 className="text-sm font-semibold opacity-80">{t("profile.radiusPassword")}</h2>
+              <p className="text-xs opacity-60">{t("profile.radiusPasswordHint")}</p>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-[12rem] flex-1">
+                  <div className="mb-1 text-xs opacity-70">{t("users.password")}</div>
+                  <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-2 font-mono text-sm break-all">
+                    {passwordRevealLoading
+                      ? t("common.loading")
+                      : revealedPw != null
+                        ? revealedPw
+                        : t("users.passwordHidden")}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void toggleRevealPassword()}
+                  disabled={passwordRevealLoading}
+                  className="shrink-0"
+                >
+                  {revealedPw != null ? (
+                    <EyeOff className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                  ) : (
+                    <Eye className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                  )}
+                  {revealedPw != null ? t("common.hide") : t("common.show")}
+                </Button>
+              </div>
+              <div className="border-t border-[hsl(var(--border))] pt-4">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium opacity-80">{t("profile.changePassword")}</div>
+                  <Button
+                    type="button"
+                    variant={showPasswordEditor ? "outline" : "default"}
+                    onClick={() => {
+                      setShowPasswordEditor((prev) => !prev);
+                      if (showPasswordEditor) {
+                        setNewPwd("");
+                        setConfirmPwd("");
+                      }
+                    }}
+                  >
+                    {showPasswordEditor ? t("common.cancel") : t("profile.changePassword")}
+                  </Button>
+                </div>
+                {showPasswordEditor ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <TextField
+                        type="password"
+                        autoComplete="new-password"
+                        label={t("profile.newPassword")}
+                        value={newPwd}
+                        onChange={(e) => setNewPwd(e.target.value)}
+                      />
+                      <TextField
+                        type="password"
+                        autoComplete="new-password"
+                        label={t("profile.confirmPassword")}
+                        value={confirmPwd}
+                        onChange={(e) => setConfirmPwd(e.target.value)}
+                      />
+                    </div>
+                    <div className="mt-3">
+                      <Button type="button" onClick={() => void savePasswordChange()} disabled={passwordBusy}>
+                        {passwordBusy ? t("common.loading") : t("profile.updatePassword")}
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </Card>
+          ) : (
+            <p className="text-xs opacity-60">{t("users.passwordRestricted")}</p>
+          )}
+
           <Card>
             <form onSubmit={onSave} className="space-y-4">
               <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} disabled={!canManage}>

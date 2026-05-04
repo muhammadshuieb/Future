@@ -258,6 +258,19 @@ export class RadiusService {
       [username]
     );
     const v = rows[0]?.value;
-    return v != null ? String(v) : null;
+    if (v != null && String(v).trim() !== "") return String(v);
+    /** After `disableRadiusUser`, radcheck is empty; RM still keeps password on `rm_users`. */
+    if (await hasTable(this.pool, "rm_users")) {
+      const cols = await getTableColumns(this.pool, "rm_users");
+      if (cols.has("password")) {
+        const [rm] = await this.pool.query<RowDataPacket[]>(
+          `SELECT password FROM rm_users WHERE username = ? LIMIT 1`,
+          [username]
+        );
+        const p = rm[0]?.password;
+        if (p != null && String(p).trim() !== "") return String(p);
+      }
+    }
+    return null;
   }
 }
