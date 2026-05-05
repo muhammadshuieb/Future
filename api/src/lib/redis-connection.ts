@@ -2,6 +2,9 @@ import { Redis, type RedisOptions } from "ioredis";
 import { config } from "../config.js";
 
 const resilience: RedisOptions = {
+  // Docker DNS sometimes returns EAI_AGAIN on IPv6 or first resolve; prefer IPv4.
+  family: 4,
+  connectTimeout: 20_000,
   retryStrategy(times: number) {
     return Math.min(times * 500, 10_000);
   },

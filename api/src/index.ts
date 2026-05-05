@@ -7,6 +7,7 @@ installLogger({ source: "api" });
 import cors, { type CorsOptions } from "cors";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
+import type { Redis } from "ioredis";
 import { WebSocketServer, WebSocket as WsClient } from "ws";
 import { config } from "./config.js";
 import type { JwtPayload } from "./middleware/auth.js";
@@ -210,11 +211,10 @@ wss.on("connection", (ws, req) => {
   ws.send(JSON.stringify({ type: "connected", channel: config.eventsChannel }));
 });
 
-const subRedis = createRedisClient("ws-fr-events");
-subRedis.subscribe(config.eventsChannel, (err?: Error | null) => {
-  if (err) console.error("redis subscribe", err);
-});
-subRedis.on("message", (_channel: string, message: string) => {
+/** Deferred until `start()` so Docker embedded DNS can settle (avoids EAI_AGAIN at import time). */
+let wsEventSubRedis: Redis | null = null;
+
+function broadcastRedisEventToWebSockets(message: string): void {
   let targetTenant: string | undefined;
   try {
     const p = JSON.parse(message) as { tenant_id?: string; tenantId?: string };
@@ -230,10 +230,49 @@ subRedis.on("message", (_channel: string, message: string) => {
     }
     client.send(message);
   }
-});
+}
+
+async function startRedisWebSocketBridge(): Promise<void> {
+  const maxAttempts = 24;
+  for (let i = 1; i <= maxAttempts; i++) {
+    const client = createRedisClient("ws-fr-events");
+    try {
+      await client.ping();
+      await new Promise<void>((resolve, reject) => {
+        client.subscribe(config.eventsChannel, (err?: Error | null) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      if (wsEventSubRedis) {
+        try {
+          wsEventSubRedis.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+      wsEventSubRedis = client;
+      client.removeAllListeners("message");
+      client.on("message", (_channel: string, msg: string) => broadcastRedisEventToWebSockets(msg));
+      console.log(`[redis] ws bridge subscribed: ${config.eventsChannel}`);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[redis] ws bridge attempt ${i}/${maxAttempts}: ${msg}`);
+      try {
+        client.disconnect();
+      } catch {
+        /* ignore */
+      }
+      await new Promise((r) => setTimeout(r, Math.min(500 * i, 4000)));
+    }
+  }
+  console.error("[redis] ws bridge failed after retries — API up; live WS push may be missing");
+}
 
 async function start() {
   await waitForDbReady();
+  await startRedisWebSocketBridge();
   try {
     await ensurePortalTenantAndStaffTables();
   } catch (error) {

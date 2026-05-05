@@ -84,6 +84,9 @@ services:
       dockerfile: Dockerfile
     expose:
       - "3000"
+    dns_opt:
+      - "timeout:2"
+      - "attempts:5"
     environment:
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
       REDIS_URL: redis://redis:6379
@@ -173,6 +176,9 @@ services:
       context: ./api
       dockerfile: Dockerfile
     command: ["node", "dist/workers/index.js"]
+    dns_opt:
+      - "timeout:2"
+      - "attempts:5"
     environment:
       DMA_MODE: ${DMA_MODE:-true}
       SKIP_BULLMQ_UPDATE_USAGE: ${SKIP_BULLMQ_UPDATE_USAGE:-0}
@@ -207,6 +213,9 @@ services:
       context: ./api
       dockerfile: Dockerfile
     command: ["node", "dist/workers/usage-standalone.js"]
+    dns_opt:
+      - "timeout:2"
+      - "attempts:5"
     environment:
       DMA_MODE: ${DMA_MODE:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
