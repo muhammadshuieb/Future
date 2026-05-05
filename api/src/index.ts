@@ -63,6 +63,64 @@ function firstHeaderValue(v: string | string[] | undefined): string {
   return String(v ?? "").trim();
 }
 
+/** Parse Host / X-Forwarded-Host (first hop) into hostname + effective port. */
+function parseRequestHostPort(req: express.Request): { host: string; port: number } | null {
+  const forwardedHost = firstHeaderValue(req.headers["x-forwarded-host"]);
+  const raw = (forwardedHost || String(req.headers.host ?? "")).split(",")[0]?.trim() ?? "";
+  if (!raw) return null;
+
+  const proto =
+    firstHeaderValue(req.headers["x-forwarded-proto"]).split(",")[0]?.trim().toLowerCase() ||
+    String(req.protocol ?? "http").replace(":", "");
+
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    if (end !== -1) {
+      const host = raw.slice(1, end).toLowerCase();
+      const rest = raw.slice(end + 1);
+      if (rest.startsWith(":")) {
+        const p = parseInt(rest.slice(1), 10);
+        if (Number.isFinite(p)) return { host, port: p };
+      }
+      return { host, port: proto === "https" ? 443 : 80 };
+    }
+  }
+
+  const colon = raw.lastIndexOf(":");
+  if (colon > 0) {
+    const hostPart = raw.slice(0, colon).toLowerCase();
+    const portPart = raw.slice(colon + 1);
+    if (/^\d+$/.test(portPart)) {
+      return { host: hostPart, port: parseInt(portPart, 10) };
+    }
+  }
+
+  return { host: raw.toLowerCase(), port: proto === "https" ? 443 : 80 };
+}
+
+function parseBrowserOriginHostPort(origin: string): { host: string; port: number } | null {
+  try {
+    const u = new URL(origin);
+    const proto = u.protocol.replace(":", "").toLowerCase();
+    const port = u.port ? parseInt(u.port, 10) : proto === "https" ? 443 : 80;
+    return { host: u.hostname.replace(/^\[|\]$/g, "").toLowerCase(), port };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the browser Origin matches this request's public host:port.
+ * Avoids false rejects when `sameOrigin` string differs (e.g. http vs https from X-Forwarded-Proto).
+ */
+function originMatchesRequestHost(req: express.Request | undefined, origin: string): boolean {
+  if (!req) return false;
+  const o = parseBrowserOriginHostPort(origin);
+  const r = parseRequestHostPort(req);
+  if (!o || !r) return false;
+  return o.host === r.host && o.port === r.port;
+}
+
 function corsOptions(req?: express.Request): CorsOptions {
   if (config.corsOrigins === "all") {
     return { origin: true, credentials: true };
@@ -87,6 +145,11 @@ function corsOptions(req?: express.Request): CorsOptions {
         return;
       }
       if (allowed.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      // Same panel host:port as seen by the browser, even if proto string differed (reverse proxies).
+      if (originMatchesRequestHost(req, origin)) {
         callback(null, true);
         return;
       }
