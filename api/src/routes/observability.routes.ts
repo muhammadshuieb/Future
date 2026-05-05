@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { RowDataPacket } from "mysql2";
 import { Queue } from "bullmq";
-import { Redis } from "ioredis";
+import { createRedisClient } from "../lib/redis-connection.js";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -10,7 +10,7 @@ import { routePolicy } from "../middleware/policy.js";
 const router = Router();
 router.use(requireAuth);
 
-const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+const redis = createRedisClient("api-observability");
 const jobQueue = new Queue("radius-manager", { connection: redis });
 const workerHeartbeatKey = "future-radius:worker:heartbeat";
 

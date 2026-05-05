@@ -1,6 +1,5 @@
 import { Queue, QueueEvents, type Job } from "bullmq";
-import { Redis } from "ioredis";
-import { config } from "../config.js";
+import { createRedisClient, listenRedisErrors } from "../lib/redis-connection.js";
 
 export const QueueJobNames = {
   WAHA_SEND_INVOICE_RECEIPT: "waha.send-invoice-receipt",
@@ -23,9 +22,11 @@ export type CoaDisconnectJobData = {
   acctSessionId?: string;
 };
 
-const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+const connection = createRedisClient("api-bullmq-queue");
+const queueEventsConnection = connection.duplicate();
+listenRedisErrors(queueEventsConnection, "api-bullmq-queue-events");
 export const taskQueue = new Queue("radius-manager", { connection });
-const queueEvents = new QueueEvents("radius-manager", { connection: connection.duplicate() });
+const queueEvents = new QueueEvents("radius-manager", { connection: queueEventsConnection });
 
 export async function enqueueWahaInvoiceReceipt(data: WahaInvoiceReceiptJobData): Promise<Job> {
   return taskQueue.add(QueueJobNames.WAHA_SEND_INVOICE_RECEIPT, data, {

@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import { config } from "../config.js";
+import { createRedisClient } from "../lib/redis-connection.js";
 import { pool, waitForDbReady } from "../lib/db.js";
 import { hasColumn, hasTable, isRadiusManagerSubscribersPrimary } from "../db/schemaGuards.js";
 import { AccountingService } from "../services/accounting.service.js";
@@ -15,7 +16,7 @@ let redisLock: Redis | null = null;
 let usageRefreshCycleCounter = 0;
 function getRedisLock(): Redis {
   if (!redisLock) {
-    redisLock = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+    redisLock = createRedisClient("usage-cycle-lock");
   }
   return redisLock;
 }

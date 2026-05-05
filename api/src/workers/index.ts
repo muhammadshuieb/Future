@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
-import { Redis } from "ioredis";
 import { Queue, Worker } from "bullmq";
 import { config } from "../config.js";
+import { createRedisClient, listenRedisErrors } from "../lib/redis-connection.js";
 import { pool, waitForDbReady } from "../db/pool.js";
 import { installLogger, markDbReady, log } from "../services/logger.service.js";
 
@@ -34,8 +34,9 @@ import { hasTable } from "../db/schemaGuards.js";
 import { ensureBillingTables } from "../services/billing-schema-bootstrap.service.js";
 import { syncMikrotikSessionsFromNasTable } from "../services/mikrotik-ros-sync.service.js";
 
-const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+const connection = createRedisClient("worker-bullmq");
 const publisher = connection.duplicate();
+listenRedisErrors(publisher, "worker-bullmq-publisher");
 const workerHeartbeatKey = "future-radius:worker:heartbeat";
 
 const coa = new CoaService(pool);

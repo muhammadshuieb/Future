@@ -1,9 +1,9 @@
 import { Redis } from "ioredis";
-import { config } from "../config.js";
+import { createRedisClient } from "../lib/redis-connection.js";
 import { type EventName, type EventPayloadByName } from "./eventTypes.js";
 
 const channel = "future-radius:domain-events";
-const pub = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+const pub = createRedisClient("eventbus-pub");
 
 type AnyHandler = (payload: unknown) => Promise<void> | void;
 const handlers = new Map<string, Set<AnyHandler>>();
@@ -12,7 +12,7 @@ let subscribed = false;
 
 async function ensureSubscriber(): Promise<void> {
   if (subscribed) return;
-  sub = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+  sub = createRedisClient("eventbus-sub");
   sub.on("message", (incomingChannel, message) => {
     if (incomingChannel !== channel) return;
     try {

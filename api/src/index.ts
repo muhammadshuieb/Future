@@ -8,7 +8,6 @@ import cors, { type CorsOptions } from "cors";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import { WebSocketServer, WebSocket as WsClient } from "ws";
-import { Redis } from "ioredis";
 import { config } from "./config.js";
 import type { JwtPayload } from "./middleware/auth.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -51,6 +50,7 @@ import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js
 import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
 import { logDmaSchemaSnapshot } from "./services/dma-schema-snapshot.service.js";
 import { DmaForbiddenHybridSqlError } from "./dma/dma-sql-guard.js";
+import { createRedisClient } from "./lib/redis-connection.js";
 
 const app = express();
 // nginx (web / api-proxy) sets X-Forwarded-*; required or express-rate-limit throws on /login.
@@ -210,7 +210,7 @@ wss.on("connection", (ws, req) => {
   ws.send(JSON.stringify({ type: "connected", channel: config.eventsChannel }));
 });
 
-const subRedis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+const subRedis = createRedisClient("ws-fr-events");
 subRedis.subscribe(config.eventsChannel, (err?: Error | null) => {
   if (err) console.error("redis subscribe", err);
 });
