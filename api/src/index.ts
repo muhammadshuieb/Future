@@ -166,6 +166,7 @@ app.use("/api/billing", billingStatsRoutes);
 app.use(
   (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (err instanceof DmaForbiddenHybridSqlError) {
+      console.error(`[http_error] ${req.method} ${req.originalUrl} dma_sql_guard: ${err.message}`);
       log.error(`dma_sql_guard ${req.method} ${req.originalUrl}: ${err.message}`, {
         method: req.method,
         url: req.originalUrl,
@@ -178,6 +179,9 @@ app.use(
       return;
     }
     const e = err instanceof Error ? err : new Error(String(err));
+    // log.error only persists to server_logs — mirror to stderr so `docker compose logs api` shows failures.
+    console.error(`[http_error] ${req.method} ${req.originalUrl}: ${e.message}`);
+    if (e.stack) console.error(e.stack);
     log.error(`http_error ${req.method} ${req.originalUrl}: ${e.message}`, {
       method: req.method,
       url: req.originalUrl,
