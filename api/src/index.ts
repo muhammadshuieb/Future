@@ -57,16 +57,32 @@ const app = express();
 app.set("trust proxy", process.env.TRUST_PROXY === "0" ? false : 1);
 app.use(helmet());
 
-function corsOptions(): CorsOptions {
+function firstHeaderValue(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return String(v[0] ?? "").trim();
+  return String(v ?? "").trim();
+}
+
+function corsOptions(req?: express.Request): CorsOptions {
   if (config.corsOrigins === "all") {
     return { origin: true, credentials: true };
   }
   const allowed = config.corsOrigins;
+  const host = req?.headers?.host ? String(req.headers.host).trim() : "";
+  const forwardedProtoRaw = firstHeaderValue(req?.headers?.["x-forwarded-proto"]);
+  const forwardedProto = forwardedProtoRaw.split(",")[0]?.trim().toLowerCase();
+  const proto = forwardedProto || (req?.protocol ? String(req.protocol).toLowerCase() : "");
+  const sameOrigin = host && proto ? `${proto}://${host}` : "";
   return {
     credentials: true,
     origin: (origin, callback) => {
       if (!origin) {
         callback(null, config.nodeEnv !== "production");
+        return;
+      }
+      // Always allow the exact origin serving this request (same host/port),
+      // so reverse-proxy deployments keep working even when CORS_ORIGINS is stale.
+      if (sameOrigin && origin === sameOrigin) {
+        callback(null, true);
         return;
       }
       if (allowed.includes(origin)) {
@@ -82,7 +98,11 @@ function corsOptions(): CorsOptions {
   };
 }
 
-app.use(cors(corsOptions()));
+app.use(
+  cors((req, callback) => {
+    callback(null, corsOptions(req));
+  })
+);
 app.use(express.json({ limit: "4mb" }));
 
 app.get("/", (_req, res) => {
