@@ -115,7 +115,21 @@ app.get("/", (_req, res) => {
   });
 });
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// Ping MySQL so Docker health reflects login-capable state (/health alone was process-only).
+app.get("/health", async (_req, res) => {
+  try {
+    const conn = await pool.getConnection();
+    try {
+      await conn.ping();
+    } finally {
+      conn.release();
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[health] database ping failed", e);
+    res.status(503).json({ ok: false, error: "db_unavailable" });
+  }
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/subscribers", subscribersRoutes);
