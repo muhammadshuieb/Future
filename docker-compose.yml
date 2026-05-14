@@ -140,6 +140,8 @@ services:
       # Public Grafana URL exposed by docker-compose (host port 3300). The page renders an
       # "Open Grafana" button when this is set so operators can deep-dive without leaving the panel.
       GRAFANA_PUBLIC_URL: ${GRAFANA_PUBLIC_URL:-http://localhost:3300}
+      # When set, POST /api/internal/alerts requires matching Bearer from Alertmanager (see alertmanager.yml).
+      ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro
@@ -265,7 +267,10 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v2.55.1
+    build:
+      context: ./docker/prometheus
+      dockerfile: Dockerfile
+    image: futureradius-prometheus:local
     user: "65534:65534"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -273,32 +278,58 @@ services:
       - "--storage.tsdb.retention.time=15d"
       - "--web.enable-lifecycle"
     volumes:
-      # Bind the whole tree (not a single file). Some hosts create a directory when a file bind
-      # source is missing, which breaks `file -> file` mounts with "not a directory".
-      - ./docker/prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:9090/-/healthy",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
     restart: unless-stopped
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    build:
+      context: ./docker/alertmanager
+      dockerfile: Dockerfile
+    image: futureradius-alertmanager:local
     user: "65534:65534"
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
     volumes:
-      - ./docker/alertmanager:/etc/alertmanager:ro
       - alertmanager_data:/alertmanager
     ports:
       - "127.0.0.1:9093:9093"
-    environment:
-      ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:9093/-/healthy",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
 
   grafana:
@@ -317,7 +348,8 @@ services:
     ports:
       - "127.0.0.1:3300:3000"
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

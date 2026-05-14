@@ -19,13 +19,11 @@ receivers:
   - name: futureradius-whatsapp
     webhook_configs:
       # Alertmanager reaches the API on the compose network (not published to the host).
+      # Bearer auth is not set here: Alertmanager does not expand shell-style ${VAR} in YAML.
+      # When ALERT_WEBHOOK_TOKEN is set on the API, add a matching secret via your own image
+      # or an envsubst entrypoint; until then the API accepts unsigned webhooks on this path.
       - url: "http://api:3000/api/internal/alerts"
         send_resolved: true
-        http_config:
-          authorization:
-            type: Bearer
-            # Read the token from the env var injected by docker-compose.
-            credentials: "${ALERT_WEBHOOK_TOKEN:-}"
 
 inhibit_rules:
   - source_matchers:
