@@ -44,7 +44,7 @@
       "type": "stat",
       "title": "Quota denied total",
       "gridPos": { "x": 16, "y": 8, "w": 8, "h": 4 },
-      "targets": [{ "expr": "sum(futureradius_worker_quota_denied_total)", "refId": "A" }]
+      "targets": [{ "expr": "sum(futureradius_quota_exceeded_total)", "refId": "A" }]
     },
     {
       "id": 6,

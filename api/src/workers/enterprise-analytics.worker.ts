@@ -2,10 +2,17 @@ import { randomUUID } from "crypto";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { config } from "../config.js";
-import { hasTable } from "../db/schemaGuards.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { createRedisClient, listenRedisErrors } from "../lib/redis-connection.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { computeQoeScore, nasOverloadFromPoorCounts } from "../services/qoe-score.service.js";
+import {
+  radiusAuthAcceptTotal,
+  radiusAuthRejectTotal,
+  radiusAccountingUpdatesTotal,
+} from "../services/metrics.service.js";
+
+let lastRadpostauthWatermark: number | null = null;
 
 const publisher = createRedisClient("enterprise-analytics-publish");
 listenRedisErrors(publisher, "enterprise-analytics");
@@ -127,6 +134,36 @@ export async function runQoeCycle(pool: Pool, tenantId: string): Promise<void> {
 }
 
 export async function runRadiusMonitorCycle(pool: Pool, tenantId: string): Promise<void> {
+  if (await hasTable(pool, "radpostauth")) {
+    if (lastRadpostauthWatermark === null) {
+      const [wm] = await pool.query<RowDataPacket[]>(`SELECT COALESCE(MAX(id), 0) AS m FROM radpostauth`);
+      lastRadpostauthWatermark = Number(wm[0]?.m ?? 0);
+    } else {
+      const [delta] = await pool.query<RowDataPacket[]>(
+        `SELECT id, reply FROM radpostauth WHERE id > ? ORDER BY id ASC LIMIT 8000`,
+        [lastRadpostauthWatermark]
+      );
+      for (const row of delta) {
+        const id = Number(row.id ?? 0);
+        if (id > lastRadpostauthWatermark) lastRadpostauthWatermark = id;
+        if (String(row.reply ?? "") === "Access-Accept") radiusAuthAcceptTotal.inc();
+        else radiusAuthRejectTotal.inc();
+      }
+    }
+  }
+
+  if (await hasTable(pool, "radacct")) {
+    const hasUpdate = await hasColumn(pool, "radacct", "acctupdatetime");
+    if (hasUpdate) {
+      const [acctRows] = await pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS c FROM radacct
+         WHERE acctupdatetime IS NOT NULL AND acctupdatetime >= DATE_SUB(NOW(), INTERVAL 75 SECOND)`
+      );
+      const c = Number(acctRows[0]?.c ?? 0);
+      if (c > 0) radiusAccountingUpdatesTotal.inc(c);
+    }
+  }
+
   if (!(await hasTable(pool, "radius_metrics_snapshots"))) return;
   const bucket = new Date();
   bucket.setSeconds(0, 0);

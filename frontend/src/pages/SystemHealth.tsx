@@ -33,7 +33,7 @@ type SystemHealthData = {
   };
   rates: {
     auth_fail_per_sec: number | null;
-    synthetic_fail_per_sec: number | null;
+    radius_auth_reject_per_sec: number | null;
     coa_timeout_per_sec: number | null;
     worker_cycle_p95_seconds: number | null;
     http_requests_per_sec: number | null;
@@ -280,10 +280,10 @@ export function SystemHealthPage() {
             valueClassName={statColour((data?.rates.auth_fail_per_sec ?? 0) <= 0.5)}
           />
           <Kpi
-            title={t("systemHealth.kpi.syntheticRadius")}
-            value={`${formatNumber(data?.rates.synthetic_fail_per_sec, 2)}/s`}
-            subtitle={t("systemHealth.kpi.syntheticRadius.hint")}
-            valueClassName={statColour((data?.rates.synthetic_fail_per_sec ?? 0) === 0)}
+            title="RADIUS rejects (radpostauth)"
+            value={`${formatNumber(data?.rates.radius_auth_reject_per_sec, 2)}/s`}
+            subtitle="Worker-sampled reject rate from FreeRADIUS post-auth log"
+            valueClassName={statColour((data?.rates.radius_auth_reject_per_sec ?? 0) < 1)}
           />
           <Kpi
             title={t("systemHealth.kpi.coaTimeouts")}

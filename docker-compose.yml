@@ -184,12 +184,6 @@ services:
       - "attempts:5"
     environment:
       WORKER_METRICS_PORT: "9101"
-      # Synthetic probe runs radclient via `docker exec` inside the freeradius container
-      # (works regardless of network_mode:host quirks). Override CONTAINER name when running
-      # under a different compose project name (default: futureradius-freeradius-1).
-      SYNTH_RADIUS_VIA_DOCKER: ${SYNTH_RADIUS_VIA_DOCKER:-1}
-      SYNTH_RADIUS_CONTAINER: ${SYNTH_RADIUS_CONTAINER:-futureradius-freeradius-1}
-      SYNTH_RADIUS_HOST_PORT: ${SYNTH_RADIUS_HOST_PORT:-127.0.0.1:1812}
       UPDATE_USAGE_EVERY_MS: ${UPDATE_USAGE_EVERY_MS:-60000}
       MIKROTIK_API_SYNC_MS: ${MIKROTIK_API_SYNC_MS:-0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}

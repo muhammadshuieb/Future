@@ -3,6 +3,8 @@ import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { tryDecryptSecret } from "./crypto.service.js";
+import { logRouterCommand } from "./router-command-log.service.js";
+import { routerApiFailuresTotal } from "./metrics.service.js";
 
 type KickResult = { ok: boolean; message: string };
 
@@ -92,7 +94,7 @@ export async function mikrotikKickUsername(opts: {
       return { ok: false, message: "mikrotik_api_not_configured" };
     }
     const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password
+      `SELECT id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password
        FROM nas_devices
        WHERE tenant_id = ? AND status = 'active'
          AND (ip = ? OR wireguard_tunnel_ip = ?)
@@ -113,7 +115,22 @@ export async function mikrotikKickUsername(opts: {
       const tunnel = String(row.wireguard_tunnel_ip ?? "").trim();
       const publicIp = String(row.ip ?? nasIp);
       const host = tunnel || publicIp;
-      return mikrotikRestKickWithCredentials(host, username, apiUser, apiPass);
+      const started = Date.now();
+      const res = await mikrotikRestKickWithCredentials(host, username, apiUser, apiPass);
+      const durationMs = Date.now() - started;
+      await logRouterCommand(pool, {
+        tenantId,
+        routerId: String(row.id ?? ""),
+        nasIp: host,
+        commandType: "rest.kick",
+        payload: { username, paths: ["/ppp/active", "/ip/hotspot/active"] },
+        result: res,
+        errorMessage: res.ok ? null : res.message,
+        durationMs,
+        retryCount: 0,
+      });
+      if (!res.ok) routerApiFailuresTotal.inc({ command: "rest.kick" });
+      return res;
     }
   }
   if (await hasTable(pool, "nas_servers")) {

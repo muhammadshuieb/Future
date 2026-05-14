@@ -11,14 +11,16 @@ import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { withUsageCycleLock } from "../lib/usage-lock.js";
 import { enqueueCoaDisconnect } from "../services/task-queue.service.js";
+import { log } from "../services/logger.service.js";
 import {
   radiusActiveSubscribers,
   radiusOpenSessions,
   workerCycleDurationSeconds,
-  workerExpiredHandledTotal,
-  workerQuotaDeniedTotal,
+  expiredUsersTotal,
+  quotaExceededTotal,
   workerStaleSessionsClosedTotal,
 } from "../services/metrics.service.js";
+import { reconcileSubscriberSessions } from "../services/session-engine.service.js";
 
 /** Sample live gauges so the worker's /metrics endpoint reports the same truth as the api's. */
 async function sampleRadiusGauges(): Promise<void> {
@@ -353,7 +355,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       console.error("[usage-worker] emit USER_EXPIRED failed", e);
     }
     expiredHandledCount += 1;
-    workerExpiredHandledTotal.inc();
+    expiredUsersTotal.inc();
   }
 
   let overdueInvoiceDenyCount = 0;
@@ -440,13 +442,28 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       console.error("[usage-worker] emit USER_QUOTA_SUSPENDED failed", e);
     }
     quotaDeniedCount += 1;
-    workerQuotaDeniedTotal.inc();
+    quotaExceededTotal.inc();
   }
 
   const stalePolicy = await closeStaleOpenRadacctSessionsByPolicy(tenantId);
   const timedOut = await closeTimedOutSessions();
+  await reconcileSubscriberSessions(pool, tenantId).catch((e) =>
+    console.warn("[usage-worker] session reconcile failed", e instanceof Error ? e.message : e)
+  );
   console.info(
     `[usage-worker] cycle summary: expired_handled=${expiredHandledCount} overdue_invoice_radius_cleared=${overdueInvoiceDenyCount} quota_suspended=${quotaDeniedCount} stale_policy_closed=${stalePolicy} timed_out=${timedOut}`
+  );
+  log.info(
+    "usage_cycle_summary",
+    {
+      tenant_id: tenantId,
+      expired_handled: expiredHandledCount,
+      overdue_invoice_cleared: overdueInvoiceDenyCount,
+      quota_suspended: quotaDeniedCount,
+      stale_policy_closed: stalePolicy,
+      timed_out_sessions: timedOut,
+    },
+    "usage-worker"
   );
 }
 

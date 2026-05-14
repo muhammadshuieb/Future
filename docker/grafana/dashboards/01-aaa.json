@@ -47,23 +47,26 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Synthetic radclient probe results",
+      "title": "RADIUS auth (radpostauth) accept vs reject rate",
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "targets": [{ "expr": "sum by (result) (rate(futureradius_synth_check_total[2m]))", "legendFormat": "{{result}}", "refId": "A" }]
+      "targets": [
+        { "expr": "sum(rate(futureradius_radius_auth_accept_total[2m]))", "legendFormat": "accept", "refId": "A" },
+        { "expr": "sum(rate(futureradius_radius_auth_reject_total[2m]))", "legendFormat": "reject", "refId": "B" }
+      ]
     },
     {
       "id": 7,
       "type": "timeseries",
       "title": "Quota denials per cycle",
       "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "targets": [{ "expr": "rate(futureradius_worker_quota_denied_total[5m])", "legendFormat": "denied", "refId": "A" }]
+      "targets": [{ "expr": "rate(futureradius_quota_exceeded_total[5m])", "legendFormat": "denied", "refId": "A" }]
     },
     {
       "id": 8,
       "type": "timeseries",
       "title": "Expired subscribers handled",
       "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "targets": [{ "expr": "rate(futureradius_worker_expired_handled_total[5m])", "legendFormat": "expired", "refId": "A" }]
+      "targets": [{ "expr": "rate(futureradius_expired_users_total[5m])", "legendFormat": "expired", "refId": "A" }]
     }
   ]
 }

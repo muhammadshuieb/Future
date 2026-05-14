@@ -21,16 +21,16 @@ groups:
           summary: "Brute-force threshold reached"
           description: "Login attempts crossed BF_THRESHOLD within BF_WINDOW_SECONDS. Investigate Redis bf:* keys and panel access logs."
 
-      - alert: SyntheticRadiusFailing
+      - alert: RadiusAuthDegraded
         expr: |
-          sum(rate(futureradius_synth_check_total{result="error"}[5m])) > 0
-            and on() sum(rate(futureradius_synth_check_total{result="reject"}[5m])) == 0
-        for: 5m
+          sum(rate(futureradius_radius_auth_reject_total[10m])) > 50
+            and on() sum(rate(futureradius_radius_auth_accept_total[10m])) < 1
+        for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "FreeRADIUS not answering synthetic probes"
-          description: "Synthetic radclient probes have stopped receiving Access-Reject. End-to-end RADIUS pipeline likely down."
+          summary: "RADIUS auth pipeline unhealthy (rejects without accepts)"
+          description: "radpostauth shows sustained rejects with almost no accepts — check FreeRADIUS, SQL, and NAS secrets."
 
   - name: futureradius-nas
     interval: 30s

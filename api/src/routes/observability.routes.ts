@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { RowDataPacket } from "mysql2";
 import { Queue } from "bullmq";
 import { createRedisClient } from "../lib/redis-connection.js";
+import { FUTURE_RADIUS_JOB_QUEUE } from "../lib/bullmq-queue-name.js";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -29,7 +30,7 @@ const router = Router();
 router.use(requireAuth);
 
 const redis = createRedisClient("api-observability");
-const jobQueue = new Queue("radius-manager", { connection: redis });
+const jobQueue = new Queue(FUTURE_RADIUS_JOB_QUEUE, { connection: redis });
 const workerHeartbeatKey = "future-radius:worker:heartbeat";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -221,7 +222,7 @@ router.get("/system-health", routePolicy({ allow: ["admin", "manager"] }), async
       queued: poolQueuedProm ?? (await readGaugeValue(mysqlPoolConnections, { state: "queued" })),
     },
     queue_lag_seconds:
-      queueLagProm ?? (await readGaugeValue(bullmqQueueLagSeconds, { queue: "radius-manager" })),
+      queueLagProm ?? (await readGaugeValue(bullmqQueueLagSeconds, { queue: FUTURE_RADIUS_JOB_QUEUE })),
     process: {
       uptime_seconds: Math.floor(process.uptime()),
       memory: process.memoryUsage(),
@@ -234,14 +235,14 @@ router.get("/system-health", routePolicy({ allow: ["admin", "manager"] }), async
   //    those cards).
   const [
     authFailRate,
-    syntheticFailRate,
+    radiusAuthRejectRate,
     coaTimeoutRate,
     workerCycleP95,
     httpRequestsRate,
     targetsUp,
   ] = await Promise.all([
     promScalar(`sum(rate(futureradius_auth_failed_total[5m]))`),
-    promScalar(`sum(rate(futureradius_synth_check_total{result!="ok"}[5m]))`),
+    promScalar(`sum(rate(futureradius_radius_auth_reject_total[5m]))`),
     promScalar(`sum(rate(futureradius_coa_disconnect_total{result="timeout"}[5m]))`),
     promScalar(`histogram_quantile(0.95, sum(rate(futureradius_worker_cycle_duration_seconds_bucket[5m])) by (le))`),
     promScalar(`sum(rate(futureradius_http_requests_total[1m]))`),
@@ -305,7 +306,7 @@ router.get("/system-health", routePolicy({ allow: ["admin", "manager"] }), async
     live: liveSnapshot,
     rates: {
       auth_fail_per_sec: authFailRate,
-      synthetic_fail_per_sec: syntheticFailRate,
+      radius_auth_reject_per_sec: radiusAuthRejectRate,
       coa_timeout_per_sec: coaTimeoutRate,
       worker_cycle_p95_seconds: workerCycleP95,
       http_requests_per_sec: httpRequestsRate,

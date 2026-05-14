@@ -41,15 +41,15 @@ export const workerCycleDurationSeconds = new Histogram({
   registers: [registry],
 });
 
-export const workerExpiredHandledTotal = new Counter({
-  name: "futureradius_worker_expired_handled_total",
-  help: "Number of subscribers handled as expired during worker cycles.",
+export const expiredUsersTotal = new Counter({
+  name: "futureradius_expired_users_total",
+  help: "Subscribers transitioned to expired after CoA / RADIUS enforcement.",
   registers: [registry],
 });
 
-export const workerQuotaDeniedTotal = new Counter({
-  name: "futureradius_worker_quota_denied_total",
-  help: "Number of subscribers newly denied today due to quota during worker cycles.",
+export const quotaExceededTotal = new Counter({
+  name: "futureradius_quota_exceeded_total",
+  help: "Subscribers suspended for lifetime quota exhaustion.",
   registers: [registry],
 });
 
@@ -107,10 +107,36 @@ export const authFailedTotal = new Counter({
   registers: [registry],
 });
 
+export const radiusAuthAcceptTotal = new Counter({
+  name: "futureradius_radius_auth_accept_total",
+  help: "FreeRADIUS Access-Accept rows observed in radpostauth since worker boot.",
+  registers: [registry],
+});
+
+export const radiusAuthRejectTotal = new Counter({
+  name: "futureradius_radius_auth_reject_total",
+  help: "FreeRADIUS non-Accept replies observed in radpostauth since worker boot.",
+  registers: [registry],
+});
+
+export const radiusAccountingUpdatesTotal = new Counter({
+  name: "futureradius_radius_accounting_updates_total",
+  help: "Approximate radacct accounting touches sampled during RADIUS monitor cycles.",
+  registers: [registry],
+});
+
+export const routerApiFailuresTotal = new Counter({
+  name: "futureradius_router_api_failures_total",
+  help: "MikroTik RouterOS API call failures.",
+  labelNames: ["command"] as const,
+  registers: [registry],
+});
+
+/** @deprecated Synthetic probe removed; counter unused. */
 export const synthCheckTotal = new Counter({
   name: "futureradius_synth_check_total",
-  help: "Synthetic radclient probes against the local FreeRADIUS instance.",
-  labelNames: ["result"] as const, // ok | reject | error
+  help: "Deprecated; kept so old Grafana panels do not break.",
+  labelNames: ["result"] as const,
   registers: [registry],
 });
 

@@ -55,25 +55,25 @@ export const REMEDIATION_CATALOG: Record<string, RemediationEntry> = {
       { i18n: "remediation.BruteForceDetected.step.tightenLimit" },
     ],
   },
-  SyntheticRadiusFailing: {
-    alertname: "SyntheticRadiusFailing",
+  RadiusAuthDegraded: {
+    alertname: "RadiusAuthDegraded",
     severity: "critical",
-    cause_i18n: "remediation.SyntheticRadiusFailing.cause",
+    cause_i18n: "remediation.RadiusAuthDegraded.cause",
     steps: [
       {
-        i18n: "remediation.SyntheticRadiusFailing.step.containerStatus",
+        i18n: "remediation.RadiusAuthDegraded.step.containerStatus",
         command: "docker compose ps freeradius",
       },
       {
-        i18n: "remediation.SyntheticRadiusFailing.step.logs",
+        i18n: "remediation.RadiusAuthDegraded.step.logs",
         command: "docker compose logs freeradius --tail 80",
       },
       {
-        i18n: "remediation.SyntheticRadiusFailing.step.dbReachable",
+        i18n: "remediation.RadiusAuthDegraded.step.dbReachable",
         command: "docker compose exec freeradius mysql -uradius -p$RADIUS_DB_PASSWORD -h mysql -e 'SELECT 1'",
       },
       {
-        i18n: "remediation.SyntheticRadiusFailing.step.restart",
+        i18n: "remediation.RadiusAuthDegraded.step.restart",
         command: "docker compose restart freeradius",
       },
     ],
@@ -129,7 +129,7 @@ export const REMEDIATION_CATALOG: Record<string, RemediationEntry> = {
       },
       {
         i18n: "remediation.BullMqQueueLag.step.queueState",
-        command: "docker compose exec redis redis-cli LLEN bull:radius-manager:waiting",
+        command: "docker compose exec redis redis-cli KEYS 'bull:futureradius-jobs:*'",
       },
       {
         i18n: "remediation.BullMqQueueLag.step.restartWorker",
