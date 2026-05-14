@@ -389,6 +389,11 @@ export const translations: Record<Locale, Record<string, string>> = {
       "• حالة «أوفلاين» في لوحة المستقبل تعني غالباً فشل ping/API وليست بالضرورة فشل RADIUS — راجع النقاط أعلاه.",
     "nas.delete": "حذف NAS",
     "nas.deleteConfirm": "حذف هذا الـ NAS نهائياً من النظام وجدول FreeRADIUS؟ لا يمكن التراجع.",
+    "nas.syncRadius": "مزامنة جدول RADIUS (nas)",
+    "nas.syncRadiusHint":
+      "يعيد كتابة جدول FreeRADIUS `nas` من أجهزة NAS في اللوحة. بعد النجاح نفّذ على السيرفر: docker compose restart freeradius",
+    "nas.syncRadiusOk":
+      "تمت المزامنة. أعد تشغيل FreeRADIUS ليحمّل العملاء من قاعدة البيانات:\ndocker compose restart freeradius",
     "nas.status": "الاتصال",
     "nas.updated": "تم تحديث NAS",
     "nas.created": "تم إضافة NAS",
@@ -1575,6 +1580,11 @@ export const translations: Record<Locale, Record<string, string>> = {
       "• \"Offline\" in this app usually reflects ping/API health, not RADIUS auth — verify the items above.",
     "nas.delete": "Delete NAS",
     "nas.deleteConfirm": "Permanently remove this NAS from the app and FreeRADIUS nas table? This cannot be undone.",
+    "nas.syncRadius": "Sync RADIUS nas table",
+    "nas.syncRadiusHint":
+      "Rebuilds the FreeRADIUS `nas` table from NAS devices in this panel. After success, on the server run: docker compose restart freeradius",
+    "nas.syncRadiusOk":
+      "Synced. Restart FreeRADIUS so it reloads SQL clients:\ndocker compose restart freeradius",
     "nas.status": "Status",
     "nas.updated": "NAS updated",
     "nas.created": "NAS added",
