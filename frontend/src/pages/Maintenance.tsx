@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import { Database, Download, Link2, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
@@ -124,13 +124,10 @@ export function MaintenancePage() {
     from: string;
     to_exclusive: string;
     radacct_rows: number;
-    rm_radacct_rows: number;
     radacct_distinct_users: number;
-    rm_radacct_distinct_users: number;
   } | null>(null);
   const [restoreInfo, setRestoreInfo] = useState<{
     max_bytes: number;
-    schema_extensions_resolved: string | null;
     target_database: string;
     last_success: {
       file_name: string;
@@ -144,6 +141,53 @@ export function MaintenancePage() {
       mysql_output_excerpt?: string | null;
     } | null;
   } | null>(null);
+  // Selective column-level restore state
+  const [selectiveMode, setSelectiveMode] = useState(false);
+  const [tablesMeta, setTablesMeta] = useState<{
+    target_database: string;
+    tables: Array<{
+      table: string;
+      exists: boolean;
+      primary_key: string[];
+      columns: Array<{
+        name: string;
+        data_type: string;
+        is_nullable: boolean;
+        has_default: boolean;
+        is_auto_increment: boolean;
+        is_primary_key: boolean;
+        is_unique_key: boolean;
+        required_for_insert: boolean;
+      }>;
+    }>;
+  } | null>(null);
+  const [tablesLoading, setTablesLoading] = useState(false);
+  const [selectedColumnsByTable, setSelectedColumnsByTable] = useState<Record<string, Set<string>>>({});
+  const [selectiveJob, setSelectiveJob] = useState<{
+    id: string;
+    status: "running" | "success" | "failed";
+    progress_percent: number;
+    stage: string;
+    message: string | null;
+    error: string | null;
+    finished_at: string | null;
+    result: {
+      bytes: number;
+      staging_db: string;
+      total_affected_rows: number;
+      tables: Array<{
+        table: string;
+        ok: boolean;
+        effective_columns: string[];
+        required_columns: string[];
+        ignored_columns: string[];
+        staging_rows: number;
+        affected_rows: number;
+        error?: string;
+      }>;
+    } | null;
+  } | null>(null);
+  const [selectiveRunning, setSelectiveRunning] = useState(false);
   const [databaseSize, setDatabaseSize] = useState<DatabaseSizeInfo | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     message: string;
@@ -227,7 +271,6 @@ export function MaintenancePage() {
     if (res.ok) {
       const j = (await res.json()) as {
         max_bytes: number;
-        schema_extensions_resolved: string | null;
         target_database: string;
         last_success: {
           file_name: string;
@@ -409,9 +452,7 @@ export function MaintenancePage() {
           from: string;
           to_exclusive: string;
           radacct_rows: number;
-          rm_radacct_rows: number;
           radacct_distinct_users: number;
-          rm_radacct_distinct_users: number;
         };
       };
       setPrunePreview(j.preview);
@@ -452,14 +493,14 @@ export function MaintenancePage() {
         deleted: {
           year: number;
           radacct_rows: number;
-          rm_radacct_rows: number;
+          radacct_distinct_users: number;
         };
       };
       setInfo(
         t("maintenance.radacctPrune.doneInfo")
           .replace("{year}", String(j.deleted.year))
           .replace("{radacct_rows}", String(j.deleted.radacct_rows))
-          .replace("{rm_radacct_rows}", String(j.deleted.rm_radacct_rows))
+          .replace("{radacct_users}", String(j.deleted.radacct_distinct_users))
       );
       await previewRadacctPrune();
     } finally {
@@ -529,6 +570,214 @@ export function MaintenancePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setRestoring(false);
+    }
+  }
+
+  // Selective column-level restore helpers
+  const loadRestoreTables = useCallback(async () => {
+    if (user?.role !== "admin") return;
+    setTablesLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/maintenance/restore-sql/tables");
+      if (!res.ok) {
+        setError(await readApiError(res));
+        return;
+      }
+      const j = (await res.json()) as {
+        target_database: string;
+        tables: Array<{
+          table: string;
+          exists: boolean;
+          primary_key: string[];
+          columns: Array<{
+            name: string;
+            data_type: string;
+            is_nullable: boolean;
+            has_default: boolean;
+            is_auto_increment: boolean;
+            is_primary_key: boolean;
+            is_unique_key: boolean;
+            required_for_insert: boolean;
+          }>;
+        }>;
+      };
+      setTablesMeta({ target_database: j.target_database, tables: j.tables });
+      setSelectedColumnsByTable((prev) => {
+        const next: Record<string, Set<string>> = { ...prev };
+        for (const t of j.tables) {
+          if (!t.exists) continue;
+          const existing = next[t.table] ?? new Set<string>();
+          for (const c of t.columns) {
+            if (c.required_for_insert) existing.add(c.name);
+          }
+          next[t.table] = existing;
+        }
+        return next;
+      });
+    } finally {
+      setTablesLoading(false);
+    }
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (selectiveMode && !tablesMeta && !tablesLoading) {
+      void loadRestoreTables();
+    }
+  }, [selectiveMode, tablesMeta, tablesLoading, loadRestoreTables]);
+
+  function isColumnSelected(table: string, column: string): boolean {
+    return selectedColumnsByTable[table]?.has(column) ?? false;
+  }
+
+  function toggleColumn(table: string, column: string, requiredLocked: boolean) {
+    if (requiredLocked) return;
+    setSelectedColumnsByTable((prev) => {
+      const next = { ...prev };
+      const set = new Set(next[table] ?? []);
+      if (set.has(column)) set.delete(column);
+      else set.add(column);
+      next[table] = set;
+      return next;
+    });
+  }
+
+  function isTableSelected(table: string): boolean {
+    return (selectedColumnsByTable[table]?.size ?? 0) > 0;
+  }
+
+  function toggleEntireTable(table: string) {
+    const meta = tablesMeta?.tables.find((t) => t.table === table);
+    if (!meta) return;
+    setSelectedColumnsByTable((prev) => {
+      const next = { ...prev };
+      const current = next[table] ?? new Set<string>();
+      if (current.size > 0) {
+        const required = new Set(
+          meta.columns.filter((c) => c.required_for_insert).map((c) => c.name)
+        );
+        next[table] = required;
+      } else {
+        next[table] = new Set(meta.columns.map((c) => c.name));
+      }
+      return next;
+    });
+  }
+
+  function selectiveSelectionSummary(): { tables: number; columns: number } {
+    let tables = 0;
+    let columns = 0;
+    for (const [, set] of Object.entries(selectedColumnsByTable)) {
+      if (!set || set.size === 0) continue;
+      tables += 1;
+      columns += set.size;
+    }
+    return { tables, columns };
+  }
+
+  async function pollSelectiveJob(jobId: string) {
+    let done = false;
+    while (!done) {
+      const res = await apiFetch(`/api/maintenance/restore-sql/selective/progress/${jobId}`);
+      if (!res.ok) {
+        setError(await readApiError(res));
+        setSelectiveRunning(false);
+        return;
+      }
+      const json = (await res.json()) as {
+        ok: boolean;
+        job: NonNullable<typeof selectiveJob>;
+      };
+      setSelectiveJob(json.job);
+      if (json.job.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      done = true;
+      if (json.job.status === "success") {
+        setInfo(t("maintenance.selectiveRestoreSuccess"));
+      } else {
+        setError(
+          [t("maintenance.selectiveRestoreFailed"), json.job.error ?? ""]
+            .filter(Boolean)
+            .join("\n")
+            .trim()
+        );
+      }
+      setSelectiveRunning(false);
+      await loadRestoreInfo();
+    }
+  }
+
+  async function runSelectiveRestore() {
+    if (!restoreFile) {
+      setError(t("maintenance.restorePickFile"));
+      return;
+    }
+    const summary = selectiveSelectionSummary();
+    if (summary.tables === 0 || summary.columns === 0) {
+      setError(t("maintenance.selectiveNothingSelected"));
+      return;
+    }
+    openConfirm(
+      t("maintenance.selectiveConfirm")
+        .replace("{tables}", String(summary.tables))
+        .replace("{columns}", String(summary.columns)),
+      () => void confirmRunSelectiveRestore(),
+      "warning"
+    );
+  }
+
+  async function confirmRunSelectiveRestore() {
+    if (!restoreFile) return;
+    setSelectiveRunning(true);
+    setSelectiveJob(null);
+    setError(null);
+    setInfo(null);
+    try {
+      const payload: Record<string, string[]> = {};
+      for (const [tbl, set] of Object.entries(selectedColumnsByTable)) {
+        if (!set || set.size === 0) continue;
+        payload[tbl] = [...set];
+      }
+      const fd = new FormData();
+      fd.append("file", restoreFile);
+      fd.append("columnsByTable", JSON.stringify(payload));
+      const res = await apiFetch("/api/maintenance/restore-sql/selective", {
+        method: "POST",
+        body: fd,
+      });
+      const text = await res.text();
+      let j: {
+        ok?: boolean;
+        accepted?: boolean;
+        job_id?: string;
+        status?: NonNullable<typeof selectiveJob>;
+        error?: string;
+      } = {};
+      try {
+        j = text ? (JSON.parse(text) as typeof j) : {};
+      } catch {
+        setError(text.slice(0, 500) || res.statusText);
+        setSelectiveRunning(false);
+        return;
+      }
+      if (!res.ok) {
+        setError(j.error ?? (await readApiError(res)));
+        setSelectiveRunning(false);
+        return;
+      }
+      if (!j.job_id || !j.status) {
+        setError(t("maintenance.selectiveRestoreFailed"));
+        setSelectiveRunning(false);
+        return;
+      }
+      setSelectiveJob(j.status);
+      setInfo(t("maintenance.restoreStartedWithProgress"));
+      await pollSelectiveJob(j.job_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setSelectiveRunning(false);
     }
   }
 
@@ -829,6 +1078,206 @@ export function MaintenancePage() {
             <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
             {restoring ? t("common.loading") : t("maintenance.restoreRun")}
           </Button>
+
+          {/* Selective column-level restore */}
+          <div className="mt-4 border-t border-amber-500/20 pt-4">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={selectiveMode}
+                onChange={(e) => {
+                  setSelectiveMode(e.target.checked);
+                  if (!e.target.checked) {
+                    setSelectiveJob(null);
+                  }
+                }}
+              />
+              {t("maintenance.selectiveToggle")}
+            </label>
+            <p className="mt-1 text-xs opacity-70">{t("maintenance.selectiveHint")}</p>
+            <p className="mt-1 text-xs text-amber-300/90">{t("maintenance.selectiveSafetyNote")}</p>
+
+            {selectiveMode ? (
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void loadRestoreTables()}
+                    disabled={tablesLoading}
+                  >
+                    <RefreshCw className={`h-3 w-3 ${isRtl ? "ms-1" : "me-1"} ${tablesLoading ? "animate-spin" : ""}`} />
+                    {tablesLoading ? t("common.loading") : t("maintenance.selectiveReloadTables")}
+                  </Button>
+                  {tablesMeta ? (
+                    <span className="opacity-70">
+                      {t("maintenance.selectiveSummary")
+                        .replace("{tables}", String(selectiveSelectionSummary().tables))
+                        .replace("{columns}", String(selectiveSelectionSummary().columns))}
+                    </span>
+                  ) : null}
+                </div>
+
+                {tablesMeta ? (
+                  <div className="max-h-96 space-y-2 overflow-y-auto rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/10 p-3">
+                    {tablesMeta.tables.map((tbl) => {
+                      if (!tbl.exists) {
+                        return (
+                          <div key={tbl.table} className="rounded-lg border border-dashed border-red-500/30 px-3 py-2 text-xs opacity-70">
+                            <code>{tbl.table}</code> — {t("maintenance.selectiveTableMissing")}
+                          </div>
+                        );
+                      }
+                      const tableSelected = isTableSelected(tbl.table);
+                      return (
+                        <details key={tbl.table} className="rounded-lg border border-[hsl(var(--border))]/60 bg-[hsl(var(--background))]/40">
+                          <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={tableSelected}
+                              onChange={() => toggleEntireTable(tbl.table)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <code className="font-mono">{tbl.table}</code>
+                            <span className="text-xs opacity-60">
+                              ({tbl.columns.length} {t("maintenance.selectiveColumnsLabel")}
+                              {tableSelected
+                                ? ` — ${selectedColumnsByTable[tbl.table]?.size ?? 0} ${t("maintenance.selectiveSelected")}`
+                                : ""}
+                              )
+                            </span>
+                          </summary>
+                          <div className="grid grid-cols-1 gap-1 border-t border-[hsl(var(--border))]/40 p-3 text-xs sm:grid-cols-2 md:grid-cols-3">
+                            {tbl.columns.map((col) => {
+                              const checked = isColumnSelected(tbl.table, col.name);
+                              const locked = col.required_for_insert;
+                              return (
+                                <label
+                                  key={col.name}
+                                  className={`flex items-center gap-2 rounded px-1.5 py-1 ${
+                                    locked ? "opacity-80" : "hover:bg-[hsl(var(--muted))]/40"
+                                  }`}
+                                  title={`${col.data_type}${col.is_primary_key ? " آ· PK" : ""}${
+                                    !col.is_nullable ? " آ· NOT NULL" : ""
+                                  }${col.is_auto_increment ? " آ· AUTO_INCREMENT" : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked || locked}
+                                    disabled={locked}
+                                    onChange={() => toggleColumn(tbl.table, col.name, locked)}
+                                  />
+                                  <span className="font-mono">{col.name}</span>
+                                  {col.is_primary_key ? (
+                                    <span className="rounded bg-emerald-500/20 px-1 text-[10px] text-emerald-300">PK</span>
+                                  ) : null}
+                                  {locked && !col.is_primary_key ? (
+                                    <span className="rounded bg-amber-500/20 px-1 text-[10px] text-amber-300">
+                                      {t("maintenance.selectiveRequired")}
+                                    </span>
+                                  ) : null}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                <Button
+                  type="button"
+                  onClick={() => void runSelectiveRestore()}
+                  disabled={
+                    selectiveRunning ||
+                    !restoreFile ||
+                    selectiveSelectionSummary().tables === 0
+                  }
+                >
+                  <Upload className={`h-4 w-4 ${isRtl ? "ms-2" : "me-2"}`} />
+                  {selectiveRunning ? t("common.loading") : t("maintenance.selectiveRunButton")}
+                </Button>
+
+                {selectiveJob ? (
+                  <div className="space-y-2 rounded-xl border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/20 p-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="opacity-80">{t("maintenance.restoreProgressTitle")}</span>
+                      <span className="font-semibold">
+                        {Math.max(0, Math.min(100, selectiveJob.progress_percent))}%
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+                      <div
+                        className="h-full rounded-full bg-[hsl(var(--primary))] transition-all"
+                        style={{
+                          width: `${Math.max(0, Math.min(100, selectiveJob.progress_percent))}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="text-xs opacity-75">
+                      {selectiveJob.status === "running"
+                        ? t("maintenance.restoreInProgress")
+                        : selectiveJob.status === "success"
+                          ? t("maintenance.restoreProgressDone")
+                          : t("maintenance.restoreProgressFailed")}
+                    </div>
+                    {selectiveJob.error ? (
+                      <div className="text-xs text-red-300">{selectiveJob.error}</div>
+                    ) : null}
+                    {selectiveJob.result ? (
+                      <div className="mt-2 space-y-1 text-xs">
+                        <div className="font-semibold opacity-90">
+                          {t("maintenance.selectiveTotalAffected")}: {selectiveJob.result.total_affected_rows}
+                        </div>
+                        <div className="overflow-x-auto rounded-lg border border-[hsl(var(--border))]/60">
+                          <table className="w-full text-xs">
+                            <thead className="bg-[hsl(var(--muted))]/40 text-[10px] uppercase opacity-70">
+                              <tr>
+                                <th className="px-2 py-1 text-left">{t("maintenance.selectiveTbl")}</th>
+                                <th className="px-2 py-1 text-left">{t("maintenance.selectiveStatus")}</th>
+                                <th className="px-2 py-1 text-right">{t("maintenance.selectiveBackupRows")}</th>
+                                <th className="px-2 py-1 text-right">{t("maintenance.selectiveAffected")}</th>
+                                <th className="px-2 py-1 text-left">{t("maintenance.selectiveColsApplied")}</th>
+                                <th className="px-2 py-1 text-left">{t("maintenance.selectiveColsIgnored")}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectiveJob.result.tables.map((row) => (
+                                <tr
+                                  key={row.table}
+                                  className="border-t border-[hsl(var(--border))]/40"
+                                >
+                                  <td className="px-2 py-1 font-mono">{row.table}</td>
+                                  <td className="px-2 py-1">
+                                    {row.ok ? (
+                                      <span className="text-emerald-400">✓</span>
+                                    ) : (
+                                      <span className="text-red-400" title={row.error ?? ""}>
+                                        ✗ {row.error ?? "-"}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-1 text-right">{row.staging_rows}</td>
+                                  <td className="px-2 py-1 text-right">{row.affected_rows}</td>
+                                  <td className="px-2 py-1 font-mono text-[10px]">
+                                    {row.effective_columns.join(", ") || "-"}
+                                  </td>
+                                  <td className="px-2 py-1 font-mono text-[10px] opacity-70">
+                                    {row.ignored_columns.join(", ") || "-"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </Card>
       ) : null}
 
@@ -863,15 +1312,8 @@ export function MaintenancePage() {
                   .replace("{to}", prunePreview.to_exclusive)}
               </div>
               <div>{t("maintenance.radacctPrune.radacctRows").replace("{count}", String(prunePreview.radacct_rows))}</div>
-              <div>{t("maintenance.radacctPrune.rmRadacctRows").replace("{count}", String(prunePreview.rm_radacct_rows))}</div>
               <div>
                 {t("maintenance.radacctPrune.radacctUsers").replace("{count}", String(prunePreview.radacct_distinct_users))}
-              </div>
-              <div>
-                {t("maintenance.radacctPrune.rmRadacctUsers").replace(
-                  "{count}",
-                  String(prunePreview.rm_radacct_distinct_users)
-                )}
               </div>
             </div>
           ) : null}

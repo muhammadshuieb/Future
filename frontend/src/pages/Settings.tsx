@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bell, Radio, Save, Send, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bell, Database, Radio, Save, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { useTheme } from "../context/ThemeContext";
 import { Button } from "../components/ui/Button";
@@ -15,6 +15,8 @@ type SystemSettings = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  radpostauth_retention_enabled: boolean;
+  radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
@@ -39,6 +41,8 @@ export function SettingsPage() {
     backup_alert_phone: "",
     backup_alert_use_session_owner: true,
     server_log_retention_days: 14,
+    radpostauth_retention_enabled: true,
+    radpostauth_retention_months: 2,
     user_idle_timeout_minutes: 4,
     mikrotik_interim_update_minutes: 1,
     disconnect_on_activation: true,
@@ -92,6 +96,29 @@ export function SettingsPage() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function runRadpostauthPrune() {
+    setErr(null);
+    setMsg(null);
+    try {
+      const res = await apiFetch("/api/system-settings/radpostauth-prune", { method: "POST" });
+      if (!res.ok) {
+        const raw = await readApiError(res);
+        setErr(formatStaffApiError(res.status, raw, t));
+        return;
+      }
+      const j = (await res.json()) as { deleted?: number; cutoff?: string | null; ran?: boolean };
+      const deleted = Number(j.deleted ?? 0);
+      const cutoff = j.cutoff ?? "—";
+      setMsg(
+        t("settings.radpostauthPruneDone")
+          .replace("{deleted}", String(deleted))
+          .replace("{cutoff}", String(cutoff))
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -160,6 +187,56 @@ export function SettingsPage() {
           }
           hint={t("settings.logRetentionHint")}
         />
+      </Card>
+
+      <Card className="space-y-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <Database className="h-4 w-4 text-rose-500" />
+          {t("settings.radpostauthRetention")}
+        </div>
+        <p className="whitespace-pre-wrap text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">
+          {t("settings.radpostauthRetentionIntro")}
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.radpostauth_retention_enabled}
+            onChange={(e) =>
+              setSettings((prev) => ({ ...prev, radpostauth_retention_enabled: e.target.checked }))
+            }
+          />
+          {t("settings.radpostauthRetentionEnabled")}
+        </label>
+        <TextField
+          label={t("settings.radpostauthRetentionMonths")}
+          type="number"
+          min={1}
+          max={36}
+          value={String(settings.radpostauth_retention_months)}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              radpostauth_retention_months: Math.max(1, Math.min(36, Number(e.target.value) || 2)),
+            }))
+          }
+          hint={t("settings.radpostauthRetentionMonthsHint")}
+          disabled={!settings.radpostauth_retention_enabled}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={save} disabled={saving || loading}>
+            <Save className="h-4 w-4" />
+            {saving ? t("common.loading") : t("common.save")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={runRadpostauthPrune}
+            disabled={!settings.radpostauth_retention_enabled || saving || loading}
+          >
+            <Trash2 className="h-4 w-4" />
+            {t("settings.radpostauthPruneNow")}
+          </Button>
+        </div>
       </Card>
 
       <Card className="space-y-4">

@@ -3,6 +3,11 @@ export function canManageOperations(role: string | undefined): boolean {
   return role === "admin" || role === "manager";
 }
 
+/** تسجيل فواتير ومدفوعات (مثل صفحة الفوترة). */
+export function canRecordFinance(role: string | undefined): boolean {
+  return role === "admin" || role === "manager" || role === "accountant";
+}
+
 export function canManageStaff(role: string | undefined): boolean {
   return role === "admin" || role === "manager";
 }
@@ -22,4 +27,26 @@ export function canOpenStaffSection(
   permissions: Record<string, boolean> | undefined
 ): boolean {
   return hasStaffPermission(role, permissions, "manage_managers") || hasStaffPermission(role, permissions, "transfer_balance");
+}
+
+export function canViewSpeedProfiles(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined
+): boolean {
+  if (role === "admin") return true;
+  return Boolean(permissions?.view_speed_profiles);
+}
+
+export function canManageSpeedProfiles(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined
+): boolean {
+  if (role === "admin") return true;
+  if (role !== "manager") return false;
+  return Boolean(
+    permissions?.create_speed_profile ||
+      permissions?.edit_speed_profile ||
+      permissions?.manage_speed_schedules ||
+      permissions?.apply_speed_override
+  );
 }

@@ -8,6 +8,21 @@ import { AdminShell } from "./layouts/AdminShell";
 import { LoginPage } from "./pages/Login";
 import { UserPortalLogin, UserPortalDashboard } from "./pages/UserPortal";
 import { SubscriberPublicPortalPage } from "./pages/SubscriberPublicPortal";
+import {
+  PortalOutlet,
+  PortalLoginPage,
+  PortalDashboardPage,
+  PortalUsagePage,
+  PortalInvoicesPage,
+  PortalPaymentsPage,
+  PortalRenewPage,
+  PortalPasswordPage,
+  PortalSessionsPage,
+  PortalDevicesPage,
+  PortalSpeedTestPage,
+  PortalSupportPage,
+} from "./pages/portal/PortalPages";
+import { QoeOverviewPage, RadiusMonitorOverviewPage, ResellersListPage } from "./pages/enterprise/EnterprisePages";
 
 const DashboardPage = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.DashboardPage })));
 const UsersPage = lazy(() => import("./pages/Users").then((m) => ({ default: m.UsersPage })));
@@ -44,16 +59,33 @@ const OnlineUsersPage = lazy(() => import("./pages/OnlineUsers").then((m) => ({ 
 const ObservabilityPage = lazy(() =>
   import("./pages/Observability").then((m) => ({ default: m.ObservabilityPage }))
 );
+const SystemHealthPage = lazy(() =>
+  import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealthPage }))
+);
 const ServerLogsPage = lazy(() => import("./pages/ServerLogs").then((m) => ({ default: m.ServerLogsPage })));
-const CardBatchPage = lazy(() => import("./pages/CardBatch").then((m) => ({ default: m.CardBatchPage })));
+const CardBatchPage = lazy(() =>
+  import("./pages/PrepaidUnavailable").then((m) => ({ default: m.PrepaidUnavailablePage }))
+);
 const PrepaidCardsListPage = lazy(() =>
-  import("./pages/PrepaidCardsList").then((m) => ({ default: m.PrepaidCardsListPage }))
+  import("./pages/PrepaidUnavailable").then((m) => ({ default: m.PrepaidUnavailablePage }))
 );
 const WireGuardPage = lazy(() => import("./pages/WireGuard").then((m) => ({ default: m.WireGuardPage })));
 const FinanceDashboardPage = lazy(() =>
   import("./pages/FinanceDashboard").then((m) => ({ default: m.FinanceDashboardPage }))
 );
 const UpdatesPage = lazy(() => import("./pages/Updates").then((m) => ({ default: m.UpdatesPage })));
+const EncodingHealthPage = lazy(() =>
+  import("./pages/EncodingHealth").then((m) => ({ default: m.EncodingHealthPage }))
+);
+const SpeedProfilesPage = lazy(() =>
+  import("./pages/SpeedProfilesPages").then((m) => ({ default: m.SpeedProfilesPage }))
+);
+const SpeedProfileSchedulesPage = lazy(() =>
+  import("./pages/SpeedProfilesPages").then((m) => ({ default: m.SpeedProfileSchedulesPage }))
+);
+const SpeedProfilesLivePage = lazy(() =>
+  import("./pages/SpeedProfilesPages").then((m) => ({ default: m.SpeedProfilesLivePage }))
+);
 
 function ProtectedAdmin({ children }: { children: React.ReactElement }) {
   const { user } = useAuth();
@@ -75,7 +107,21 @@ function AppRoutes() {
     <Suspense fallback={<RouteFallback />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/portal" element={<SubscriberPublicPortalPage />} />
+        <Route path="/public-subscriber" element={<SubscriberPublicPortalPage />} />
+        <Route path="/portal" element={<PortalOutlet />}>
+          <Route index element={<Navigate to="/portal/dashboard" replace />} />
+          <Route path="login" element={<PortalLoginPage />} />
+          <Route path="dashboard" element={<PortalDashboardPage />} />
+          <Route path="usage" element={<PortalUsagePage />} />
+          <Route path="invoices" element={<PortalInvoicesPage />} />
+          <Route path="payments" element={<PortalPaymentsPage />} />
+          <Route path="renew" element={<PortalRenewPage />} />
+          <Route path="password" element={<PortalPasswordPage />} />
+          <Route path="sessions" element={<PortalSessionsPage />} />
+          <Route path="devices" element={<PortalDevicesPage />} />
+          <Route path="speed-test" element={<PortalSpeedTestPage />} />
+          <Route path="support" element={<PortalSupportPage />} />
+        </Route>
         <Route path="/user/login" element={<UserPortalLogin />} />
         <Route path="/user/dashboard" element={<UserPortalDashboard />} />
         <Route
@@ -98,11 +144,19 @@ function AppRoutes() {
           <Route path="nas" element={<NasPage />} />
           <Route path="accounting" element={<AccountingPage />} />
           <Route path="observability" element={<ObservabilityPage />} />
+          <Route path="system-health" element={<SystemHealthPage />} />
           <Route path="server-logs" element={<ServerLogsPage />} />
+          <Route path="encoding-health" element={<EncodingHealthPage />} />
+          <Route path="speed-profiles" element={<SpeedProfilesPage />} />
+          <Route path="speed-profiles/schedules" element={<SpeedProfileSchedulesPage />} />
+          <Route path="speed-profiles/live" element={<SpeedProfilesLivePage />} />
+          <Route path="qoe/overview" element={<QoeOverviewPage />} />
+          <Route path="radius-monitor/overview" element={<RadiusMonitorOverviewPage />} />
+          <Route path="resellers" element={<ResellersListPage />} />
           <Route path="online-users" element={<OnlineUsersPage />} />
           <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />
           <Route path="inventory/categories" element={<ExpenseCategoriesPage />} />
-          <Route path="inventory/cards" element={<Navigate to="/users/prepaid-cards" replace />} />
+          <Route path="inventory/cards" element={<Navigate to="/packages" replace />} />
           <Route path="inventory/expenses" element={<ExpensesPage />} />
           <Route path="staff" element={<StaffUsersPage />} />
           <Route path="staff/roles-permissions" element={<RolesPermissionsPage />} />

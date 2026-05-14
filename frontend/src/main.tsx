@@ -3,6 +3,17 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 
+const LOCALE_KEY = "fr_locale";
+try {
+  const s = localStorage.getItem(LOCALE_KEY);
+  if (s === "en") {
+    document.documentElement.lang = "en";
+    document.documentElement.dir = "ltr";
+  }
+} catch {
+  /* ignore */
+}
+
 /** Await before React: old SW could still intercept /assets/*.js until unregister finishes. */
 async function clearLegacyPwa(): Promise<void> {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;

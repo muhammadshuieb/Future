@@ -1,5 +1,4 @@
 import dotenv from "dotenv";
-import { DMA_DATABASE_NAME } from "./dma/dmaSchemaContract.js";
 
 dotenv.config();
 
@@ -16,13 +15,7 @@ function parseDatabaseUrl(url: string) {
   };
 }
 
-const defaultDatabaseUrl = `mysql://root:rootpass@localhost:3306/${DMA_DATABASE_NAME}`;
-
-/**
- * If set, schema validation (DMA) requires `SELECT DATABASE()` to equal this name.
- * Leave unset to accept any database name the connection uses (e.g. restored under a custom name).
- */
-const expectedRmSchemaName = process.env.RM_DATABASE_NAME?.trim() ?? "";
+const defaultDatabaseUrl = "mysql://root:rootpass@localhost:3306/future_radius";
 
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const rawJwt = process.env.JWT_SECRET?.trim();
@@ -48,11 +41,6 @@ function parseCorsOrigins(nodeEnv: string): string[] | "all" {
 
 const parsedUrl = parseDatabaseUrl(process.env.DATABASE_URL ?? defaultDatabaseUrl);
 
-const dmaModeRaw = String(process.env.DMA_MODE ?? "")
-  .trim()
-  .toLowerCase();
-const dmaMode = dmaModeRaw === "1" || dmaModeRaw === "true" || dmaModeRaw === "yes";
-
 function parsePoolInt(name: string, fallback: number, allowZero = false): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -66,19 +54,9 @@ const coaFallbackRaw = String(process.env.COA_MIKROTIK_FALLBACK ?? "1").trim().t
 const coaMikrotikFallback = !(coaFallbackRaw === "0" || coaFallbackRaw === "false" || coaFallbackRaw === "no");
 
 export const config = {
-  /**
-   * Pure Radius Manager (DMA) mode: no sql/migrations, no usage sync into parallel tables,
-   * restore is raw SQL import only. Portal and dashboard read rm_*, rad*, and nas tables directly.
-   */
-  dmaMode,
   nodeEnv,
   /** Current schema from DATABASE_URL (actual connection). */
   databaseName: parsedUrl.database,
-  /**
-   * Optional: when non-empty, `validateDmaDatabase` requires the session DB to match.
-   * Example: `RM_DATABASE_NAME=radius` after restoring `radius.sql` into database `radius`.
-   */
-  expectedRmSchemaName,
   databaseUrl: process.env.DATABASE_URL ?? defaultDatabaseUrl,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: rawJwt ?? "dev-secret-change-me",
@@ -98,14 +76,14 @@ export const config = {
   eventsChannel: process.env.EVENTS_CHANNEL ?? "fr:events",
   /** Comma-separated origins, or omit / * for permissive dev (still tighten in prod via CORS_ORIGINS) */
   corsOrigins: parseCorsOrigins(nodeEnv),
-  db: parsedUrl,
+  db: { ...parsedUrl, charset: "utf8mb4" },
   /** mysql2 pool `connectionLimit` (raise under load; cap below MySQL max_connections). */
   dbPoolConnectionLimit: parsePoolInt("MYSQL_POOL_CONNECTION_LIMIT", 10),
   /** mysql2 pool `queueLimit` (0 = unlimited waiters). */
   dbPoolQueueLimit: parsePoolInt("MYSQL_POOL_QUEUE_LIMIT", 0, true),
   /**
    * Public URL of this API (scheme + host + optional port). Used for Google OAuth redirect_uri.
-   * Example: https://panel.example.com or http://localhost:3000
+   * Example: https://panel.example.com or http://localhost:8080 when `/api` is served by the same origin.
    */
   publicAppUrl: (process.env.PUBLIC_APP_URL ?? "").trim() || `http://localhost:${parseInt(process.env.PORT ?? "3000", 10)}`,
   /** Where the browser returns after Google OAuth (Vite dev server or production panel). */

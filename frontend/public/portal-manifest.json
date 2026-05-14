@@ -1,0 +1,10 @@
+{
+  "name": "Future Radius Subscriber Portal",
+  "short_name": "FR Portal",
+  "start_url": "/portal/dashboard",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#06b6d4",
+  "lang": "ar",
+  "dir": "rtl"
+}

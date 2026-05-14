@@ -142,7 +142,7 @@ export function UserPortalLogin() {
           <div className="mb-3 grid grid-cols-2 gap-2">
             <Button
               type="button"
-              variant={loginMode === "phone" ? "default" : "outline"}
+              variant={loginMode === "phone" ? "primary" : "outline"}
               onClick={() => {
                 setLoginMode("phone");
                 setErr("");
@@ -152,7 +152,7 @@ export function UserPortalLogin() {
             </Button>
             <Button
               type="button"
-              variant={loginMode === "username" ? "default" : "outline"}
+              variant={loginMode === "username" ? "primary" : "outline"}
               onClick={() => {
                 setLoginMode("username");
                 setErr("");
@@ -338,14 +338,14 @@ export function UserPortalDashboard() {
           <div className="grid grid-cols-2 gap-2">
             <Button
               type="button"
-              variant={activeTab === "subscriber" ? "default" : "outline"}
+              variant={activeTab === "subscriber" ? "primary" : "outline"}
               onClick={() => setActiveTab("subscriber")}
             >
               {t("users.profile")}
             </Button>
             <Button
               type="button"
-              variant={activeTab === "traffic" ? "default" : "outline"}
+              variant={activeTab === "traffic" ? "primary" : "outline"}
               onClick={() => setActiveTab("traffic")}
             >
               {t("profile.trafficTitle")}

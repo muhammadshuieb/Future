@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+﻿import { randomUUID } from "crypto";
 import { Queue, Worker } from "bullmq";
 import { config } from "../config.js";
 import { createRedisClient, listenRedisErrors } from "../lib/redis-connection.js";
@@ -31,8 +31,128 @@ import { listenEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
-import { ensureBillingTables } from "../services/billing-schema-bootstrap.service.js";
+import {
+  ensureBillingTables,
+  ensureSubscriberWhatsAppOptOutColumn,
+} from "../services/billing-schema-bootstrap.service.js";
 import { syncMikrotikSessionsFromNasTable } from "../services/mikrotik-ros-sync.service.js";
+import { runSyntheticRadiusProbe } from "../services/synthetic-radius.service.js";
+import { pruneRadpostauth } from "../services/radpostauth-retention.service.js";
+import {
+  ensureDynamicSpeedTables,
+  runPackageDynamicSpeedApplyAllTenants,
+} from "../services/dynamic-speed.service.js";
+import {
+  runSpeedProfileApplyAllTenants,
+  runSpeedProfileRevertAllTenants,
+  runSpeedProfileReconcileAllTenants,
+} from "../services/speed-profile.service.js";
+import { runQoeCycle, runRadiusMonitorCycle, recordCoaEvent } from "./enterprise-analytics.worker.js";
+import http from "http";
+import {
+  bullmqQueueLagSeconds,
+  registry as metricsRegistry,
+  mysqlPoolConnections,
+} from "../services/metrics.service.js";
+
+async function closeRadacctAfterDisconnect(payload: CoaDisconnectJobData): Promise<void> {
+  const params: string[] = [payload.username, payload.nasIp];
+  let where = "username = ? AND nasipaddress = ? AND acctstoptime IS NULL";
+  if (payload.acctSessionId) {
+    where += " AND acctsessionid = ?";
+    params.push(payload.acctSessionId);
+  } else if (payload.framedIp) {
+    where += " AND framedipaddress = ?";
+    params.push(payload.framedIp);
+  }
+  await pool.execute(
+    `UPDATE radacct
+     SET acctstoptime = NOW(),
+         acctsessiontime = GREATEST(0, TIMESTAMPDIFF(SECOND, acctstarttime, NOW())),
+         acctterminatecause = CASE
+           WHEN COALESCE(acctterminatecause, '') = '' THEN 'Admin-Reset'
+           ELSE acctterminatecause
+         END
+     WHERE ${where}`,
+    params
+  );
+}
+
+/**
+ * Worker /metrics on WORKER_METRICS_PORT (default 9101).
+ * Bearer-token auth via METRICS_BEARER_TOKEN matches the api endpoint. BullMQ queue lag
+ * and mysql pool counts are sampled here (the worker is the producer/consumer of the
+ * `radius-manager` queue, so it owns the most accurate view).
+ */
+function startWorkerMetricsServer(): void {
+  const port = Number(process.env.WORKER_METRICS_PORT) || 9101;
+  const expectedToken = (process.env.METRICS_BEARER_TOKEN || "").trim();
+  const server = http.createServer(async (req, res) => {
+    if (!req.url?.startsWith("/metrics")) {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+    if (expectedToken) {
+      const header = String(req.headers["authorization"] ?? "");
+      const match = header.match(/^Bearer\s+(.+)$/i);
+      if (!match || match[1].trim() !== expectedToken) {
+        res.setHeader("WWW-Authenticate", 'Bearer realm="metrics"');
+        res.statusCode = 401;
+        res.end("unauthorized");
+        return;
+      }
+    }
+    try {
+      await sampleWorkerGauges();
+    } catch {
+      /* keep serving even if sampling fails */
+    }
+    try {
+      res.setHeader("Content-Type", metricsRegistry.contentType);
+      res.end(await metricsRegistry.metrics());
+    } catch (e) {
+      res.statusCode = 500;
+      res.end(`error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
+  server.on("error", (e) => {
+    console.warn(`[worker-metrics] http server error on port ${port}: ${e.message}`);
+  });
+  server.listen(port, () => {
+    console.info(`[worker-metrics] /metrics listening on 0.0.0.0:${port}`);
+  });
+}
+
+let lastWorkerSampleAt = 0;
+const WORKER_GAUGE_TTL_MS = Math.max(5_000, Number(process.env.METRICS_GAUGE_TTL_MS) || 30_000);
+
+async function sampleWorkerGauges(): Promise<void> {
+  const now = Date.now();
+  if (now - lastWorkerSampleAt < WORKER_GAUGE_TTL_MS) return;
+  lastWorkerSampleAt = now;
+  try {
+    const waiting = await jobQueue.getWaiting(0, 0).catch(() => []);
+    const oldest = waiting?.[0];
+    const lagMs = oldest?.timestamp ? Math.max(0, Date.now() - Number(oldest.timestamp)) : 0;
+    bullmqQueueLagSeconds.set({ queue: "radius-manager" }, lagMs / 1000);
+  } catch {
+    /* queue lag is best-effort */
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internal = pool as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const innerPool: any = internal?.pool ?? internal;
+  const total = Array.isArray(innerPool?._allConnections) ? innerPool._allConnections.length : NaN;
+  const free = Array.isArray(innerPool?._freeConnections) ? innerPool._freeConnections.length : NaN;
+  const queued = Array.isArray(innerPool?._connectionQueue) ? innerPool._connectionQueue.length : NaN;
+  if (Number.isFinite(total)) mysqlPoolConnections.set({ state: "total" }, total);
+  if (Number.isFinite(free)) mysqlPoolConnections.set({ state: "free" }, free);
+  if (Number.isFinite(total) && Number.isFinite(free)) {
+    mysqlPoolConnections.set({ state: "used" }, total - free);
+  }
+  if (Number.isFinite(queued)) mysqlPoolConnections.set({ state: "queued" }, queued);
+}
 
 const connection = createRedisClient("worker-bullmq");
 const publisher = connection.duplicate();
@@ -126,7 +246,7 @@ async function sendCriticalOpsAlerts(tenantId: string): Promise<void> {
 }
 
 async function generateMonthlyInvoices(): Promise<void> {
-  if (config.dmaMode) return;
+  if (false) return;
   const tenantId = config.defaultTenantId;
   if (!(await hasTable(pool, "subscribers")) || !(await hasTable(pool, "packages"))) {
     return;
@@ -186,8 +306,8 @@ async function bootstrapRepeatables() {
       console.warn("replace repeatable jobs", name, e);
     }
   };
-  if (config.dmaMode) {
-    // Keep update-usage in DMA_MODE: it now runs lightweight expiry/quota enforcement
+  if (false) {
+    // Keep update-usage in PROJECT_MODE: it now runs lightweight expiry/quota enforcement
     // without heavy user_usage_live rebuild.
     await replaceRepeatablesByName("whatsapp-usage-alerts");
   }
@@ -205,13 +325,14 @@ async function bootstrapRepeatables() {
       console.warn("repeat cron job", name, e);
     }
   };
-  if (String(process.env.SKIP_BULLMQ_UPDATE_USAGE ?? "").trim() !== "1") {
-    await add("update-usage", updateUsageEvery);
-  } else {
-    await replaceRepeatablesByName("update-usage");
-    console.warn("[worker] SKIP_BULLMQ_UPDATE_USAGE=1 — update-usage removed from queue (run usage-standalone worker)");
-  }
+  await add("update-usage", updateUsageEvery);
   await add("nas-health", everyMin);
+  await add("synth-radius-probe", everyMin);
+  await replaceRepeatablesByName("apply-dynamic-speeds");
+  await add("apply-dynamic-speeds", everyMin);
+  await add("speed-profile-apply-cycle", everyMin);
+  await add("speed-profile-revert-cycle", everyMin);
+  await add("speed-profile-reconcile-cycle", 10 * everyMin);
   await add("generate-invoices", everyDay);
   await replaceRepeatablesByName("daily-backup");
   await replaceRepeatablesByName("backup-scheduler");
@@ -219,21 +340,33 @@ async function bootstrapRepeatables() {
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
-  if (!config.dmaMode) {
+  if (!false) {
     await add("whatsapp-usage-alerts", everyMin * 30);
   }
   await replaceRepeatablesByName("whatsapp-expiry-reminders");
   await replaceRepeatablesByName("whatsapp-payment-due-reminders");
   await addCron("whatsapp-expiry-reminders", "0 12 * * *");
   await addCron("whatsapp-payment-due-reminders", "10 12 * * *");
+  // Monthly radpostauth retention sweep — runs on the 1st of each month at 03:00.
+  // Honors `radpostauth_retention_enabled` / `radpostauth_retention_months` settings.
+  await replaceRepeatablesByName("prune-radpostauth");
+  await addCron("prune-radpostauth", "0 3 1 * *");
+  await add("qoe-cycle", 5 * 60 * 1000);
+  await add("radius-monitor-cycle", 60 * 1000);
 }
 
 async function main() {
   await waitForDbReady();
   try {
     await ensureBillingTables();
+    await ensureSubscriberWhatsAppOptOutColumn();
   } catch (error) {
     console.error("[worker] billing schema ensure failed", error);
+  }
+  try {
+    await ensureDynamicSpeedTables(pool);
+  } catch (error) {
+    console.error("[worker] dynamic speed schema ensure failed", error);
   }
   markDbReady();
   log.info("worker boot", {}, "bootstrap");
@@ -274,6 +407,21 @@ async function main() {
         case "nas-health":
           await nasHealth.probeAll(tenantId);
           break;
+        case "synth-radius-probe":
+          await runSyntheticRadiusProbe();
+          break;
+        case "apply-dynamic-speeds":
+          await runPackageDynamicSpeedApplyAllTenants(pool);
+          break;
+        case "speed-profile-apply-cycle":
+          await runSpeedProfileApplyAllTenants(pool);
+          break;
+        case "speed-profile-revert-cycle":
+          await runSpeedProfileRevertAllTenants(pool);
+          break;
+        case "speed-profile-reconcile-cycle":
+          await runSpeedProfileReconcileAllTenants(pool);
+          break;
         case "generate-invoices":
           await generateMonthlyInvoices();
           break;
@@ -298,6 +446,28 @@ async function main() {
         case "ops-critical-alerts":
           await sendCriticalOpsAlerts(tenantId);
           break;
+        case "prune-radpostauth":
+          try {
+            const result = await pruneRadpostauth(tenantId);
+            log.info(
+              `prune_radpostauth_cron ran=${result.ran} deleted=${result.deleted} cutoff=${result.cutoff ?? "-"}`,
+              result,
+              "radpostauth-retention"
+            );
+          } catch (error) {
+            log.error(
+              `prune_radpostauth_cron_failed ${(error as Error)?.message ?? String(error)}`,
+              {},
+              "radpostauth-retention"
+            );
+          }
+          break;
+        case "qoe-cycle":
+          await runQoeCycle(pool, tenantId);
+          break;
+        case "radius-monitor-cycle":
+          await runRadiusMonitorCycle(pool, tenantId);
+          break;
         case QueueJobNames.WAHA_SEND_INVOICE_RECEIPT: {
           const payload = job.data as WahaInvoiceReceiptJobData;
           await sendInvoicePaidWhatsApp({
@@ -312,12 +482,19 @@ async function main() {
         }
         case QueueJobNames.COA_DISCONNECT: {
           const payload = job.data as CoaDisconnectJobData;
-          return coa.disconnectUserForTenant(
+          const result = await coa.disconnectUserForTenant(
             payload.username,
             payload.nasIp,
             payload.tenantId,
-            payload.acctSessionId
+            payload.acctSessionId,
+            payload.framedIp
           );
+          await recordCoaEvent(pool, payload.tenantId, payload.nasIp, payload.username, result.ok, result.message);
+          if (!result.ok) {
+            throw new Error(result.message);
+          }
+          await closeRadacctAfterDisconnect(payload);
+          return result;
         }
         default:
           break;
@@ -336,6 +513,7 @@ async function main() {
   });
 
   await bootstrapRepeatables();
+  startWorkerMetricsServer();
   console.log("Worker started (BullMQ)");
 }
 

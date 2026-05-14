@@ -1,0 +1,64 @@
+{
+  "uid": "fr-worker",
+  "title": "Future Radius — Worker Health",
+  "tags": ["future-radius", "worker"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Cycle duration p50/p95 (s)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, mode) (rate(futureradius_worker_cycle_duration_seconds_bucket[5m])))", "legendFormat": "p50 {{mode}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le, mode) (rate(futureradius_worker_cycle_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{mode}}", "refId": "B" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "BullMQ queue lag (s)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "max by (queue) (futureradius_bullmq_queue_lag_seconds)", "legendFormat": "{{queue}}", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cycles run total",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 4 },
+      "targets": [{ "expr": "sum(futureradius_worker_cycle_duration_seconds_count)", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Stale closed total",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 4 },
+      "targets": [{ "expr": "sum(futureradius_worker_stale_sessions_closed_total)", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Quota denied total",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 4 },
+      "targets": [{ "expr": "sum(futureradius_worker_quota_denied_total)", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Node.js heap (worker)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [{ "expr": "futureradius_nodejs_heap_size_used_bytes{job=\"futureradius-worker\"}", "legendFormat": "used", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Event loop lag p99 (s)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [{ "expr": "futureradius_nodejs_eventloop_lag_p99_seconds", "legendFormat": "{{job}}", "refId": "A" }]
+    }
+  ]
+}

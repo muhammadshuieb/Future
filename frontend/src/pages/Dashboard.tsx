@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   XAxis,
@@ -24,15 +24,14 @@ import {
   MessageCircle,
   AlertTriangle,
   TrendingUp,
+  Activity,
+  ShieldCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 
 type Summary = {
-  dma_mode?: boolean;
-  total_rm_users?: number;
-  dma_conntrack_rows?: number;
   active_subscribers: number;
   expired_subscribers: number;
   online_users: number;
@@ -72,15 +71,15 @@ type Summary = {
 };
 
 type Tone = "blue" | "amber" | "green" | "violet" | "emerald" | "rose" | "cyan" | "indigo";
-const statTones: Record<Tone, { bg: string; text: string; ring: string }> = {
-  blue: { bg: "bg-blue-500/10", text: "text-blue-500", ring: "ring-blue-500/20" },
-  amber: { bg: "bg-amber-500/10", text: "text-amber-500", ring: "ring-amber-500/20" },
-  green: { bg: "bg-green-500/10", text: "text-green-500", ring: "ring-green-500/20" },
-  violet: { bg: "bg-violet-500/10", text: "text-violet-500", ring: "ring-violet-500/20" },
-  emerald: { bg: "bg-emerald-500/10", text: "text-emerald-500", ring: "ring-emerald-500/20" },
-  rose: { bg: "bg-rose-500/10", text: "text-rose-500", ring: "ring-rose-500/20" },
-  cyan: { bg: "bg-cyan-500/10", text: "text-cyan-500", ring: "ring-cyan-500/20" },
-  indigo: { bg: "bg-indigo-500/10", text: "text-indigo-500", ring: "ring-indigo-500/20" },
+const statTones: Record<Tone, { bg: string; text: string; ring: string; bar: string }> = {
+  blue: { bg: "bg-blue-500/10", text: "text-blue-500", ring: "ring-blue-500/20", bar: "bg-blue-500" },
+  amber: { bg: "bg-amber-500/10", text: "text-amber-500", ring: "ring-amber-500/20", bar: "bg-amber-500" },
+  green: { bg: "bg-green-500/10", text: "text-green-500", ring: "ring-green-500/20", bar: "bg-green-500" },
+  violet: { bg: "bg-violet-500/10", text: "text-violet-500", ring: "ring-violet-500/20", bar: "bg-violet-500" },
+  emerald: { bg: "bg-emerald-500/10", text: "text-emerald-500", ring: "ring-emerald-500/20", bar: "bg-emerald-500" },
+  rose: { bg: "bg-rose-500/10", text: "text-rose-500", ring: "ring-rose-500/20", bar: "bg-rose-500" },
+  cyan: { bg: "bg-cyan-500/10", text: "text-cyan-500", ring: "ring-cyan-500/20", bar: "bg-cyan-500" },
+  indigo: { bg: "bg-indigo-500/10", text: "text-indigo-500", ring: "ring-indigo-500/20", bar: "bg-indigo-500" },
 };
 
 export function DashboardPage() {
@@ -90,11 +89,17 @@ export function DashboardPage() {
   const [growth, setGrowth] = useState<{ period: string; total: number }[]>([]);
   const [wsMsg, setWsMsg] = useState<string | null>(null);
   const [subscriberSearch, setSubscriberSearch] = useState("");
+  const [loadingSummary, setLoadingSummary] = useState(true);
 
   useEffect(() => {
     void (async () => {
-      const s = await apiFetch("/api/dashboard/summary");
-      if (s.ok) setSummary((await s.json()) as Summary);
+      setLoadingSummary(true);
+      try {
+        const s = await apiFetch("/api/dashboard/summary");
+        if (s.ok) setSummary((await s.json()) as Summary);
+      } finally {
+        setLoadingSummary(false);
+      }
     })();
     void (async () => {
       const g = await apiFetch("/api/dashboard/charts/subscribers");
@@ -140,35 +145,121 @@ export function DashboardPage() {
     }
     return `${x.toFixed(1)} ${u[i]}`;
   };
+  const activeRatio = summary
+    ? Math.round((summary.active_subscribers / Math.max(1, summary.active_subscribers + summary.expired_subscribers)) * 100)
+    : 0;
+  const nasOnlineRatio = summary ? Math.round((summary.nas.online / Math.max(1, summary.nas.total)) * 100) : 0;
+  const hostLoadRatio = summary?.host ? Math.min(100, Math.round((summary.host.load_avg_1m / Math.max(1, summary.host.cpu_count)) * 100)) : 0;
+  const statusLabel = t("dash.systemStatus");
+  const healthyLabel = t("dash.systemStable");
+  const refreshedLabel = t("dash.liveDataBadge");
   const StatCard = ({
     label,
     value,
     Icon,
     tone,
     delay,
+    hint,
+    progress,
   }: {
     label: string;
     value: string | number;
     Icon: LucideIcon;
     tone: Tone;
     delay: number;
+    hint?: string;
+    progress?: number;
   }) => {
     const s = statTones[tone];
     return (
-      <Card delay={delay * 0.05} className="relative overflow-hidden">
-        <div
-          className={cn(
-            "pointer-events-none absolute -end-6 -top-6 h-28 w-28 rounded-full blur-2xl opacity-40",
-            s.bg
-          )}
-        />
-        <div className="flex items-center gap-4">
-          <div className={cn("flex h-12 w-12 items-center justify-center rounded-2xl ring-1", s.bg, s.text, s.ring)}>
-            <Icon className="h-6 w-6" />
+      <Card delay={delay * 0.05} className="overflow-hidden border-[hsl(var(--border))]/80 p-0">
+        <div className="p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-medium opacity-55">{label}</div>
+              <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+            </div>
+            <div className={cn("flex h-11 w-11 items-center justify-center rounded-xl ring-1", s.bg, s.text, s.ring)}>
+              <Icon className="h-5 w-5" />
+            </div>
           </div>
-          <div>
-            <div className="text-xs opacity-60">{label}</div>
-            <div className="text-2xl font-bold tracking-tight">{value}</div>
+          {hint ? <div className="mt-3 text-xs opacity-60">{hint}</div> : null}
+          {typeof progress === "number" ? (
+            <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+              <div className={cn("h-full rounded-full", s.bar)} style={{ width: `${Math.max(3, Math.min(100, progress))}%` }} />
+            </div>
+          ) : null}
+        </div>
+      </Card>
+    );
+  };
+
+  const LoadingCard = () => (
+    <Card className="p-5">
+      <div className="flex items-center justify-between">
+        <div className="h-3 w-28 animate-pulse rounded bg-[hsl(var(--muted))]" />
+        <div className="h-10 w-10 animate-pulse rounded-xl bg-[hsl(var(--muted))]" />
+      </div>
+      <div className="mt-5 h-8 w-20 animate-pulse rounded bg-[hsl(var(--muted))]" />
+      <div className="mt-4 h-1.5 animate-pulse rounded-full bg-[hsl(var(--muted))]" />
+    </Card>
+  );
+
+  const SystemOverview = () => {
+    if (!summary) return null;
+    return (
+      <Card className="overflow-hidden p-0">
+        <div className="grid gap-0 lg:grid-cols-[1.35fr_1fr]">
+          <div className="border-b border-[hsl(var(--border))]/70 p-5 lg:border-b-0 lg:border-e">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 ring-1 ring-emerald-500/20">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="text-xs font-medium opacity-55">{statusLabel}</div>
+                  <div className="text-2xl font-semibold tracking-tight">{healthyLabel}</div>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-500">
+                <Activity className="h-3.5 w-3.5" />
+                {refreshedLabel}
+              </span>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-[hsl(var(--border))]/70 p-3">
+                <div className="text-xs opacity-55">{t("dash.activeSub")}</div>
+                <div className="mt-1 text-xl font-semibold">{summary.active_subscribers}</div>
+              </div>
+              <div className="rounded-lg border border-[hsl(var(--border))]/70 p-3">
+                <div className="text-xs opacity-55">{t("dash.onlineNow")}</div>
+                <div className="mt-1 text-xl font-semibold">{summary.online_users}</div>
+              </div>
+              <div className="rounded-lg border border-[hsl(var(--border))]/70 p-3">
+                <div className="text-xs opacity-55">{t("dash.nasFleet")}</div>
+                <div className="mt-1 text-xl font-semibold">{summary.nas.total}</div>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-4 p-5">
+            <div>
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="opacity-60">{t("dash.subscriberActivity")}</span>
+                <span className="font-medium">{activeRatio}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-[hsl(var(--muted))]">
+                <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.max(3, activeRatio)}%` }} />
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="opacity-60">{t("dash.cpuLoadLabel")}</span>
+                <span className="font-medium">{hostLoadRatio}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-[hsl(var(--muted))]">
+                <div className="h-full rounded-full bg-cyan-500" style={{ width: `${Math.max(3, hostLoadRatio)}%` }} />
+              </div>
+            </div>
           </div>
         </div>
       </Card>
@@ -232,6 +323,17 @@ export function DashboardPage() {
           <span>{wsMsg}</span>
         </div>
       )}
+
+      {loadingSummary ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <LoadingCard />
+          <LoadingCard />
+          <LoadingCard />
+          <LoadingCard />
+        </div>
+      ) : null}
+
+      <SystemOverview />
 
       {summary?.backup?.has_recent_failure && (
         <div className="flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm">
@@ -308,36 +410,29 @@ export function DashboardPage() {
       </div>
 
       {summary && (
-        <div
-          className={`grid gap-4 sm:grid-cols-2 ${
-            summary.dma_mode ? "xl:grid-cols-5" : "xl:grid-cols-4"
-          }`}
-        >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
-            label={summary.dma_mode ? t("dash.rmUsersTotal") : t("dash.activeSub")}
-            value={summary.dma_mode ? Number(summary.total_rm_users ?? summary.active_subscribers) : summary.active_subscribers}
+            label={t("dash.activeSub")}
+            value={summary.active_subscribers}
             Icon={Users}
             tone="blue"
             delay={0}
+            hint={t("dash.activeAccountsHint")}
+            progress={activeRatio}
           />
-          <StatCard label={t("dash.expired")} value={summary.expired_subscribers} Icon={Clock} tone="amber" delay={1} />
-          <StatCard label={t("dash.onlineNow")} value={summary.online_users} Icon={Wifi} tone="green" delay={2} />
+          <StatCard label={t("dash.expired")} value={summary.expired_subscribers} Icon={Clock} tone="amber" delay={1} hint={t("dash.expiredAccountsHint")} progress={100 - activeRatio} />
+          <StatCard label={t("dash.onlineNow")} value={summary.online_users} Icon={Wifi} tone="green" delay={2} hint={t("dash.freshSessionsHint")} progress={Math.min(100, Math.round((summary.online_users / Math.max(1, summary.active_subscribers)) * 100))} />
           <StatCard
             label={t("dash.bandwidth")}
             value={fmtBytes(Number(summary.total_bandwidth_bytes))}
             Icon={HardDrive}
             tone="violet"
             delay={3}
+            hint={
+              summary.total_bandwidth_bytes ? t("dash.bandwidthFromAggregates") : t("dash.bandwidthRawSkipped")
+            }
+            progress={summary.total_bandwidth_bytes ? 70 : 5}
           />
-          {summary.dma_mode ? (
-            <StatCard
-              label={t("dash.dmaConntrack")}
-              value={Number(summary.dma_conntrack_rows ?? 0)}
-              Icon={Server}
-              tone="cyan"
-              delay={4}
-            />
-          ) : null}
         </div>
       )}
 
@@ -373,7 +468,7 @@ export function DashboardPage() {
             <div>
               <dt className="text-xs opacity-60">{t("dash.hostRam")}</dt>
               <dd>
-                {summary.host.memory_used_percent.toFixed(1)}% · {fmtBytes(summary.host.memory_used_bytes)} /{" "}
+                {summary.host.memory_used_percent.toFixed(1)}% آ· {fmtBytes(summary.host.memory_used_bytes)} /{" "}
                 {fmtBytes(summary.host.memory_total_bytes)}
               </dd>
             </div>
@@ -403,6 +498,9 @@ export function DashboardPage() {
               <div className="text-2xl font-bold tracking-tight text-red-500">{summary.nas.offline}</div>
               <div className="text-xs opacity-60">{t("dash.offline")}</div>
             </div>
+          </div>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(3, nasOnlineRatio)}%` }} />
           </div>
         </Card>
       )}

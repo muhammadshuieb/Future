@@ -1,4 +1,4 @@
-import { cn } from "../../lib/utils";
+﻿import { cn } from "../../lib/utils";
 import { useI18n } from "../../context/LocaleContext";
 
 type LogoSize = "sm" | "md" | "lg" | "xl";
@@ -11,10 +11,9 @@ const sizeMap: Record<LogoSize, { mark: string; text: string; sub: string; gap: 
 };
 
 /**
- * Pure SVG mark for Future Radius / شركة المستقبل.
- * - Hexagonal core (network node) with a forward chevron (future).
- * - Three expanding signal arcs (radius / broadcast).
- * - Neon gradient tuned to the app's primary → accent palette.
+ * Pure SVG mark for Future Radius (Arabic tagline from i18n: brand.tagline).
+ * Hexagonal core (network node) with a forward chevron (future).
+ * Three expanding signal arcs (radius / broadcast).
  */
 export function LogoMark({
   className,
@@ -116,7 +115,7 @@ export function LogoMark({
 }
 
 /**
- * Full brand lockup: logo mark + wordmark (Future Radius + شركة المستقبل).
+ * Full brand lockup: logo mark + wordmark (Future Radius + localized tagline).
  */
 export function LogoLockup({
   size = "lg",

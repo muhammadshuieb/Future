@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+﻿import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
@@ -54,13 +54,9 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
   const total = Number(countRows[0]?.c ?? 0);
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT a.id, a.staff_id, a.action, a.entity_type, a.entity_id, a.payload, a.created_at,
-            COALESCE(rm.managername, a.staff_id) AS staff_name, rm.email AS staff_email
+            COALESCE(u.name, u.email, a.staff_id) AS staff_name, u.email AS staff_email
      FROM audit_logs a
-     LEFT JOIN rm_managers rm
-       ON BINARY rm.managername = BINARY CASE
-         WHEN a.staff_id LIKE 'rm:%' THEN SUBSTRING(a.staff_id, 4)
-         ELSE a.staff_id
-       END
+     LEFT JOIN users u ON u.id = a.staff_id AND u.tenant_id = a.tenant_id
      ${whereSql}
      ORDER BY a.created_at DESC
      LIMIT ? OFFSET ?`,

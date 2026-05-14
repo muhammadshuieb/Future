@@ -1,6 +1,6 @@
-import type { RowDataPacket } from "mysql2";
+﻿import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
-import { getTableColumns, hasTable } from "../db/schemaGuards.js";
+import { getTableColumns } from "../db/schemaGuards.js";
 import { encryptSecret, tryDecryptSecret } from "./crypto.service.js";
 
 export type SystemSettingsView = {
@@ -11,6 +11,14 @@ export type SystemSettingsView = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  /** Auto-prune of `radpostauth` runs on the 1st of each month when enabled. */
+  radpostauth_retention_enabled: boolean;
+  /**
+   * Number of calendar months to retain. Default 2 means: at the start of month N
+   * we delete everything older than the start of month (N-1), so months (N-2) and
+   * earlier are dropped. Example: on May 1 with value 2 â†’ only April + May rows survive.
+   */
+  radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
@@ -29,10 +37,6 @@ export type SystemSettingsView = {
   wireguard_server_private_key_set: boolean;
 };
 
-type RmBillingSettings = {
-  billing_currency: "USD" | "SYP" | "TRY";
-};
-
 function normalizeRmCurrency(raw: unknown): "USD" | "SYP" | "TRY" {
   const value = String(raw ?? "").trim().toUpperCase();
   if (value === "TRY" || value === "TR" || value === "TL") return "TRY";
@@ -40,23 +44,10 @@ function normalizeRmCurrency(raw: unknown): "USD" | "SYP" | "TRY" {
   return "USD";
 }
 
-async function getRmBillingSettings(): Promise<RmBillingSettings> {
-  if (!(await hasTable(pool, "rm_settings"))) {
-    return { billing_currency: "USD" };
-  }
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT currency, disconnmethod FROM rm_settings LIMIT 1`
-  );
-  const row = rows[0] ?? {};
-  return {
-    billing_currency: normalizeRmCurrency(row.currency),
-  };
-}
-
 export async function ensureSystemSettings(tenantId: string): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS system_settings (
-      tenant_id CHAR(36) NOT NULL PRIMARY KEY,
+      tenant_id CHAR(36) NOT NULL,
       critical_alert_enabled TINYINT(1) NOT NULL DEFAULT 0,
       critical_alert_phone VARCHAR(32) DEFAULT NULL,
       critical_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
@@ -64,6 +55,15 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       backup_alert_phone VARCHAR(32) DEFAULT NULL,
       backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
       server_log_retention_days INT NOT NULL DEFAULT 14,
+      radpostauth_retention_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      radpostauth_retention_months INT NOT NULL DEFAULT 2,
+      user_idle_timeout_minutes INT NOT NULL DEFAULT 4,
+      mikrotik_interim_update_minutes INT NOT NULL DEFAULT 1,
+      disconnect_on_activation TINYINT(1) NOT NULL DEFAULT 1,
+      disconnect_on_update TINYINT(1) NOT NULL DEFAULT 1,
+      billing_currency CHAR(3) NOT NULL DEFAULT 'USD',
+      subscription_license_note VARCHAR(512) DEFAULT NULL,
+      accountant_contact_phone VARCHAR(32) DEFAULT NULL,
       wireguard_vpn_enabled TINYINT(1) NOT NULL DEFAULT 1,
       wireguard_server_host VARCHAR(128) DEFAULT NULL,
       wireguard_server_port INT NOT NULL DEFAULT 51820,
@@ -72,8 +72,10 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       wireguard_persistent_keepalive INT NOT NULL DEFAULT 25,
       wireguard_server_public_key VARCHAR(64) DEFAULT NULL,
       wireguard_server_private_key_encrypted VARBINARY(512) DEFAULT NULL,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (tenant_id),
+      CONSTRAINT fk_system_settings_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
   await pool.execute(
     `INSERT INTO system_settings (tenant_id)
@@ -81,40 +83,6 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
      ON DUPLICATE KEY UPDATE tenant_id = tenant_id`,
     [tenantId]
   );
-  const col = await getTableColumns(pool, "system_settings");
-  if (!col.has("backup_alert_enabled")) {
-    try {
-      await pool.query(
-        `ALTER TABLE system_settings
-           ADD COLUMN backup_alert_enabled TINYINT(1) NOT NULL DEFAULT 0`
-      );
-    } catch (error) {
-      const e = error as { code?: string; errno?: number };
-      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
-    }
-  }
-  if (!col.has("backup_alert_phone")) {
-    try {
-      await pool.query(
-        `ALTER TABLE system_settings
-           ADD COLUMN backup_alert_phone VARCHAR(32) DEFAULT NULL`
-      );
-    } catch (error) {
-      const e = error as { code?: string; errno?: number };
-      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
-    }
-  }
-  if (!col.has("backup_alert_use_session_owner")) {
-    try {
-      await pool.query(
-        `ALTER TABLE system_settings
-           ADD COLUMN backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1`
-      );
-    } catch (error) {
-      const e = error as { code?: string; errno?: number };
-      if (!(e.code === "ER_DUP_FIELDNAME" || e.errno === 1060)) throw error;
-    }
-  }
 }
 
 function normalizePhone(raw: string | null | undefined): string {
@@ -150,6 +118,12 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
       ? Boolean(Number(row.backup_alert_use_session_owner ?? 1))
       : true,
     server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 14))),
+    radpostauth_retention_enabled: col.has("radpostauth_retention_enabled")
+      ? Boolean(Number(row.radpostauth_retention_enabled ?? 1))
+      : true,
+    radpostauth_retention_months: col.has("radpostauth_retention_months")
+      ? Math.max(1, Math.min(36, Number(row.radpostauth_retention_months ?? 2)))
+      : 2,
     user_idle_timeout_minutes: col.has("user_idle_timeout_minutes")
       ? Math.max(2, Math.min(10_080, Number(row.user_idle_timeout_minutes ?? 4)))
       : 4,
@@ -162,7 +136,9 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     disconnect_on_update: col.has("disconnect_on_update")
       ? Boolean(Number(row.disconnect_on_update ?? 1))
       : true,
-    billing_currency: "USD",
+    billing_currency: col.has("billing_currency")
+      ? normalizeRmCurrency(row.billing_currency)
+      : "USD",
     subscription_license_note: col.has("subscription_license_note")
       ? String(row.subscription_license_note ?? "")
       : "",
@@ -203,8 +179,7 @@ export async function getSystemSettings(tenantId: string): Promise<SystemSetting
     [tenantId]
   );
   const base = rowToView(rows[0] ?? {}, col);
-  const rm = await getRmBillingSettings();
-  return { ...base, ...rm };
+  return base;
 }
 
 export type SystemSettingsInput = {
@@ -215,6 +190,8 @@ export type SystemSettingsInput = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  radpostauth_retention_enabled: boolean;
+  radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
@@ -256,6 +233,14 @@ export async function updateSystemSettings(
     input.backup_alert_use_session_owner ? 1 : 0,
     Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 14))),
   ];
+  if (col.has("radpostauth_retention_enabled")) {
+    baseSets.push("radpostauth_retention_enabled = ?");
+    baseVals.push(input.radpostauth_retention_enabled ? 1 : 0);
+  }
+  if (col.has("radpostauth_retention_months")) {
+    baseSets.push("radpostauth_retention_months = ?");
+    baseVals.push(Math.max(1, Math.min(36, Math.floor(input.radpostauth_retention_months || 2))));
+  }
   if (col.has("user_idle_timeout_minutes")) {
     baseSets.push("user_idle_timeout_minutes = ?");
     baseVals.push(Math.max(2, Math.min(10_080, Math.floor(input.user_idle_timeout_minutes || 4))));
@@ -271,6 +256,10 @@ export async function updateSystemSettings(
   if (col.has("disconnect_on_update")) {
     baseSets.push("disconnect_on_update = ?");
     baseVals.push(input.disconnect_on_update ? 1 : 0);
+  }
+  if (col.has("billing_currency")) {
+    baseSets.push("billing_currency = ?");
+    baseVals.push(normalizeRmCurrency(input.billing_currency));
   }
   if (col.has("subscription_license_note")) {
     baseSets.push("subscription_license_note = ?");
@@ -324,16 +313,5 @@ export async function updateSystemSettings(
     ...baseVals,
     tenantId,
   ]);
-  if (await hasTable(pool, "rm_settings")) {
-    await pool.query(
-      `UPDATE rm_settings
-       SET currency = ?, disconnmethod = ?
-       LIMIT 1`,
-      [
-        normalizeRmCurrency(input.billing_currency),
-        1,
-      ]
-    );
-  }
   return getSystemSettings(tenantId);
 }

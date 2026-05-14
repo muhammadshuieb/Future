@@ -1,11 +1,12 @@
-import { createRequire } from "module";
+﻿import { createRequire } from "module";
 import dgram from "dgram";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { config } from "../config.js";
-import { hasTable } from "../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { tryDecryptSecret } from "./crypto.service.js";
 import { mikrotikKickUsername } from "./mikrotik-kick.service.js";
+import { coaDisconnectTotal } from "./metrics.service.js";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -16,7 +17,7 @@ type NasServerCoaConfig = { nasIp: string; coaHost: string; coaPort: number; sec
 
 /**
  * UDP Change of Authorization (RFC 5176) — Disconnect-Request on port 3799.
- * Secret resolution: nas_servers (encrypted) preferred, else legacy nas.secret.
+ * Secret resolution: `nas_devices` (project), else legacy `nas_servers` (encrypted, old installs), else `nas.secret`.
  * MikroTik must accept incoming RADIUS: /radius incoming → set accept=yes (see docker/freeradius/NOTES.txt).
  */
 export class CoaService {
@@ -33,8 +34,31 @@ export class CoaService {
   }
 
   private async getNasServerCoaConfig(nasIp: string, tenantId: string): Promise<NasServerCoaConfig | null> {
-    if (config.dmaMode) return null;
+    if (await hasTable(this.pool, "nas_devices")) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT ip, wireguard_tunnel_ip, coa_port, secret
+         FROM nas_devices
+         WHERE tenant_id = ?
+           AND status = 'active'
+           AND (ip = ? OR wireguard_tunnel_ip = ?)
+         ORDER BY CASE WHEN ip = ? THEN 0 ELSE 1 END
+         LIMIT 1`,
+        [tenantId, nasIp, nasIp, nasIp]
+      );
+      const row = rows[0];
+      if (row) {
+        const rowIp = String(row.ip ?? nasIp);
+        const tunnelIp = String(row.wireguard_tunnel_ip ?? "").trim();
+        const coaHost = tunnelIp || rowIp || nasIp;
+        const coaPortRaw = Number(row.coa_port ?? 3799);
+        const coaPort = Number.isFinite(coaPortRaw) && coaPortRaw > 0 ? Math.floor(coaPortRaw) : 3799;
+        const plain = String(row.secret ?? "").trim();
+        return { nasIp: rowIp, coaHost, coaPort, secret: plain || null };
+      }
+    }
     if (!(await hasTable(this.pool, "nas_servers"))) return null;
+    const legacyCols = await getTableColumns(this.pool, "nas_servers");
+    if (!legacyCols.has("secret_encrypted")) return null;
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT ip, wireguard_tunnel_ip, coa_port, secret_encrypted
        FROM nas_servers
@@ -97,6 +121,42 @@ export class CoaService {
     return this.sendUdpWithRetries(host, port, encoded, secret);
   }
 
+  updateSessionRate(
+    username: string,
+    host: string,
+    secret: string,
+    rateLimit: string,
+    acctSessionId?: string,
+    framedIp?: string,
+    port = 3799
+  ): Promise<DisconnectResult> {
+    const attrs: [string, string][] = [
+      ["User-Name", username],
+      ["Mikrotik-Rate-Limit", rateLimit],
+    ];
+    if (acctSessionId) attrs.push(["Acct-Session-Id", acctSessionId]);
+    if (framedIp) attrs.push(["Framed-IP-Address", framedIp]);
+
+    let encoded: Buffer;
+    try {
+      encoded = radius.encode({
+        code: "CoA-Request",
+        identifier: Math.floor(Math.random() * 256),
+        secret,
+        attributes: attrs,
+      });
+    } catch (e) {
+      return Promise.resolve({
+        host,
+        port,
+        ok: false,
+        message: `Encode error: ${(e as Error).message}`,
+      });
+    }
+
+    return this.sendUdpWithRetries(host, port, encoded, secret);
+  }
+
   async disconnectUserForTenant(
     username: string,
     nasIp: string,
@@ -144,7 +204,7 @@ export class CoaService {
         host,
         port,
         ok: true,
-        message: `coa_failed_udp_then_mikrotik_ok: ${coa.message} → ${mk.message}`,
+        message: `coa_failed_udp_then_mikrotik_ok: ${coa.message} â†’ ${mk.message}`,
       };
     }
     return {
@@ -153,6 +213,35 @@ export class CoaService {
       ok: false,
       message: `${coa.message}; mikrotik_fallback=${mk.message}`,
     };
+  }
+
+  async updateSessionRateForTenant(
+    username: string,
+    nasIp: string,
+    tenantId: string,
+    rateLimit: string,
+    acctSessionId?: string,
+    framedIp?: string
+  ): Promise<DisconnectResult> {
+    let host = nasIp;
+    let port = 3799;
+    let secret: string | null = null;
+    try {
+      const configRow = await this.getNasServerCoaConfig(nasIp, tenantId);
+      if (configRow) {
+        host = configRow.coaHost;
+        port = configRow.coaPort;
+        secret = configRow.secret;
+      }
+      if (!secret) {
+        secret = await this.getSecretForNasIp(configRow?.nasIp ?? nasIp);
+      }
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      return { host, port, ok: false, message: `Secret resolution failed for ${nasIp}: ${err}` };
+    }
+    if (!secret) return { host, port, ok: false, message: `No RADIUS secret for NAS ${nasIp}` };
+    return this.updateSessionRate(username, host, secret, rateLimit, acctSessionId, framedIp, port);
   }
 
   /**
@@ -170,24 +259,17 @@ export class CoaService {
        WHERE username = ? AND acctstoptime IS NULL`,
       [username]
     );
-    const results: SessionDisconnectResult[] = [];
-    const mks: { ok: boolean; message: string }[] = [];
-    for (const s of sessions) {
+    const results = await Promise.all(sessions.map(async (s): Promise<SessionDisconnectResult> => {
       const nas = s.nasipaddress as string;
       const sid = s.acctsessionid as string;
       const framedIp = s.framedipaddress as string | undefined;
       const coa = await this.disconnectUserForTenant(username, nas, tenantId, sid, framedIp);
-      let mk: { ok: boolean; message: string } | undefined;
-      if (!coa.ok) {
-        mk = await mikrotikKickUsername({ pool: this.pool, tenantId, nasIp: nas, username });
-        if (mk) mks.push(mk);
-      }
-      results.push({ nas, coa, mikrotik: mk });
-    }
+      return { nas, acctSessionId: sid, framedIp, coa };
+    }));
     return {
       results,
       anyOk: results.some((r) => r.coa.ok || Boolean(r.mikrotik?.ok)),
-      mikrotik: mks,
+      mikrotik: [],
     };
   }
 
@@ -206,9 +288,19 @@ export class CoaService {
           await new Promise((r) => setTimeout(r, delay));
         }
         last = await this.sendUdpOnce(host, port, payload, secret);
-        if (last.ok) return last;
-        if (last.message.startsWith("Encode error")) return last;
+        if (last.ok) {
+          coaDisconnectTotal.inc({ nas: host, result: "ok" });
+          return last;
+        }
+        if (last.message.startsWith("Encode error")) {
+          coaDisconnectTotal.inc({ nas: host, result: "encode_error" });
+          return last;
+        }
       }
+      coaDisconnectTotal.inc({
+        nas: host,
+        result: last.message === "timeout" ? "timeout" : "fail",
+      });
       return last;
     })();
   }
@@ -269,6 +361,8 @@ export class CoaService {
 
 export type SessionDisconnectResult = {
   nas: string;
+  acctSessionId?: string;
+  framedIp?: string;
   coa: DisconnectResult;
   mikrotik?: { ok: boolean; message: string };
 };

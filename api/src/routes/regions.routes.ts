@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
@@ -18,7 +18,7 @@ router.get("/", routePolicy({ allow: ["admin", "manager", "accountant", "viewer"
     return;
   }
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, tenant_id, parent_id, name, sort_order, created_at
+    `SELECT id, tenant_id, parent_id, name, radius_group_name, sort_order, created_at
      FROM subscriber_regions
      WHERE tenant_id = ?
      ORDER BY parent_id IS NOT NULL, sort_order ASC, name ASC`,
@@ -31,6 +31,7 @@ const regionBody = z.object({
   name: z.string().min(1).max(128),
   parent_id: z.string().uuid().nullable().optional(),
   sort_order: z.number().int().optional(),
+  radius_group_name: z.string().max(128).nullable().optional(),
 });
 
 router.post(
@@ -47,7 +48,7 @@ router.post(
       return;
     }
     const tenant = req.auth!.tenantId;
-    const { name, parent_id, sort_order } = parsed.data;
+    const { name, parent_id, sort_order, radius_group_name } = parsed.data;
     if (parent_id) {
       const [p] = await pool.query<RowDataPacket[]>(
         `SELECT id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
@@ -59,10 +60,11 @@ router.post(
       }
     }
     const id = randomUUID();
+    const rgn = radius_group_name?.trim() || name.trim().slice(0, 128);
     await pool.execute(
-      `INSERT INTO subscriber_regions (id, tenant_id, parent_id, name, sort_order)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, tenant, parent_id ?? null, name.trim(), sort_order ?? 0]
+      `INSERT INTO subscriber_regions (id, tenant_id, parent_id, name, radius_group_name, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, tenant, parent_id ?? null, name.trim(), rgn, sort_order ?? 0]
     );
     invalidateColumnCache();
     res.status(201).json({ id });
@@ -73,6 +75,7 @@ const patchBody = z.object({
   name: z.string().min(1).max(128).optional(),
   parent_id: z.string().uuid().nullable().optional(),
   sort_order: z.number().int().optional(),
+  radius_group_name: z.string().max(128).nullable().optional(),
 });
 
 router.patch(
@@ -87,7 +90,7 @@ router.patch(
     const tenant = req.auth!.tenantId;
     const id = req.params.id;
     const [existing] = await pool.query<RowDataPacket[]>(
-      `SELECT id FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      `SELECT id, name FROM subscriber_regions WHERE id = ? AND tenant_id = ? LIMIT 1`,
       [id, tenant]
     );
     if (!existing[0]) {
@@ -135,6 +138,10 @@ router.patch(
     if (b.sort_order !== undefined) {
       sets.push("sort_order = ?");
       vals.push(b.sort_order);
+    }
+    if (b.radius_group_name !== undefined) {
+      sets.push("radius_group_name = ?");
+      vals.push(b.radius_group_name?.trim() ?? null);
     }
     if (!sets.length) {
       res.json({ ok: true });

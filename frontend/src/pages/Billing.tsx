@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, CircleDollarSign, Clock3, ReceiptText, Wallet } from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
@@ -29,6 +30,7 @@ type PaymentRow = {
   amount?: number | string;
   currency?: string;
   paid_at?: string;
+  subscriber_id?: string | null;
 };
 
 function asAmount(value: number | string | undefined) {
@@ -48,6 +50,8 @@ export function BillingPage() {
   const { t } = useI18n();
   const { user } = useAuth();
   const financeWrite = canWriteFinance(user?.role);
+  const [searchParams] = useSearchParams();
+  const subscriberFilter = (searchParams.get("subscriber") ?? "").trim();
   const { period } = useFinancePeriod();
   const periodMonthSet = useMemo(() => new Set(getFinancePeriodMonths(period)), [period]);
   const [inv, setInv] = useState<InvoiceRow[]>([]);
@@ -60,10 +64,13 @@ export function BillingPage() {
   const packagePayPendingRef = useRef("");
 
   const reload = useCallback(async () => {
-    const [a, b] = await Promise.all([apiFetch("/api/invoices/"), apiFetch("/api/payments/")]);
+    const enc = subscriberFilter ? encodeURIComponent(subscriberFilter) : "";
+    const invUrl = subscriberFilter ? `/api/invoices/?subscriber_id=${enc}` : "/api/invoices/";
+    const payUrl = subscriberFilter ? `/api/payments/?subscriber_id=${enc}` : "/api/payments/";
+    const [a, b] = await Promise.all([apiFetch(invUrl), apiFetch(payUrl)]);
     if (a.ok) setInv(((await a.json()) as { items?: InvoiceRow[] }).items ?? []);
     if (b.ok) setPay(((await b.json()) as { items?: PaymentRow[] }).items ?? []);
-  }, []);
+  }, [subscriberFilter]);
 
   useEffect(() => {
     void reload();
@@ -72,18 +79,20 @@ export function BillingPage() {
   const invoices = useMemo(
     () =>
       inv
+        .filter((i) => !subscriberFilter || String(i.subscriber_id ?? "") === subscriberFilter)
         .filter((i) => inFinancePeriod(i.issue_date, periodMonthSet))
         .sort((a, b) => String(b.issue_date ?? "").localeCompare(String(a.issue_date ?? "")))
         .slice(0, 200),
-    [inv, periodMonthSet]
+    [inv, periodMonthSet, subscriberFilter]
   );
   const payments = useMemo(
     () =>
       pay
+        .filter((p) => !subscriberFilter || String(p.subscriber_id ?? "") === subscriberFilter)
         .filter((p) => inFinancePeriod(p.paid_at, periodMonthSet))
         .sort((a, b) => String(b.paid_at ?? "").localeCompare(String(a.paid_at ?? "")))
         .slice(0, 200),
-    [pay, periodMonthSet]
+    [pay, periodMonthSet, subscriberFilter]
   );
   const totalInvoiced = invoices.reduce((sum, item) => sum + asAmount(item.amount), 0);
   const totalPaid = payments.reduce((sum, item) => sum + asAmount(item.amount), 0);
@@ -158,6 +167,18 @@ export function BillingPage() {
         <h1 className="text-2xl font-bold">{t("billing.title")}</h1>
         <p className="text-sm opacity-70">{t("billing.subtitle")}</p>
       </div>
+
+      {subscriberFilter ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[hsl(var(--primary))]/30 bg-[hsl(var(--primary))]/5 px-3 py-2 text-sm">
+          <span>
+            {t("billing.filterBanner")}{" "}
+            <code className="rounded bg-[hsl(var(--muted))] px-1.5 py-0.5 text-xs">{subscriberFilter}</code>
+          </span>
+          <Link to="/billing" className="font-medium text-[hsl(var(--primary))] hover:underline">
+            {t("billing.clearSubscriberFilter")}
+          </Link>
+        </div>
+      ) : null}
 
       {msg ? (
         <div

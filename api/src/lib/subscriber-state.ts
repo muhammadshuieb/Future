@@ -10,13 +10,18 @@ export type SubscriberStateInput = {
   expirationDate?: string | Date | null;
   quotaTotalBytes?: number | null;
   usedBytes?: number | null;
-  quotaLimitedToday?: boolean | null;
   overdueInvoicesCount?: number | null;
 };
 
 export function resolveSubscriberState(input: SubscriberStateInput): SubscriberState {
-  if (input.quotaLimitedToday) return SubscriberState.LIMITED;
-  /** عدد فواتير ‎sent متأخرة (لا تشمل ‎draft ‎/ ‎void) — يملأه مسار ‎subscribers GET. */
+  const quotaTotal = Number(input.quotaTotalBytes ?? 0);
+  const used = Number(input.usedBytes ?? 0);
+  if (quotaTotal > 0 && used >= quotaTotal) return SubscriberState.EXPIRED;
+  const normalized = String(input.status ?? "").toLowerCase();
+  if (normalized === "disabled" || normalized === "inactive" || normalized === "suspended") {
+    return SubscriberState.BLOCKED;
+  }
+  /** Overdue invoices with status `sent` (excludes draft/void) — populated by subscribers GET. */
   const overdueInvoicesCount = Number(input.overdueInvoicesCount ?? 0);
   if (overdueInvoicesCount > 0) return SubscriberState.BLOCKED;
   if (input.expirationDate) {
@@ -24,10 +29,6 @@ export function resolveSubscriberState(input: SubscriberStateInput): SubscriberS
     if (!Number.isNaN(exp.getTime()) && exp.getTime() < Date.now()) {
       return SubscriberState.EXPIRED;
     }
-  }
-  const normalized = String(input.status ?? "").toLowerCase();
-  if (normalized === "disabled" || normalized === "inactive" || normalized === "suspended") {
-    return SubscriberState.BLOCKED;
   }
   return SubscriberState.ACTIVE;
 }

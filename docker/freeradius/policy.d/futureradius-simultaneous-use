@@ -1,0 +1,24 @@
+# Enforce radcheck Simultaneous-Use vs *fresh* open radacct rows.
+# A session counts only if acctstoptime IS NULL AND COALESCE(acctupdatetime, acctstarttime)
+# is within FUTURERADIUS_STALE_MINUTES (default 15). This prevents leaked sessions from a
+# crashed/rebooted MikroTik from blocking new logins. Stale rows are eventually closed
+# by the usage-worker's closeTimedOutSessions() pass.
+#
+# Use %{User-Name} — %{SQL-User-Name} may be unset outside rlm_sql's internal query expansion.
+# Invoke immediately after `sql` in authorize.
+futureradius_check_simultaneous_use {
+	update control {
+		&Tmp-String-8 := "%{sql:SELECT COALESCE(CAST((SELECT value FROM radcheck WHERE username = '%{User-Name}' AND attribute = 'Simultaneous-Use' LIMIT 1) AS UNSIGNED), 0)}"
+	}
+	if ("%{integer:&control:Tmp-String-8}" > 0) {
+		update control {
+			&Tmp-String-9 := "%{sql:SELECT COUNT(*) FROM radacct WHERE username = '%{User-Name}' AND acctstoptime IS NULL AND COALESCE(acctupdatetime, acctstarttime) > DATE_SUB(NOW(), INTERVAL 15 MINUTE)}"
+		}
+		if ("%{integer:&control:Tmp-String-9}" >= "%{integer:&control:Tmp-String-8}") {
+			update reply {
+				&Reply-Message := "Maximum concurrent sessions exceeded"
+			}
+			reject
+		}
+	}
+}

@@ -189,9 +189,10 @@ export function WhatsAppTemplatesPage() {
         <div className="text-xs opacity-70">
           {t("whatsapp.templateVars")}:{" "}
           <code>
-            {"{{full_name}}, {{username}}, {{password}}, {{package_name}}, {{speed}}, {{expiration_date}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}"}
+            {"{{full_name}}, {{username}}, {{password}}, {{package_name}}, {{speed}}, {{expiration_date}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}"}
           </code>
         </div>
+        <p className="text-xs opacity-60">{t("whatsapp.templateVarsBillingHint")}</p>
       </Card>
     </div>
   );

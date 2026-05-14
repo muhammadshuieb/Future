@@ -1,12 +1,13 @@
-import { randomUUID } from "crypto";
+﻿import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 
 type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold";
-type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid";
+type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid" | "financial_report";
 
 type WhatsAppSettingsRow = RowDataPacket & {
   tenant_id: string;
@@ -107,13 +108,30 @@ const DEFAULT_TEMPLATES: Record<WhatsAppTemplateKey, string> = {
   expiry_soon:
     "مرحباً {{full_name}}،\nتنبيه باقتراب انتهاء اشتراكك.\nالمتبقي: {{days_left}} يوم.\n\n• الباقة: {{package_name}}\n• السرعة: {{speed}}\n• تاريخ الانتهاء: {{expiration_date}}\n\nيرجى التجديد قبل انتهاء الاشتراك لضمان استمرار الخدمة.",
   payment_due:
-    "مرحباً {{full_name}}،\nنود تذكيرك بوجود ذمة مالية مستحقة على حسابك.\n\n• إجمالي المستحقات: {{due_amount}} {{currency}}\n• عدد الفواتير غير المدفوعة: {{unpaid_count}}\n• أقدم تاريخ استحقاق: {{oldest_due_date}}\n\nيرجى السداد في أقرب وقت لتجنب أي انقطاع بالخدمة. شكراً لتعاونك.",
+    "مرحباً {{full_name}}،\nنود تذكيرك بوجود ذمة مالية مستحقة على حسابك.\n\n• إجمالي المستحقات: {{due_amount}} {{currency}}\n• عدد الفواتير غير المدفوعة: {{unpaid_count}}\n• أقدم تاريخ استحقاق: {{oldest_due_date}}\n\n{{billing_detail}}\nيرجى السداد في أقرب وقت لتجنب أي انقطاع بالخدمة. شكراً لتعاونك.",
   usage_threshold:
-    "مرحباً {{full_name}}،\nتنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن/تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
+    "مرحباً {{full_name}}،\nتنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن أو تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
 };
 
 const nextAllowedSendByTenant = new Map<string, number>();
 const ALLOWED_USAGE_THRESHOLDS = [10, 20, 30, 50] as const;
+
+/** WHERE fragment: exclude subscribers who opted out of WhatsApp in admin. */
+async function sqlSubscriberWhatsAppOptInFilter(tableAlias: string): Promise<string> {
+  if (!(await hasTable(pool, "subscribers"))) return "";
+  if (!(await hasColumn(pool, "subscribers", "whatsapp_opt_out"))) return "";
+  return ` AND COALESCE(${tableAlias}.whatsapp_opt_out, 0) = 0`;
+}
+
+export async function subscriberHasWhatsAppOptOut(tenantId: string, subscriberId: string): Promise<boolean> {
+  if (!(await hasTable(pool, "subscribers"))) return false;
+  if (!(await hasColumn(pool, "subscribers", "whatsapp_opt_out"))) return false;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COALESCE(whatsapp_opt_out, 0) AS o FROM subscribers WHERE tenant_id = ? AND id = ? LIMIT 1`,
+    [tenantId, subscriberId]
+  );
+  return Number(rows[0]?.o ?? 0) === 1;
+}
 
 function parseUsageThresholds(raw: string | null | undefined): number[] {
   const values = String(raw ?? "10,20,30,50")
@@ -272,9 +290,16 @@ async function ensureTenantDefaults(tenantId: string): Promise<void> {
 }
 
 function normalizePhone(phone: string): string | null {
-  const clean = phone.replace(/[^\d+]/g, "").trim();
+  let clean = phone.replace(/[^\d+]/g, "").trim();
   if (!clean) return null;
-  return clean.startsWith("+") ? clean.slice(1) : clean;
+  if (clean.startsWith("+")) clean = clean.slice(1);
+  if (clean.startsWith("00")) clean = clean.slice(2);
+  clean = clean.replace(/\D/g, "");
+  const localCountryCode = (process.env.WHATSAPP_DEFAULT_COUNTRY_CODE ?? "963").replace(/\D/g, "");
+  if (/^0\d{8,10}$/.test(clean) && localCountryCode) {
+    clean = `${localCountryCode}${clean.slice(1)}`;
+  }
+  return clean.length >= 8 && clean.length <= 15 ? clean : null;
 }
 
 function formatDate(value: Date | string | null): string {
@@ -348,7 +373,6 @@ async function sendWahaMessage(
   const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
   const session = String(settings.session_name ?? "").trim();
   if (!baseUrl || !session) throw new Error("waha_not_configured");
-  const chatId = `${phone}@c.us`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -360,6 +384,7 @@ async function sendWahaMessage(
   if (!runtime.connected) {
     throw new Error(`waha_session_not_ready:${runtime.status ?? "unknown"}`);
   }
+  const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
   const response = await fetch(`${baseUrl}/api/sendText`, {
     method: "POST",
     headers,
@@ -384,6 +409,30 @@ async function sendWahaMessage(
       ? String((parsed as { id?: unknown }).id ?? "")
       : null;
   return { providerId: providerId || null };
+}
+
+async function resolveWahaChatId(
+  baseUrl: string,
+  session: string,
+  headers: Record<string, string>,
+  phone: string
+): Promise<string> {
+  try {
+    const checkUrl =
+      `${baseUrl}/api/contacts/check-exists?` +
+      `session=${encodeURIComponent(session)}&phone=${encodeURIComponent(phone)}`;
+    const resp = await fetch(checkUrl, { headers });
+    if (!resp.ok) return `${phone}@c.us`;
+    const parsed = (await resp.json()) as { numberExists?: unknown; chatId?: unknown };
+    if (parsed.numberExists === false) {
+      throw new Error("waha_number_not_registered");
+    }
+    const chatId = typeof parsed.chatId === "string" ? parsed.chatId.trim() : "";
+    return chatId || `${phone}@c.us`;
+  } catch (error) {
+    if (error instanceof Error && error.message === "waha_number_not_registered") throw error;
+    return `${phone}@c.us`;
+  }
 }
 
 async function ensureSessionReady(settings: WhatsAppSettingsRow): Promise<void> {
@@ -784,12 +833,13 @@ export async function applyProfessionalArabicTemplates(tenantId: string): Promis
 }
 
 export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent: number; failed: number }> {
-  if (config.dmaMode) return { sent: 0, failed: 0 };
+  if (false) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const thresholds = parseUsageThresholds(settings.usage_alert_thresholds);
   if (thresholds.length === 0) return { sent: 0, failed: 0 };
   const templates = await getTemplateMap(tenantId);
+  const waOpt = await sqlSubscriberWhatsAppOptInFilter("s");
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
         s.id,
@@ -808,7 +858,7 @@ export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent
         AND s.status = 'active'
         AND s.phone IS NOT NULL
         AND s.phone <> ''
-        AND p.quota_total_bytes > 0`,
+        AND p.quota_total_bytes > 0${waOpt}`,
     [tenantId]
   );
   const monthKey = new Date().toISOString().slice(0, 7);
@@ -905,10 +955,11 @@ export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent
 }
 
 export async function sendPaymentDueReminders(tenantId: string): Promise<{ sent: number; failed: number }> {
-  if (config.dmaMode) return { sent: 0, failed: 0 };
+  if (false) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const templates = await getTemplateMap(tenantId);
+  const waOptDue = await sqlSubscriberWhatsAppOptInFilter("s");
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
         s.id,
@@ -929,7 +980,7 @@ export async function sendPaymentDueReminders(tenantId: string): Promise<{ sent:
         AND s.status = 'active'
         AND s.phone IS NOT NULL
         AND s.phone <> ''
-        AND i.status <> 'paid'
+        AND i.status <> 'paid'${waOptDue}
       GROUP BY s.id, s.username, s.first_name, s.last_name, s.nickname, s.phone
       HAVING COALESCE(SUM(i.amount), 0) > 0`,
     [tenantId]
@@ -1126,6 +1177,7 @@ export async function sendNewSubscriberWhatsApp(input: {
   if (!settings.enabled || !settings.auto_send_new) return;
   const normalized = normalizePhone(input.phone ?? "");
   if (!normalized) return;
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) return;
   const templates = await getTemplateMap(input.tenantId);
   const message = interpolate(templates.new_account, {
     username: input.username,
@@ -1166,11 +1218,12 @@ export async function sendNewSubscriberWhatsApp(input: {
 }
 
 export async function sendExpiryReminders(tenantId: string): Promise<{ sent: number; failed: number }> {
-  if (config.dmaMode) return { sent: 0, failed: 0 };
+  if (false) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const reminderDays = Number(settings.reminder_days ?? 5);
   const templates = await getTemplateMap(tenantId);
+  const waOptExp = await sqlSubscriberWhatsAppOptInFilter("s");
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
         s.id,
@@ -1188,7 +1241,7 @@ export async function sendExpiryReminders(tenantId: string): Promise<{ sent: num
         AND s.status = 'active'
         AND s.phone IS NOT NULL
         AND s.phone <> ''
-        AND DATE(s.expiration_date) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)`,
+        AND DATE(s.expiration_date) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)${waOptExp}`,
     [tenantId, reminderDays]
   );
   let sent = 0;
@@ -1271,7 +1324,7 @@ export async function sendWhatsAppBroadcast(
   tenantId: string,
   input: WhatsAppBroadcastInput
 ): Promise<{ total: number; sent: number; failed: number }> {
-  if (config.dmaMode) return { total: 0, sent: 0, failed: 0 };
+  if (false) return { total: 0, sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) throw new Error("whatsapp_disabled");
   const message = input.message.trim();
@@ -1287,11 +1340,12 @@ export async function sendWhatsAppBroadcast(
     params.push(`%${String(input.region ?? "").trim()}%`, `%${String(input.region ?? "").trim()}%`);
   }
 
+  const waOptBc = await sqlSubscriberWhatsAppOptInFilter("s");
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT s.id, s.phone
      FROM subscribers s
      LEFT JOIN packages p ON p.id = s.package_id
-     WHERE ${filters.join(" AND ")}`,
+     WHERE ${filters.join(" AND ")}${waOptBc}`,
     params
   );
 
@@ -1403,19 +1457,21 @@ export async function sendInvoicePaidWhatsApp(input: {
   currency?: string | null;
   paidAt?: Date | string | null;
 }): Promise<void> {
-  if (config.dmaMode) return;
   await ensureSchema();
   const settings = await getSettingsRow(input.tenantId);
   if (!settings.enabled) return;
-  const [rows] = await pool.query<RowDataPacket[]>(
+  let rows: RowDataPacket[];
+  const [subRows] = await pool.query<RowDataPacket[]>(
     `SELECT id, username, first_name, last_name, nickname, phone
      FROM subscribers
      WHERE tenant_id = ? AND id = ?
      LIMIT 1`,
     [input.tenantId, input.subscriberId]
   );
+  rows = subRows;
   const row = rows[0];
   if (!row) return;
+  if (row.id === input.subscriberId && (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId))) return;
   const phone = normalizePhone(String(row.phone ?? ""));
   if (!phone) return;
   const fullName =
@@ -1467,6 +1523,248 @@ export async function sendInvoicePaidWhatsApp(input: {
       errorMessage: err.slice(0, 4000),
     });
     await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+  }
+}
+
+/** Manual billing demand from control panel — uses payment_due template with extra headline. */
+export async function sendSubscriberBillingDemandWhatsApp(input: {
+  tenantId: string;
+  subscriberId: string;
+  /** Optional headline at top of message (e.g. recent invoice date). */
+  headline?: string | null;
+}): Promise<{ sent: boolean; reason?: string }> {
+  await ensureSchema();
+  const settings = await getSettingsRow(input.tenantId);
+  if (!settings.enabled) return { sent: false, reason: "whatsapp_disabled" };
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) {
+    return { sent: false, reason: "whatsapp_opt_out" };
+  }
+  const templates = await getTemplateMap(input.tenantId);
+  let rows: RowDataPacket[];
+  const [subRows] = await pool.query<RowDataPacket[]>(
+    `SELECT s.id, s.username, s.first_name, s.last_name, s.nickname, s.phone
+     FROM subscribers s
+     WHERE s.tenant_id = ? AND s.id = ?
+     LIMIT 1`,
+    [input.tenantId, input.subscriberId]
+  );
+  rows = subRows;
+  const row = rows[0];
+  if (!row) return { sent: false, reason: "subscriber_not_found" };
+  const phone = normalizePhone(String(row.phone ?? ""));
+  if (!phone) return { sent: false, reason: "missing_phone" };
+  const [invRows] = await pool.query<RowDataPacket[]>(
+    `SELECT * FROM (
+       SELECT i.invoice_no, i.amount, i.currency, i.due_date,
+              ROUND(
+                GREATEST(
+                  0,
+                  CAST(i.amount AS DECIMAL(14,2))
+                  - COALESCE(
+                    (SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id AND p.tenant_id = i.tenant_id),
+                    0
+                  )
+                ),
+                2
+              ) AS balance
+       FROM invoices i
+       WHERE i.tenant_id = ? AND i.subscriber_id = ? AND LOWER(i.status) <> 'paid'
+     ) x
+     WHERE x.balance > 0.009
+     ORDER BY x.due_date ASC`,
+    [input.tenantId, input.subscriberId]
+  );
+  if (!invRows.length) return { sent: false, reason: "no_outstanding" };
+  let total = 0;
+  const cur = String(invRows[0]?.currency ?? "USD").toUpperCase();
+  const lines: string[] = [];
+  for (const r of invRows) {
+    const bal = Number(r.balance ?? 0);
+    total += bal;
+    lines.push(
+      `• ${String(r.invoice_no ?? "—")}: ${bal.toFixed(2)} ${String(r.currency ?? cur)} — ${formatDate(r.due_date != null ? String(r.due_date) : null)}`
+    );
+  }
+  const oldest = invRows[0]?.due_date != null ? String(invRows[0].due_date) : null;
+  const fullName =
+    [String(row.first_name ?? ""), String(row.last_name ?? "")]
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(" ") ||
+    String(row.nickname ?? "").trim() ||
+    String(row.username ?? "");
+  const billingDetail = [input.headline?.trim() ? `${input.headline.trim()}\n` : "", "تفاصيل الفواتير المفتوحة:", ...lines].join(
+    "\n"
+  );
+  const message = interpolate(templates.payment_due, {
+    full_name: fullName,
+    username: String(row.username ?? ""),
+    due_amount: total.toFixed(2),
+    currency: cur === "SYP" ? "SYP" : cur === "TRY" ? "TRY" : "USD",
+    unpaid_count: String(invRows.length),
+    oldest_due_date: formatDate(oldest),
+    billing_detail: billingDetail,
+  });
+  try {
+    await enforceMessageInterval(input.tenantId, settings);
+    const result = await sendWahaMessage(settings, phone, message);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "payment_due",
+      messageBody: message,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(input.tenantId, true, null);
+    return { sent: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "payment_due",
+      messageBody: message,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+    return { sent: false, reason: err.slice(0, 200) };
+  }
+}
+
+/** Summary of one payment split across multiple invoices (without repeating full invoice lines). */
+export async function sendSubscriberPaymentBatchWhatsApp(input: {
+  tenantId: string;
+  subscriberId: string;
+  lines: { invoice_no: string; amount: number; currency: string }[];
+  totalPaid: number;
+  currency: string;
+  outstandingAfter: number;
+}): Promise<{ sent: boolean; reason?: string }> {
+  if (input.lines.length === 0) return { sent: false, reason: "empty_lines" };
+  await ensureSchema();
+  const settings = await getSettingsRow(input.tenantId);
+  if (!settings.enabled) return { sent: false, reason: "whatsapp_disabled" };
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) {
+    return { sent: false, reason: "whatsapp_opt_out" };
+  }
+  let rows: RowDataPacket[];
+  const [subRows] = await pool.query<RowDataPacket[]>(
+    `SELECT s.username, s.first_name, s.last_name, s.nickname, s.phone
+     FROM subscribers s
+     WHERE s.tenant_id = ? AND s.id = ?
+     LIMIT 1`,
+    [input.tenantId, input.subscriberId]
+  );
+  rows = subRows;
+  const row = rows[0];
+  if (!row) return { sent: false, reason: "subscriber_not_found" };
+  const phone = normalizePhone(String(row.phone ?? ""));
+  if (!phone) return { sent: false, reason: "missing_phone" };
+  const fullName =
+    [String(row.first_name ?? ""), String(row.last_name ?? "")]
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(" ") ||
+    String(row.nickname ?? "").trim() ||
+    String(row.username ?? "");
+  const bodyLines = input.lines.map((l) => `• ${l.invoice_no}: ${l.amount.toFixed(2)} ${l.currency}`).join("\n");
+  const message =
+    `مرحباً ${fullName}،\n` +
+    `تم استلام دفعة بمبلغ إجمالي ${input.totalPaid.toFixed(2)} ${input.currency} وتوزيعها كالتالي:\n` +
+    `${bodyLines}\n\n` +
+    (input.outstandingAfter <= 0.01
+      ? `تمت تسوية الذمة بالكامل على حسابكم.\n`
+      : `المتبقي الإجمالي على حسابكم: ${input.outstandingAfter.toFixed(2)} ${input.currency}\n`) +
+    `شكراً لتعاونكم.`;
+  try {
+    await enforceMessageInterval(input.tenantId, settings);
+    const result = await sendWahaMessage(settings, phone, message);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "invoice_paid",
+      messageBody: message,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(input.tenantId, true, null);
+    return { sent: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "invoice_paid",
+      messageBody: message,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+    return { sent: false, reason: err.slice(0, 200) };
+  }
+}
+
+/** Free-form financial / statement summary to the subscriber's WhatsApp number. */
+export async function sendSubscriberFinancialReportWhatsApp(input: {
+  tenantId: string;
+  subscriberId: string;
+  messageBody: string;
+}): Promise<{ sent: boolean; reason?: string }> {
+  await ensureSchema();
+  const settings = await getSettingsRow(input.tenantId);
+  if (!settings.enabled) return { sent: false, reason: "whatsapp_disabled" };
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) {
+    return { sent: false, reason: "whatsapp_opt_out" };
+  }
+  const [subRows] = await pool.query<RowDataPacket[]>(
+    `SELECT s.phone FROM subscribers s WHERE s.tenant_id = ? AND s.id = ? LIMIT 1`,
+    [input.tenantId, input.subscriberId]
+  );
+  const row = subRows[0];
+  if (!row) return { sent: false, reason: "subscriber_not_found" };
+  const phone = normalizePhone(String(row.phone ?? ""));
+  if (!phone) return { sent: false, reason: "missing_phone" };
+  const message = input.messageBody.trim();
+  if (!message) return { sent: false, reason: "empty_message" };
+  try {
+    await enforceMessageInterval(input.tenantId, settings);
+    const result = await sendWahaMessage(settings, phone, message);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "financial_report",
+      messageBody: message,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(input.tenantId, true, null);
+    return { sent: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "financial_report",
+      messageBody: message,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+    return { sent: false, reason: err.slice(0, 200) };
   }
 }
 

@@ -13,7 +13,7 @@ const TABLES = [
   "subscribers",
   "invoices",
   "payments",
-  "nas_servers",
+  "nas_devices",
   "user_usage_live",
   "user_usage_daily",
   "audit_logs",

@@ -1,4 +1,4 @@
-import {
+﻿import {
   api,
   getApiBase,
   setApiBase,
@@ -96,7 +96,7 @@ function showInlineConfirm(options) {
       <div class="modal" role="dialog" aria-modal="true">
         <h2>${esc(title)}</h2>
         <div style="margin:10px 0 14px;border:1px solid ${danger ? "rgba(239,68,68,.45)" : "rgba(245,158,11,.45)"};background:${danger ? "rgba(127,29,29,.28)" : "rgba(120,53,15,.24)"};border-radius:12px;padding:10px 12px;">
-          <strong style="display:block;margin-bottom:4px;">⚠️ ${esc(title)}</strong>
+          <strong style="display:block;margin-bottom:4px;">âڑ ï¸ڈ ${esc(title)}</strong>
           <div>${esc(message)}</div>
         </div>
         <div class="modal-actions">
@@ -162,7 +162,7 @@ async function render() {
   const title =
     {
       dashboard: "لوحة التحكم",
-      subscribers: "المشتركين",
+      subscribers: "المشتركون",
       packages: "الباقات",
       invoices: "الفواتير",
       payments: "المدفوعات",
@@ -195,7 +195,7 @@ function loginTemplate() {
         <div class="brand">
           <div class="brand-mark">FR</div>
           <h1>Future Radius</h1>
-          <p class="subtitle">إدارة اشتراكات RADIUS وبيانات DMA من مكان واحد</p>
+          <p class="subtitle">إدارة اشتراكات RADIUS وبيانات المشروع من مكان واحد</p>
         </div>
         <form id="login-form">
           <label for="api-base">عنوان الـ API</label>
@@ -257,10 +257,10 @@ function shellTemplate(title, route) {
           <p class="subtitle">لوحة الإدارة</p>
         </div>
         <button type="button" class="nav-item ${route === "dashboard" ? "active" : ""}" data-go="dashboard">
-          <span class="nav-icon">⌂</span> لوحة التحكم
+          <span class="nav-icon">📊</span> لوحة التحكم
         </button>
         <button type="button" class="nav-item ${route === "subscribers" ? "active" : ""}" data-go="subscribers">
-          <span class="nav-icon">👥</span> المشتركين
+          <span class="nav-icon">👥</span> المشتركون
         </button>
         <button type="button" class="nav-item ${route === "packages" ? "active" : ""}" data-go="packages">
           <span class="nav-icon">📦</span> الباقات
@@ -275,7 +275,7 @@ function shellTemplate(title, route) {
           <span class="nav-icon">🛰</span> NAS
         </button>
         <button type="button" class="nav-item ${route === "accounting" ? "active" : ""}" data-go="accounting">
-          <span class="nav-icon">📶</span> الاستخدام
+          <span class="nav-icon">📈</span> الاستخدام
         </button>
         <div class="sidebar-footer">
           <div>${esc(u?.email || "")}</div>
@@ -313,7 +313,7 @@ async function renderDashboard(el) {
   try {
     summary = await api("/api/accounting/summary");
   } catch {
-    /* radacct قد يكون غير موجود في بيئة التطوير */
+    /* radacct table may be missing in local dev */
   }
   let subs = [];
   try {
@@ -350,7 +350,7 @@ async function renderDashboard(el) {
       </div>
     </div>
     <div class="flash flash-info">
-      استخدم القائمة للتنقل. تأكد من استيراد قاعدة DMA كاملة إن أردت أرقام محاسبة دقيقة من <span class="mono">radacct</span>.
+      استخدم القائمة للتنقل. تأكد من استيراد قاعدة البيانات كاملة إن أردت أرقام محاسبة دقيقة من <span class="mono">radacct</span>.
     </div>`;
 }
 
@@ -391,8 +391,8 @@ async function renderSubscribers(el) {
                     : "";
               return `<tr>
               <td class="mono">${esc(s.username)}</td>
-              <td><span class="badge ${s.status === "active" ? "badge-success" : "badge-muted"}">${esc(s.status || "—")}</span></td>
-              <td>${esc(s.package_name || "—")}</td>
+              <td><span class="badge ${s.status === "active" ? "badge-success" : "badge-muted"}">${esc(s.status || "\u2014")}</span></td>
+              <td>${esc(s.package_name || "\u2014")}</td>
               <td>${fmtDate(s.expiration_date)}</td>
               ${canManage() ? `<td>${dis}</td>` : ""}
             </tr>`;
@@ -522,7 +522,7 @@ async function renderPackages(el) {
               (p) => `<tr>
             <td><strong>${esc(p.name)}</strong></td>
             <td>${esc(String(p.price))} ${esc(p.currency || "")}</td>
-            <td>${esc(String(p.billing_period_days ?? "—"))}</td>
+            <td>${esc(String(p.billing_period_days ?? "\u2014"))}</td>
             <td class="mono">${formatQuotaGb(p.quota_total_bytes || 0)}</td>
           </tr>`,
             )
@@ -644,8 +644,8 @@ async function renderPayments(el) {
             .map(
               (p) => `<tr>
             <td>${esc(String(p.amount))} ${esc(p.currency || "")}</td>
-            <td>${esc(p.method || "—")}</td>
-            <td class="mono">${esc(p.invoice_no || "—")}</td>
+            <td>${esc(p.method || "\u2014")}</td>
+            <td class="mono">${esc(p.invoice_no || "\u2014")}</td>
             <td>${fmtDate(p.paid_at)}</td>
           </tr>`,
             )
@@ -684,9 +684,9 @@ async function renderNas(el) {
               (n) => `<tr>
             <td>${esc(n.name)}</td>
             <td class="mono">${esc(n.ip)}</td>
-            <td>${esc(n.type || "—")}</td>
+            <td>${esc(n.type || "\u2014")}</td>
             <td><span class="badge badge-success">${esc(n.status)}</span></td>
-            <td>${esc(String(n.coa_port ?? "—"))}</td>
+            <td>${esc(String(n.coa_port ?? "\u2014"))}</td>
           </tr>`,
             )
             .join("") || `<tr><td colspan="5"><div class="empty-state">لا توجد سجلات حديثة</div></td></tr>`}
@@ -709,7 +709,7 @@ async function renderNas(el) {
               (n) => `<tr>
             <td>${esc(n.name)}</td>
             <td class="mono">${esc(n.ip)}</td>
-            <td>${esc(n.type || "—")}</td>
+            <td>${esc(n.type || "\u2014")}</td>
           </tr>`,
             )
             .join("") || `<tr><td colspan="3"><div class="empty-state">الجدول غير مستورد أو فارغ</div></td></tr>`}
@@ -824,7 +824,7 @@ async function renderAccounting(el) {
             <td class="mono">${esc(r.username)}</td>
             <td class="mono">${esc(r.nasipaddress)}</td>
             <td>${fmtDate(r.acctstarttime)}</td>
-            <td>${esc(String(r.acctsessiontime ?? "—"))}</td>
+            <td>${esc(String(r.acctsessiontime ?? "\u2014"))}</td>
           </tr>`,
             )
             .join("") || `<tr><td colspan="4"><div class="empty-state">لا توجد جلسات أو الجدول غير موجود</div></td></tr>`}

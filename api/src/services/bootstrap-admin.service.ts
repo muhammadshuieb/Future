@@ -1,7 +1,9 @@
-import { createHash } from "crypto";
+import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
+import { config } from "../config.js";
 import { pool } from "../db/pool.js";
-import { getTableColumns, hasTable } from "../db/schemaGuards.js";
+import { hasTable } from "../db/schemaGuards.js";
+import { hashStaffPassword } from "../lib/staff-password.js";
 
 type EnsureDefaultAdminOptions = {
   overwritePassword?: boolean;
@@ -12,131 +14,97 @@ function envTruthy(v: string | undefined): boolean {
   return s === "1" || s === "true" || s === "yes";
 }
 
+/**
+ * Ensures default tenant, RBAC roles, and a bootstrap staff user (`users` table).
+ * Password from STAFF_BOOTSTRAP_PASSWORD or DEFAULT_ADMIN_PASSWORD; requires STRONG value in production via env.
+ */
 export async function ensureDefaultAdminUser(
   options: EnsureDefaultAdminOptions = {}
 ): Promise<{ status: "created" | "updated" | "skipped"; email: string }> {
-  const resetViaEnv = envTruthy(process.env.RM_ROOT_PASSWORD_RESET);
-  const overwritePassword = options.overwritePassword === true || resetViaEnv;
-  /** Default panel login when `rm_managers` exists (Radius Manager / DMA): MD5 in DB, plaintext here only at bootstrap. */
-  const name = "root";
-  const email = "";
-  const password =
-    process.env.RM_BOOTSTRAP_ROOT_PLAINTEXT?.trim() || "muhammadshuieb";
+  const pwReset = envTruthy(process.env.STAFF_BOOTSTRAP_PASSWORD_RESET);
+  const overwritePassword = options.overwritePassword === true || pwReset;
 
-  const rmManagersExists = await hasTable(pool, "rm_managers");
-  if (rmManagersExists) {
-    const rmCols = await getTableColumns(pool, "rm_managers");
-    const md5 = createHash("md5").update(password, "utf8").digest("hex");
-    const [existingRm] = await pool.query<RowDataPacket[]>(
-      `SELECT managername, password FROM rm_managers WHERE managername = ? LIMIT 1`,
-      [name]
-    );
-    if (existingRm[0]) {
-      const pwd = String((existingRm[0] as RowDataPacket).password ?? "").trim();
-      if (!/^[a-f0-9]{32}$/i.test(pwd)) {
-        console.warn(
-          "[bootstrap] rm_managers.root password is not a 32-char MD5 hex; panel login will fail until fixed. Set RM_ROOT_PASSWORD_RESET=1 (and optional RM_BOOTSTRAP_ROOT_PLAINTEXT) then restart the API, or set password to MD5(plaintext) in MySQL."
-        );
-      }
-      if (overwritePassword) {
-        await pool.execute(
-          `UPDATE rm_managers
-           SET password = ?, email = ?, enablemanager = 1
-           WHERE managername = ?`,
-          [md5, email, name]
-        );
-      } else {
-        await pool.execute(
-          `UPDATE rm_managers
-           SET email = ?, enablemanager = 1
-           WHERE managername = ?`,
-          [email, name]
-        );
-      }
-      return { status: "updated", email };
-    }
-    const desiredPermColumns = [
-      "perm_listusers",
-      "perm_createusers",
-      "perm_editusers",
-      "perm_edituserspriv",
-      "perm_deleteusers",
-      "perm_listmanagers",
-      "perm_createmanagers",
-      "perm_editmanagers",
-      "perm_deletemanagers",
-      "perm_listservices",
-      "perm_createservices",
-      "perm_editservices",
-      "perm_deleteservices",
-      "perm_listonlineusers",
-      "perm_listinvoices",
-      "perm_trafficreport",
-      "perm_addcredits",
-      "perm_negbalance",
-      "perm_listallinvoices",
-      "perm_showinvtotals",
-      "perm_logout",
-      "perm_cardsys",
-      "perm_editinvoice",
-      "perm_allusers",
-      "perm_allowdiscount",
-      "perm_enwriteoff",
-      "perm_accessap",
-      "perm_cts",
-      "perm_email",
-      "perm_sms",
-    ] as const;
-    const presentPermColumns = desiredPermColumns.filter((c) => rmCols.has(c));
-    const insertColumns = [
-      "managername",
-      "password",
-      "firstname",
-      "lastname",
-      "phone",
-      "mobile",
-      "address",
-      "city",
-      "zip",
-      "country",
-      "state",
-      "comment",
-      "company",
-      "vatid",
-      "email",
-      "balance",
-      ...presentPermColumns,
-      "enablemanager",
-      "lang",
-    ];
-    const insertValues: Array<string | number> = [
-      name,
-      md5,
-      "Root",
-      "Admin",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "Future Radius bootstrap",
-      "",
-      "",
-      email,
-      0,
-      ...presentPermColumns.map(() => 1),
-      1,
-      "English",
-    ];
-    const placeholders = insertColumns.map(() => "?").join(", ");
-    await pool.execute(
-      `INSERT INTO rm_managers (${insertColumns.join(", ")}) VALUES (${placeholders})`,
-      insertValues
-    );
-    return { status: "created", email };
+  const tenantId = config.defaultTenantId;
+  const staffEmail =
+    process.env.STAFF_BOOTSTRAP_EMAIL?.trim() ||
+    process.env.DEFAULT_ADMIN_EMAIL?.trim() ||
+    "admin@futureradius.local";
+
+  const password =
+    process.env.STAFF_BOOTSTRAP_PASSWORD?.trim() ||
+    process.env.DEFAULT_ADMIN_PASSWORD?.trim() ||
+    (config.nodeEnv === "production" ? "" : "muhammadshuieb");
+
+  if (config.nodeEnv === "production" && !password) {
+    console.warn("[bootstrap] STAFF_BOOTSTRAP_PASSWORD / DEFAULT_ADMIN_PASSWORD not set — skipping admin seed");
+    return { status: "skipped", email: staffEmail };
   }
 
-  return { status: "skipped", email };
+  if (!(await hasTable(pool, "tenants"))) {
+    console.warn("[bootstrap] tenants table missing — migrations not applied?");
+    return { status: "skipped", email: staffEmail };
+  }
+
+  await pool.execute(
+    `INSERT IGNORE INTO tenants (id, name, status) VALUES (?, 'Default', 'active')`,
+    [tenantId]
+  );
+
+  const roleNames = ["admin", "manager", "accountant", "viewer"] as const;
+  const roleIdByName = new Map<string, string>();
+  for (const rn of roleNames) {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT id FROM roles WHERE tenant_id = ? AND name = ? LIMIT 1`,
+      [tenantId, rn]
+    );
+    if (rows[0]?.id) {
+      roleIdByName.set(rn, String(rows[0].id));
+      continue;
+    }
+    const rid = randomUUID();
+    await pool.execute(`INSERT INTO roles (id, tenant_id, name) VALUES (?, ?, ?)`, [rid, tenantId, rn]);
+    roleIdByName.set(rn, rid);
+  }
+
+  const adminRoleId = roleIdByName.get("admin");
+  if (!adminRoleId || !(await hasTable(pool, "users"))) {
+    return { status: "skipped", email: staffEmail };
+  }
+
+  const hash = await hashStaffPassword(password);
+  const [existing] = await pool.query<RowDataPacket[]>(
+    `SELECT u.id, u.password_hash FROM users u
+     WHERE u.tenant_id = ? AND LOWER(u.email) = LOWER(?) LIMIT 1`,
+    [tenantId, staffEmail]
+  );
+
+  if (existing[0]) {
+    const uid = String((existing[0] as RowDataPacket).id);
+    const ph = String((existing[0] as RowDataPacket).password_hash ?? "");
+    const looksBcrypt = /^\$2[aby]\$\d{2}\$/.test(ph);
+    if (overwritePassword || !looksBcrypt) {
+      await pool.execute(`UPDATE users SET password_hash = ?, name = COALESCE(NULLIF(name,''), 'Administrator') WHERE id = ?`, [
+        hash,
+        uid,
+      ]);
+    }
+    const [ur] = await pool.query<RowDataPacket[]>(
+      `SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND role_id = ? LIMIT 1`,
+      [uid, adminRoleId]
+    );
+    if (!ur[0]) {
+      await pool.execute(`INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)`, [uid, adminRoleId]);
+    }
+    return { status: "updated", email: staffEmail };
+  }
+
+  const userId = randomUUID();
+  await pool.execute(
+    `INSERT INTO users (id, tenant_id, email, name, password_hash, status, wallet_balance, allowed_negative_balance)
+     VALUES (?, ?, ?, 'Administrator', ?, 'active', 0, 0)`,
+    [userId, tenantId, staffEmail, hash]
+  );
+  await pool.execute(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [userId, adminRoleId]);
+
+  return { status: "created", email: staffEmail };
 }

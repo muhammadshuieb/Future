@@ -3,7 +3,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  esbuild: {
+    charset: "utf8",
+  },
   build: {
+    /** Ensure bundled JS/CSS is emitted as UTF-8 (Arabic UI strings in translations). */
+    charset: "utf8",
     rollupOptions: {
       output: {
         manualChunks(id) {

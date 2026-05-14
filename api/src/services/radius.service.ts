@@ -1,13 +1,12 @@
-import type { Pool } from "mysql2/promise";
+﻿import type { Pool } from "mysql2/promise";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { config } from "../config.js";
 import {
-  formatMikrotikRateLimitFromRmBytesPerSec,
   formatRadiusExpirationUtc,
 } from "../lib/radius-attr-format.js";
 
-/** حقول الباقة المستخدمة في radreply — ليست صف RowDataPacket خام من mysql2 */
+/** Package fields used when writing radreply (and radcheck Simultaneous-Use fallback). */
 export type PackageRow = {
   id: string;
   mikrotik_rate_limit: string | null;
@@ -23,6 +22,8 @@ export type RadiusUserOptions = {
   framedPool?: string | null;
   /** When set, writes `Expiration` into radcheck (FreeRADIUS auth-time check). */
   expirationDate?: Date | null;
+  /** Overrides package.simultaneous_use for Simultaneous-Use in radcheck when set. */
+  simultaneousUse?: number;
 };
 
 /** Payload for createRadiusUser / enableRadiusUser (DB is source of truth for speed/pool). */
@@ -34,6 +35,7 @@ export type RadiusUserInput = {
   macLock?: string | null;
   framedPool?: string | null;
   expirationDate?: Date | null;
+  simultaneousUse?: number;
 };
 
 /**
@@ -51,6 +53,7 @@ export class RadiusService {
       macLock: user.macLock ?? undefined,
       framedPool: user.framedPool ?? undefined,
       expirationDate: user.expirationDate ?? null,
+      simultaneousUse: user.simultaneousUse,
     });
   }
 
@@ -68,10 +71,22 @@ export class RadiusService {
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Cleartext-Password', ':=', ?)`,
         [username, password]
       );
+      const rawSim =
+        opts.simultaneousUse != null && Number.isFinite(Number(opts.simultaneousUse))
+          ? Number(opts.simultaneousUse)
+          : Number(pkg.simultaneous_use ?? 1);
+      const sim = Math.max(1, Math.floor(rawSim));
       await conn.execute(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)`,
-        [username, String(pkg.simultaneous_use ?? 1)]
+        [username, String(sim)]
       );
+      const macLock = opts.macLock?.trim();
+      if (macLock) {
+        await conn.execute(
+          `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Calling-Station-Id', '==', ?)`,
+          [username, macLock]
+        );
+      }
       if (opts.expirationDate) {
         const expVal = formatRadiusExpirationUtc(
           opts.expirationDate instanceof Date ? opts.expirationDate : new Date(opts.expirationDate)
@@ -88,7 +103,6 @@ export class RadiusService {
       }
       const framedIp = opts.framedIp ?? pkg.framed_ip_address;
       if (framedIp) replies.push(["Framed-IP-Address", framedIp]);
-      if (opts.macLock) replies.push(["Calling-Station-Id", opts.macLock]);
       const poolName = opts.framedPool ?? pkg.default_framed_pool;
       if (poolName) replies.push(["Framed-Pool", poolName]);
       if (pkg.mikrotik_address_list) {
@@ -113,8 +127,26 @@ export class RadiusService {
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
+      const [passwordRows] = await conn.query<RowDataPacket[]>(
+        `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
+        [username]
+      );
+      const preservedPassword =
+        passwordRows[0]?.value != null && String(passwordRows[0].value).trim() !== ""
+          ? String(passwordRows[0].value)
+          : null;
       await conn.execute(`DELETE FROM radcheck WHERE username = ?`, [username]);
       await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
+      if (preservedPassword) {
+        await conn.execute(
+          `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Cleartext-Password', ':=', ?)`,
+          [username, preservedPassword]
+        );
+      }
+      await conn.execute(
+        `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
+        [username]
+      );
       await conn.commit();
     } catch (e) {
       await conn.rollback();
@@ -195,7 +227,7 @@ export class RadiusService {
   }
 
   async getPackage(tenantId: string, packageId: string): Promise<PackageRow | null> {
-    if (!config.dmaMode && (await hasTable(this.pool, "packages"))) {
+    if (await hasTable(this.pool, "packages")) {
       const col = await getTableColumns(this.pool, "packages");
       const want = [
         "id",
@@ -229,48 +261,64 @@ export class RadiusService {
       }
     }
 
-    if (!(await hasTable(this.pool, "rm_services"))) return null;
-    const srvid = parseInt(String(packageId).trim(), 10);
-    if (!Number.isFinite(srvid)) return null;
-    const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT srvid, downrate, uprate, poolname FROM rm_services WHERE srvid = ? LIMIT 1`,
-      [srvid]
-    );
-    const r = rows[0];
-    if (!r) return null;
-    const down = Number(r.downrate ?? 0);
-    const up = Number(r.uprate ?? 0);
-    const mikrotik_rate_limit = formatMikrotikRateLimitFromRmBytesPerSec(down, up);
-    const poolname = r.poolname != null ? String(r.poolname).trim() : "";
-    return {
-      id: String(r.srvid),
-      mikrotik_rate_limit,
-      framed_ip_address: null,
-      mikrotik_address_list: null,
-      default_framed_pool: poolname.length > 0 ? poolname : null,
-      simultaneous_use: 1,
-    };
+    return null;
   }
 
   async getCleartextPassword(username: string): Promise<string | null> {
-    const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
-      [username]
-    );
-    const v = rows[0]?.value;
-    if (v != null && String(v).trim() !== "") return String(v);
-    /** After `disableRadiusUser`, radcheck is empty; RM still keeps password on `rm_users`. */
-    if (await hasTable(this.pool, "rm_users")) {
-      const cols = await getTableColumns(this.pool, "rm_users");
-      if (cols.has("password")) {
-        const [rm] = await this.pool.query<RowDataPacket[]>(
-          `SELECT password FROM rm_users WHERE username = ? LIMIT 1`,
-          [username]
-        );
-        const p = rm[0]?.password;
-        if (p != null && String(p).trim() !== "") return String(p);
-      }
+    if (await hasTable(this.pool, "radcheck")) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Cleartext-Password' LIMIT 1`,
+        [username]
+      );
+      const v = rows[0]?.value;
+      if (v != null && String(v).trim() !== "") return String(v);
     }
+    if (await hasTable(this.pool, "subscriber_credentials")) {
+      const [sub] = await this.pool.query<RowDataPacket[]>(
+        `SELECT sc.password
+         FROM subscriber_credentials sc
+         INNER JOIN subscribers s ON s.id = sc.subscriber_id
+         WHERE s.username = ?
+         LIMIT 1`,
+        [username]
+      );
+      const p = sub[0]?.password;
+      const password = p != null ? String(p).trim() : "";
+      if (/^[a-f0-9]{32}$/i.test(password)) return null;
+      if (password !== "") return password;
+    }
+    return null;
+  }
+
+  async getPasswordForDisplay(username: string): Promise<string | null> {
+    const clear = await this.getCleartextPassword(username);
+    if (clear) return clear;
+
+    if (await hasTable(this.pool, "radcheck")) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT value FROM radcheck
+         WHERE username = ? AND attribute IN ('User-Password', 'Password')
+         ORDER BY FIELD(attribute, 'User-Password', 'Password')
+         LIMIT 1`,
+        [username]
+      );
+      const radcheckPassword = rows[0]?.value != null ? String(rows[0].value).trim() : "";
+      if (radcheckPassword && !/^[a-f0-9]{32}$/i.test(radcheckPassword)) return radcheckPassword;
+    }
+
+    if (await hasTable(this.pool, "subscriber_credentials")) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT sc.password
+         FROM subscriber_credentials sc
+         INNER JOIN subscribers s ON s.id = sc.subscriber_id
+         WHERE s.username = ?
+         LIMIT 1`,
+        [username]
+      );
+      const stored = rows[0]?.password != null ? String(rows[0].password).trim() : "";
+      if (stored && !/^[a-f0-9]{32}$/i.test(stored)) return stored;
+    }
+
     return null;
   }
 }

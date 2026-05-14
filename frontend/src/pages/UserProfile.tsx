@@ -1,14 +1,43 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, Eye, EyeOff, FileText, X, Trash2 } from "lucide-react";
+import {
+  Activity,
+  ArrowLeft,
+  Ban,
+  BarChart3,
+  Calendar,
+  Clock,
+  Download,
+  Eye,
+  EyeOff,
+  FileText,
+  Gauge,
+  Hash,
+  Info,
+  KeyRound,
+  Layers,
+  Loader2,
+  MessageCircleOff,
+  Package,
+  Power,
+  RefreshCw,
+  Save,
+  Shield,
+  Trash2,
+  User,
+  UserCircle,
+  X,
+} from "lucide-react";
 import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { ActionDialog } from "../components/ui/ActionDialog";
+import { Modal } from "../components/ui/Modal";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
-import { canManageOperations } from "../lib/permissions";
+import { canManageOperations, canViewSpeedProfiles } from "../lib/permissions";
 import { cn } from "../lib/utils";
 import {
   Area,
@@ -43,6 +72,9 @@ type Row = {
   created_at?: string | null;
   used_bytes?: string | number | null;
   quota_total_bytes?: string | number | null;
+  simultaneous_use?: string | number | null;
+  /** 1 = لا إرسال واتساب تلقائي لهذا المشترك */
+  whatsapp_opt_out?: number | string | boolean | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
 type Nas = { id: string; name: string; ip: string };
@@ -71,6 +103,7 @@ type TrafficSession = {
 
 type TrafficReport = {
   username: string;
+  data_issue?: string | null;
   filter?: {
     from: string | null;
     to: string | null;
@@ -90,6 +123,40 @@ type TrafficReport = {
   yearly: TrafficPoint[];
   sessions: TrafficSession[];
 };
+
+function ProfileSectionTitle({
+  icon: Icon,
+  title,
+  hint,
+}: {
+  icon: LucideIcon;
+  title: string;
+  hint?: string | null;
+}) {
+  return (
+    <div className="mb-4 flex items-start gap-3">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[hsl(var(--primary))]/12 text-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary))]/20">
+        <Icon className="h-5 w-5" strokeWidth={1.75} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+        {hint ? <p className="mt-0.5 text-xs leading-relaxed opacity-65">{hint}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function StatTile({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return (
+    <div className="group flex gap-3 rounded-xl border border-[hsl(var(--border))]/80 bg-[hsl(var(--card))]/40 p-3.5 transition-colors hover:border-[hsl(var(--primary))]/30 hover:bg-[hsl(var(--muted))]/25">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 opacity-45 transition-opacity group-hover:opacity-80" strokeWidth={1.75} />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wider opacity-55">{label}</div>
+        <div className="mt-1 break-all font-mono text-xs font-medium leading-snug">{value}</div>
+      </div>
+    </div>
+  );
+}
 
 export function UserProfilePage() {
   const { id } = useParams();
@@ -150,6 +217,62 @@ export function UserProfilePage() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [regionId, setRegionId] = useState("");
+  const [simultaneousUse, setSimultaneousUse] = useState("1");
+  const [whatsappOptOut, setWhatsappOptOut] = useState(false);
+
+  const showSpeedPanel = canViewSpeedProfiles(user?.role, user?.permissions);
+  const canSpeedOverride =
+    user?.role === "admin" || Boolean(user?.permissions?.apply_speed_override);
+  const [speedEff, setSpeedEff] = useState<{
+    profileId: string | null;
+    mikrotikValue: string | null;
+    source: string;
+    scheduleId: string | null;
+  } | null>(null);
+  const [speedLogs, setSpeedLogs] = useState<Array<Record<string, unknown>>>([]);
+  const [speedProfilesPick, setSpeedProfilesPick] = useState<Array<{ id: string; name: string }>>([]);
+  const [speedLoading, setSpeedLoading] = useState(false);
+  const [speedBoostOpen, setSpeedBoostOpen] = useState(false);
+  const [speedBoostProfileId, setSpeedBoostProfileId] = useState("");
+  const [speedBoostEnds, setSpeedBoostEnds] = useState("");
+  const [speedBusy, setSpeedBusy] = useState(false);
+
+  const loadSpeedInfo = useCallback(async () => {
+    if (!id || !showSpeedPanel) return;
+    setSpeedLoading(true);
+    try {
+      const [effRes, logsRes, profRes] = await Promise.all([
+        apiFetch(`/api/speed-profiles/subscribers/${id}/effective`),
+        apiFetch(`/api/speed-profiles/logs?limit=30&subscriber_id=${encodeURIComponent(id)}`),
+        apiFetch("/api/speed-profiles"),
+      ]);
+      if (effRes.ok) {
+        const j = (await effRes.json()) as {
+          effective: {
+            profileId: string | null;
+            mikrotikValue: string | null;
+            source: string;
+            scheduleId: string | null;
+          };
+        };
+        setSpeedEff(j.effective ?? null);
+      } else setSpeedEff(null);
+      if (logsRes.ok) {
+        const j = (await logsRes.json()) as { items: Array<Record<string, unknown>> };
+        setSpeedLogs(j.items ?? []);
+      } else setSpeedLogs([]);
+      if (profRes.ok) {
+        const j = (await profRes.json()) as { items: Array<{ id: string; name: string }> };
+        setSpeedProfilesPick(j.items ?? []);
+      } else setSpeedProfilesPick([]);
+    } finally {
+      setSpeedLoading(false);
+    }
+  }, [id, showSpeedPanel]);
+
+  useEffect(() => {
+    void loadSpeedInfo();
+  }, [loadSpeedInfo]);
 
   const loadTraffic = useCallback(
     async (opts?: { from?: string; to?: string }) => {
@@ -214,6 +337,15 @@ export function UserProfilePage() {
           setPhone(String(found.phone ?? ""));
           setAddress(String(found.address ?? ""));
           setRegionId(found.region_id ? String(found.region_id) : "");
+          const su = found.simultaneous_use;
+          if (su != null && String(su).trim() !== "") {
+            const n = parseInt(String(su), 10);
+            setSimultaneousUse(Number.isFinite(n) && n >= 1 ? String(n) : "1");
+          } else {
+            setSimultaneousUse("1");
+          }
+          const woo = found.whatsapp_opt_out;
+          setWhatsappOptOut(woo === true || woo === 1 || woo === "1");
         }
       }
     } finally {
@@ -244,6 +376,8 @@ export function UserProfilePage() {
           phone: phone || null,
           address: address || null,
           region_id: regionId || null,
+          simultaneous_use: Math.max(1, Math.min(32, parseInt(simultaneousUse, 10) || 1)),
+          whatsapp_opt_out: whatsappOptOut,
         }),
       });
       if (r.ok) {
@@ -280,6 +414,53 @@ export function UserProfilePage() {
     else setMsg(formatStaffApiError(r.status, await readApiError(r), t));
   }
 
+  async function removeSpeedOverride() {
+    if (!id || !canSpeedOverride) return;
+    setSpeedBusy(true);
+    setMsg(null);
+    try {
+      const r = await apiFetch(`/api/speed-profiles/subscribers/${id}/override`, { method: "DELETE" });
+      if (r.ok) {
+        await loadSpeedInfo();
+        setMsg(t("speed.overrideRemoved"));
+      } else {
+        setMsg(formatStaffApiError(r.status, await readApiError(r), t));
+      }
+    } finally {
+      setSpeedBusy(false);
+    }
+  }
+
+  async function submitSpeedBoost() {
+    if (!id || !canSpeedOverride || !speedBoostProfileId) return;
+    setSpeedBusy(true);
+    setMsg(null);
+    try {
+      const body: Record<string, unknown> = {
+        speed_profile_id: speedBoostProfileId,
+        reason: "temporary_boost",
+      };
+      if (speedBoostEnds.trim()) {
+        body.ends_at = new Date(speedBoostEnds).toISOString();
+      }
+      const r = await apiFetch(`/api/speed-profiles/subscribers/${id}/override`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        setSpeedBoostOpen(false);
+        setSpeedBoostProfileId("");
+        setSpeedBoostEnds("");
+        await loadSpeedInfo();
+        setMsg(t("speed.boostApplied"));
+      } else {
+        setMsg(formatStaffApiError(r.status, await readApiError(r), t));
+      }
+    } finally {
+      setSpeedBusy(false);
+    }
+  }
+
   async function toggleRevealPassword() {
     if (!id || !canManage) return;
     if (revealedPw != null) {
@@ -291,7 +472,12 @@ export function UserProfilePage() {
     try {
       const res = await apiFetch(`/api/subscribers/${id}/password`);
       if (!res.ok) {
-        setMsg(formatStaffApiError(res.status, await readApiError(res), t));
+        const error = await readApiError(res);
+        setMsg(
+          error.toLowerCase().includes("password_unavailable")
+            ? t("profile.passwordUnavailableHash")
+            : formatStaffApiError(res.status, error, t)
+        );
         return;
       }
       const data = (await res.json()) as { password?: string };
@@ -535,70 +721,128 @@ export function UserProfilePage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6" dir={isRtl ? "rtl" : "ltr"}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" variant="ghost" onClick={onClose}>
-          <X className="h-4 w-4" />
-        </Button>
-        <Link
-          to="/users"
-          className={cn(
-            "inline-flex items-center gap-2 text-sm font-medium text-[hsl(var(--primary))] hover:underline",
-            isRtl && "flex-row-reverse"
-          )}
-        >
-          <ArrowLeft className={cn("h-4 w-4", isRtl && "rotate-180")} />
-          {t("profile.back")}
-        </Link>
+    <div className="mx-auto max-w-4xl space-y-6 pb-10" dir={isRtl ? "rtl" : "ltr"}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className={cn("flex flex-wrap items-center gap-2", isRtl && "flex-row-reverse")}>
+          <Button type="button" variant="ghost" className="h-9 w-9 shrink-0 p-0" onClick={onClose} aria-label={t("common.close")}>
+            <X className="h-4 w-4" />
+          </Button>
+          <Link
+            to="/users"
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-[hsl(var(--primary))] transition-colors hover:border-[hsl(var(--primary))]/25 hover:bg-[hsl(var(--primary))]/5",
+              isRtl && "flex-row-reverse"
+            )}
+          >
+            <ArrowLeft className={cn("h-4 w-4 shrink-0", isRtl && "rotate-180")} />
+            {t("profile.back")}
+          </Link>
+        </div>
       </div>
 
-      <div>
-        <h1 className="text-2xl font-bold">
-          {t("profile.title")}: {String(row.username)}
-        </h1>
-        <p className="mt-1 text-sm opacity-70">
-          {t("users.package")}: {String(row.package_name ?? "—")} · {t("users.status")}: {String(row.status)}
-        </p>
-      </div>
-
-      {msg ? (
-        <p className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 px-4 py-2 text-sm">{msg}</p>
-      ) : null}
-
-      <Card className="p-2">
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={activeTab === "details" ? "default" : "outline"}
-            onClick={() => setActiveTab("details")}
-          >
-            {t("users.profile")}
-          </Button>
-          <Button
-            type="button"
-            variant={activeTab === "traffic" ? "default" : "outline"}
-            onClick={() => setActiveTab("traffic")}
-          >
-            {t("profile.trafficTitle")}
-          </Button>
+      <Card variant="subtle" className="overflow-hidden p-0 ring-1 ring-[hsl(var(--border))]/60">
+        <div className="relative bg-gradient-to-br from-[hsl(var(--primary))]/18 via-[hsl(var(--muted))]/30 to-emerald-500/10 px-5 py-6 sm:px-7 sm:py-7">
+          <div className="pointer-events-none absolute -end-16 -top-16 h-48 w-48 rounded-full bg-[hsl(var(--primary))]/10 blur-3xl" />
+          <div className="relative flex flex-wrap items-center gap-4 sm:gap-5">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[hsl(var(--card))] text-xl font-bold tracking-tight text-[hsl(var(--primary))] shadow-lg shadow-black/5 ring-1 ring-[hsl(var(--border))]">
+              <User className="h-8 w-8 opacity-90" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium uppercase tracking-wider opacity-55">{t("profile.title")}</p>
+              <h1 className="mt-0.5 truncate text-2xl font-bold tracking-tight sm:text-3xl">{String(row.username)}</h1>
+              <div className={cn("mt-3 flex flex-wrap items-center gap-2", isRtl && "flex-row-reverse")}>
+                <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[hsl(var(--border))]/80 bg-[hsl(var(--card))]/70 px-3 py-1 text-xs font-medium shadow-sm backdrop-blur-sm">
+                  <Package className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                  <span className="truncate">{String(row.package_name ?? "—")}</span>
+                </span>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1",
+                    active
+                      ? "bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-400"
+                      : "bg-[hsl(var(--muted))] text-foreground/80 ring-[hsl(var(--border))]"
+                  )}
+                >
+                  <Activity className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                  {String(row.status ?? "—")}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </Card>
+
+      {msg ? (
+        <div
+          role="status"
+          className="flex gap-3 rounded-2xl border border-[hsl(var(--border))] border-s-4 border-s-[hsl(var(--primary))] bg-[hsl(var(--muted))]/40 px-4 py-3 text-sm shadow-sm"
+        >
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--primary))]/12 text-[hsl(var(--primary))]">
+            <Info className="h-4 w-4" />
+          </div>
+          <p className="min-w-0 flex-1 pt-1 leading-relaxed">{msg}</p>
+        </div>
+      ) : null}
+
+      <div
+        className="flex gap-1 rounded-2xl border border-[hsl(var(--border))]/80 bg-[hsl(var(--muted))]/25 p-1 shadow-inner"
+        role="tablist"
+        aria-label={t("profile.title")}
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "details"}
+          onClick={() => setActiveTab("details")}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+            activeTab === "details"
+              ? "bg-[hsl(var(--card))] text-[hsl(var(--primary))] shadow-sm ring-1 ring-[hsl(var(--border))]/60"
+              : "opacity-70 hover:opacity-100"
+          )}
+        >
+          <User className="h-4 w-4 shrink-0" />
+          {t("users.profile")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "traffic"}
+          onClick={() => setActiveTab("traffic")}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+            activeTab === "traffic"
+              ? "bg-[hsl(var(--card))] text-[hsl(var(--primary))] shadow-sm ring-1 ring-[hsl(var(--border))]/60"
+              : "opacity-70 hover:opacity-100"
+          )}
+        >
+          <BarChart3 className="h-4 w-4 shrink-0" />
+          {t("profile.trafficTitle")}
+        </button>
+      </div>
 
       {activeTab === "details" ? (
         <>
           {canManage ? (
-            <Card className="space-y-4">
-              <h2 className="text-sm font-semibold opacity-80">{t("profile.radiusPassword")}</h2>
-              <p className="text-xs opacity-60">{t("profile.radiusPasswordHint")}</p>
-              <div className="flex flex-wrap items-end gap-2">
+            <Card variant="subtle" className="space-y-5">
+              <ProfileSectionTitle icon={KeyRound} title={t("profile.radiusPassword")} hint={t("profile.radiusPasswordHint")} />
+              <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-[12rem] flex-1">
-                  <div className="mb-1 text-xs opacity-70">{t("users.password")}</div>
-                  <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-2 font-mono text-sm break-all">
-                    {passwordRevealLoading
-                      ? t("common.loading")
-                      : revealedPw != null
-                        ? revealedPw
-                        : t("users.passwordHidden")}
+                  <div className="mb-1.5 flex items-center gap-2 text-xs font-medium opacity-75">
+                    <Shield className="h-3.5 w-3.5 opacity-60" />
+                    {t("users.password")}
+                  </div>
+                  <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/35 px-3 py-2.5 font-mono text-sm shadow-inner break-all">
+                    {passwordRevealLoading ? (
+                      <span className="inline-flex items-center gap-2 opacity-70">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {t("common.loading")}
+                      </span>
+                    ) : revealedPw != null ? (
+                      revealedPw
+                    ) : (
+                      t("users.passwordHidden")
+                    )}
                   </div>
                 </div>
                 <Button
@@ -608,20 +852,19 @@ export function UserProfilePage() {
                   disabled={passwordRevealLoading}
                   className="shrink-0"
                 >
-                  {revealedPw != null ? (
-                    <EyeOff className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
-                  ) : (
-                    <Eye className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
-                  )}
+                  {revealedPw != null ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   {revealedPw != null ? t("common.hide") : t("common.show")}
                 </Button>
               </div>
-              <div className="border-t border-[hsl(var(--border))] pt-4">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium opacity-80">{t("profile.changePassword")}</div>
+              <div className="border-t border-[hsl(var(--border))]/80 pt-5">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <KeyRound className="h-4 w-4 opacity-60" />
+                    {t("profile.changePassword")}
+                  </div>
                   <Button
                     type="button"
-                    variant={showPasswordEditor ? "outline" : "default"}
+                    variant={showPasswordEditor ? "outline" : "soft"}
                     onClick={() => {
                       setShowPasswordEditor((prev) => !prev);
                       if (showPasswordEditor) {
@@ -651,9 +894,19 @@ export function UserProfilePage() {
                         onChange={(e) => setConfirmPwd(e.target.value)}
                       />
                     </div>
-                    <div className="mt-3">
-                      <Button type="button" onClick={() => void savePasswordChange()} disabled={passwordBusy}>
-                        {passwordBusy ? t("common.loading") : t("profile.updatePassword")}
+                    <div className="mt-4">
+                      <Button type="button" variant="primary" onClick={() => void savePasswordChange()} disabled={passwordBusy}>
+                        {passwordBusy ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t("common.loading")}
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-4 w-4" />
+                            {t("profile.updatePassword")}
+                          </>
+                        )}
                       </Button>
                     </div>
                   </>
@@ -661,70 +914,192 @@ export function UserProfilePage() {
               </div>
             </Card>
           ) : (
-            <p className="text-xs opacity-60">{t("users.passwordRestricted")}</p>
+            <div className="flex items-start gap-3 rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 px-4 py-3 text-xs opacity-80">
+              <KeyRound className="mt-0.5 h-4 w-4 shrink-0 opacity-50" />
+              {t("users.passwordRestricted")}
+            </div>
           )}
 
-          <Card>
-            <form onSubmit={onSave} className="space-y-4">
-              <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} disabled={!canManage}>
-                <option value="">—</option>
-                {packages.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </SelectField>
-              <SelectField label={t("users.nas")} value={nasId} onChange={(e) => setNasId(e.target.value)} disabled={!canManage}>
-                <option value="">—</option>
-                {nasList.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name} ({n.ip})
-                  </option>
-                ))}
-              </SelectField>
-              <TextField label={t("users.pool")} value={pool} onChange={(e) => setPool(e.target.value)} disabled={!canManage} />
-              <div className="grid gap-4 sm:grid-cols-2">
-                <TextField label={t("users.ip")} value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} disabled={!canManage} />
-                <TextField label={t("users.mac")} value={macAddress} onChange={(e) => setMacAddress(e.target.value)} disabled={!canManage} />
+          {showSpeedPanel ? (
+            <Card className="space-y-4">
+              <ProfileSectionTitle
+                icon={Gauge}
+                title={t("speed.subscriberSectionTitle")}
+                hint={t("speed.subscriberSectionHint")}
+              />
+              {speedLoading ? (
+                <p className="text-sm opacity-70">{t("common.loading")}</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  {speedEff ? (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="opacity-70">{t("speed.effectiveMikrotik")}</span>
+                        <code className="max-w-full break-all rounded bg-[hsl(var(--muted))] px-2 py-0.5 text-xs">
+                          {speedEff.mikrotikValue ?? "—"}
+                        </code>
+                      </div>
+                      <div>
+                        <span className="opacity-70">{t("speed.effectiveSource")}</span>{" "}
+                        <span className="font-medium">{speedEff.source}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="opacity-70">{t("speed.noEffective")}</p>
+                  )}
+                  {speedLogs.length > 0 ? (
+                    <div className="mt-2 max-h-40 overflow-auto rounded-lg border border-[hsl(var(--border))]/80 p-2 text-xs">
+                      <div className="mb-1 font-semibold opacity-80">{t("speed.changeHistory")}</div>
+                      <ul className="space-y-1">
+                        {speedLogs.slice(0, 8).map((log) => (
+                          <li key={String(log.id)} className="opacity-90">
+                            {String(log.applied_at ?? "").replace("T", " ").slice(0, 19)} —{" "}
+                            {String(log.new_mikrotik_value ?? log.source ?? "")}
+                            {log.coa_ok === 0 ? (
+                              <span className="text-amber-600"> ({t("speed.coaFailed")})</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {canSpeedOverride ? (
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      <Button type="button" variant="outline" onClick={() => setSpeedBoostOpen(true)}>
+                        {t("speed.temporaryBoost")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={speedBusy}
+                        onClick={() => void removeSpeedOverride()}
+                      >
+                        {t("speed.removeOverride")}
+                      </Button>
+                      <Button type="button" variant="ghost" onClick={() => void loadSpeedInfo()}>
+                        {t("common.refresh")}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </Card>
+          ) : null}
+
+          <Card className="space-y-8">
+            <form onSubmit={onSave} className="space-y-8">
+              <div>
+                <ProfileSectionTitle icon={Layers} title={t("profile.sectionSubscription")} />
+                <div className="space-y-4">
+                  <SelectField label={t("users.package")} value={packageId} onChange={(e) => setPackageId(e.target.value)} disabled={!canManage}>
+                    <option value="">—</option>
+                    {packages.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </SelectField>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <TextField
+                      label={t("packages.simUse")}
+                      type="number"
+                      min={1}
+                      max={32}
+                      value={simultaneousUse}
+                      onChange={(e) => setSimultaneousUse(e.target.value)}
+                      disabled={!canManage}
+                    />
+                    <SelectField label={t("users.nas")} value={nasId} onChange={(e) => setNasId(e.target.value)} disabled={!canManage}>
+                      <option value="">—</option>
+                      {nasList.map((n) => (
+                        <option key={n.id} value={n.id}>
+                          {n.name} ({n.ip})
+                        </option>
+                      ))}
+                    </SelectField>
+                  </div>
+                  <TextField label={t("users.pool")} value={pool} onChange={(e) => setPool(e.target.value)} disabled={!canManage} />
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <TextField label={t("users.ip")} value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} disabled={!canManage} />
+                    <TextField label={t("users.mac")} value={macAddress} onChange={(e) => setMacAddress(e.target.value)} disabled={!canManage} />
+                  </div>
+                </div>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <TextField label={t("users.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={!canManage} />
-                <TextField label={t("users.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={!canManage} />
+
+              <div className="border-t border-[hsl(var(--border))]/80 pt-8">
+                <ProfileSectionTitle icon={UserCircle} title={t("profile.sectionContact")} />
+                <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <TextField label={t("users.firstName")} value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={!canManage} />
+                    <TextField label={t("users.lastName")} value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={!canManage} />
+                  </div>
+                  <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
+                  {canManage ? (
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/25 px-4 py-3.5 text-sm transition-colors hover:border-[hsl(var(--primary))]/25">
+                      <MessageCircleOff className="mt-0.5 h-5 w-5 shrink-0 text-[hsl(var(--primary))]/80" />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2 font-medium">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 shrink-0 rounded border-[hsl(var(--border))]"
+                            checked={whatsappOptOut}
+                            onChange={(e) => setWhatsappOptOut(e.target.checked)}
+                          />
+                          {t("profile.whatsappOptOut")}
+                        </span>
+                        <span className="mt-1.5 block text-xs leading-relaxed opacity-70">{t("profile.whatsappOptOutHint")}</span>
+                      </span>
+                    </label>
+                  ) : null}
+                  <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
+                  <SelectField
+                    label={`${t("users.region")} (${t("common.optional")})`}
+                    value={regionId}
+                    onChange={(e) => setRegionId(e.target.value)}
+                    disabled={!canManage}
+                  >
+                    <option value="">—</option>
+                    {regionSelectOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </SelectField>
+                </div>
               </div>
-              <TextField label={t("users.phone")} value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!canManage} />
-              <TextField label={t("users.address")} value={address} onChange={(e) => setAddress(e.target.value)} disabled={!canManage} />
-              <SelectField
-                label={`${t("users.region")} (${t("common.optional")})`}
-                value={regionId}
-                onChange={(e) => setRegionId(e.target.value)}
-                disabled={!canManage}
-              >
-                <option value="">—</option>
-                {regionSelectOptions.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </SelectField>
+
               {canManage ? (
-                <div className="flex flex-wrap gap-2 pt-2">
-                  <Button type="submit" disabled={saving}>
-                    {saving ? t("common.loading") : t("common.save")}
+                <div className="flex flex-wrap gap-2 border-t border-[hsl(var(--border))]/80 pt-6">
+                  <Button type="submit" variant="primary" disabled={saving}>
+                    {saving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {t("common.loading")}
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4" />
+                        {t("common.save")}
+                      </>
+                    )}
                   </Button>
                   <Button type="button" variant="outline" onClick={onClose}>
+                    <X className="h-4 w-4 opacity-70" />
                     {t("common.cancel")}
                   </Button>
                   {active ? (
-                    <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDisable()}>
+                    <Button type="button" variant="danger" className="border border-transparent" onClick={() => void onDisable()}>
+                      <Ban className="h-4 w-4" />
                       {t("profile.disable")}
                     </Button>
                   ) : (
-                    <Button type="button" variant="outline" onClick={() => void onEnable()}>
+                    <Button type="button" variant="success" onClick={() => void onEnable()}>
+                      <Power className="h-4 w-4" />
                       {t("profile.enable")}
                     </Button>
                   )}
-                  <Button type="button" variant="outline" className="border-red-500/50 text-red-600" onClick={() => void onDelete()}>
-                    <Trash2 className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                  <Button type="button" variant="outline" className="border-red-500/40 text-red-600 hover:bg-red-500/10" onClick={() => void onDelete()}>
+                    <Trash2 className="h-4 w-4" />
                     {t("common.delete")}
                   </Button>
                 </div>
@@ -732,97 +1107,117 @@ export function UserProfilePage() {
             </form>
           </Card>
 
-          <Card>
-            <h2 className="mb-3 text-sm font-semibold opacity-80">{t("nav.settings")}</h2>
-            <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div>
-                <dt className="text-xs opacity-60">ID</dt>
-                <dd className="font-mono text-xs break-all">{String(row.id)}</dd>
-              </div>
-              <div>
-                <dt className="text-xs opacity-60">{t("users.createdBy")}</dt>
-                <dd className="text-xs">{String(row.creator_name ?? "—")}</dd>
-              </div>
-              <div>
-                <dt className="text-xs opacity-60">{t("users.expires")}</dt>
-                <dd className="font-mono text-xs">{String(row.expiration_date ?? "").slice(0, 19).replace("T", " ")}</dd>
-              </div>
-              <div>
-                <dt className="text-xs opacity-60">Total limit</dt>
-                <dd className="font-mono text-xs">
-                  {quotaTotal > 0 ? fmtBytes(quotaTotal) : t("packages.unlimited")}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs opacity-60">{t("users.remainingQuota")}</dt>
-                <dd className="font-mono text-xs">
-                  {quotaTotal > 0 ? fmtBytes(remainingBytes) : t("packages.unlimited")}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs opacity-60">{t("users.createdAt")}</dt>
-                <dd className="font-mono text-xs">{String(row.created_at ?? "").slice(0, 19).replace("T", " ")}</dd>
-              </div>
-            </dl>
+          <Card variant="subtle" className="space-y-5">
+            <ProfileSectionTitle icon={Gauge} title={t("profile.sectionMeta")} />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <StatTile icon={Hash} label={t("profile.internalId")} value={String(row.id)} />
+              <StatTile icon={User} label={t("users.createdBy")} value={String(row.creator_name ?? "—")} />
+              <StatTile
+                icon={Calendar}
+                label={t("users.expires")}
+                value={String(row.expiration_date ?? "").slice(0, 19).replace("T", " ") || "—"}
+              />
+              <StatTile
+                icon={Gauge}
+                label={t("profile.quotaTotal")}
+                value={quotaTotal > 0 ? fmtBytes(quotaTotal) : t("packages.unlimited")}
+              />
+              <StatTile
+                icon={Activity}
+                label={t("users.remainingQuota")}
+                value={quotaTotal > 0 ? fmtBytes(remainingBytes) : t("packages.unlimited")}
+              />
+              <StatTile
+                icon={Clock}
+                label={t("users.createdAt")}
+                value={String(row.created_at ?? "").slice(0, 19).replace("T", " ") || "—"}
+              />
+            </div>
           </Card>
 
         </>
       ) : null}
 
       {activeTab === "traffic" ? (
-        <Card className="space-y-4">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold opacity-80">{t("profile.trafficTitle")}</h2>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={exportCsv} disabled={!traffic}>
-              <Download className={cn("h-4 w-4", isRtl ? "ms-1" : "me-1")} />
-              {t("profile.exportCsv")}
-            </Button>
-            <Button type="button" variant="outline" onClick={exportPdf} disabled={!traffic}>
-              <FileText className={cn("h-4 w-4", isRtl ? "ms-1" : "me-1")} />
-              {t("profile.exportPdf")}
-            </Button>
-            <Button type="button" variant="outline" onClick={() => void loadTraffic()}>
-              {trafficLoading ? t("common.loading") : t("common.refresh")}
-            </Button>
+        <Card className="space-y-6">
+          <div className="flex flex-col gap-4 border-b border-[hsl(var(--border))]/60 pb-5 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[hsl(var(--primary))]/12 text-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary))]/20">
+                <BarChart3 className="h-6 w-6" strokeWidth={1.75} />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight">{t("profile.trafficTitle")}</h2>
+                <p className="mt-1 max-w-md text-xs leading-relaxed opacity-65">{t("profile.trafficIntro")}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={exportCsv} disabled={!traffic}>
+                <Download className="h-4 w-4" />
+                {t("profile.exportCsv")}
+              </Button>
+              <Button type="button" variant="outline" onClick={exportPdf} disabled={!traffic}>
+                <FileText className="h-4 w-4" />
+                {t("profile.exportPdf")}
+              </Button>
+              <Button type="button" variant="soft" onClick={() => void loadTraffic()} disabled={trafficLoading}>
+                <RefreshCw className={cn("h-4 w-4", trafficLoading && "animate-spin")} />
+                {trafficLoading ? t("common.loading") : t("common.refresh")}
+              </Button>
+            </div>
           </div>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto]">
-          <TextField
-            type="date"
-            label={t("profile.dateFrom")}
-            value={trafficFrom}
-            onChange={(e) => setTrafficFrom(e.target.value)}
-          />
-          <TextField
-            type="date"
-            label={t("profile.dateTo")}
-            value={trafficTo}
-            onChange={(e) => setTrafficTo(e.target.value)}
-          />
-          <div className="flex items-end">
-            <Button type="button" onClick={() => void loadTraffic()}>
-              {t("profile.applyFilter")}
-            </Button>
+          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto]">
+            <TextField
+              type="date"
+              label={t("profile.dateFrom")}
+              value={trafficFrom}
+              onChange={(e) => setTrafficFrom(e.target.value)}
+            />
+            <TextField
+              type="date"
+              label={t("profile.dateTo")}
+              value={trafficTo}
+              onChange={(e) => setTrafficTo(e.target.value)}
+            />
+            <div className="flex items-end">
+              <Button type="button" variant="primary" onClick={() => void loadTraffic()}>
+                <BarChart3 className="h-4 w-4 opacity-90" />
+                {t("profile.applyFilter")}
+              </Button>
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setTrafficFrom("");
+                  setTrafficTo("");
+                  void loadTraffic({ from: "", to: "" });
+                }}
+              >
+                <X className="h-4 w-4 opacity-70" />
+                {t("profile.clearFilter")}
+              </Button>
+            </div>
           </div>
-          <div className="flex items-end">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setTrafficFrom("");
-                setTrafficTo("");
-                void loadTraffic({ from: "", to: "" });
-              }}
-            >
-              {t("profile.clearFilter")}
-            </Button>
-          </div>
-        </div>
-        {!traffic ? (
-          <p className="text-sm opacity-70">{t("profile.trafficEmpty")}</p>
-        ) : (
+          {!traffic ? (
+            <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 px-6 py-14 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[hsl(var(--muted))]/50 text-[hsl(var(--primary))]/50">
+                <Activity className="h-7 w-7" />
+              </div>
+              <p className="max-w-sm text-sm opacity-75">{t("profile.trafficEmpty")}</p>
+            </div>
+          ) : (
           <>
+            {traffic.data_issue === "radacct_username_missing" ? (
+              <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  {isRtl
+                    ? "بيانات الجلسات موجودة في radacct، لكن اسم المستخدم داخل الجلسات فارغ بعد الاستعادة، لذلك لا يمكن ربط التقرير بهذا المشترك. يلزم إعادة استعادة radacct من نسخة تحتوي أعمدة username و acctstarttime والاستهلاك."
+                    : "Session rows exist in radacct, but their username is blank after restore, so this report cannot be linked to this subscriber. Restore radacct again from a backup that includes username, acctstarttime, and traffic columns."}
+                </div>
+              </div>
+            ) : null}
             <div className="grid gap-4 lg:grid-cols-2">
               <Card className="p-3">
                 <div className="mb-2 text-xs font-semibold opacity-70">{t("profile.dailyUsageChart")}</div>
@@ -987,8 +1382,43 @@ export function UserProfilePage() {
             </div>
           </>
         )}
-      </Card>
+        </Card>
       ) : null}
+      <Modal
+        open={speedBoostOpen}
+        onClose={() => !speedBusy && setSpeedBoostOpen(false)}
+        title={t("speed.temporaryBoost")}
+      >
+        <div className="space-y-4 text-sm">
+          <SelectField
+            label={t("speed.pickProfile")}
+            value={speedBoostProfileId}
+            onChange={(e) => setSpeedBoostProfileId(e.target.value)}
+          >
+            <option value="">—</option>
+            {speedProfilesPick.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </SelectField>
+          <TextField
+            label={t("speed.endsAtLocal")}
+            type="datetime-local"
+            value={speedBoostEnds}
+            onChange={(e) => setSpeedBoostEnds(e.target.value)}
+          />
+          <p className="text-xs opacity-70">{t("speed.boostHint")}</p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={speedBusy} onClick={() => setSpeedBoostOpen(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="button" disabled={speedBusy || !speedBoostProfileId} onClick={() => void submitSpeedBoost()}>
+              {speedBusy ? t("common.loading") : t("common.confirm")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <ActionDialog
         open={disableConfirmOpen}
         title={t("common.actions")}

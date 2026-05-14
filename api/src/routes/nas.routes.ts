@@ -1,608 +1,142 @@
-import { Router, type Request, type Response } from "express";
 import { randomUUID } from "crypto";
+import { Router } from "express";
+import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { config } from "../config.js";
-import { getTableColumns, hasTable } from "../db/schemaGuards.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
-import { decryptSecret, encryptSecret, tryDecryptSecret } from "../services/crypto.service.js";
-import { CoaService } from "../services/coa.service.js";
-import type { RowDataPacket } from "mysql2";
+import { RadiusSyncService } from "../services/radius-sync.service.js";
 
 const router = Router();
-const coa = new CoaService(pool);
+const radiusSync = new RadiusSyncService(pool);
 
 router.use(requireAuth);
-
-async function upsertLegacyNas(input: {
-  legacyId?: number | null;
-  ip: string;
-  name: string;
-  type?: string | null;
-  secret: string;
-}): Promise<number | null> {
-  if (!(await hasTable(pool, "nas"))) return null;
-  const type = (input.type || "other").trim() || "other";
-  const shortName = input.name.trim() || input.ip;
-  if (input.legacyId && Number.isFinite(input.legacyId)) {
-    await pool.execute(
-      `UPDATE nas
-       SET nasname = ?, shortname = ?, type = ?, secret = ?, description = COALESCE(description, '')
-       WHERE id = ?`,
-      [input.ip, shortName, type, input.secret, input.legacyId]
-    );
-    return input.legacyId;
-  }
-  const [existing] = await pool.query<RowDataPacket[]>(
-    `SELECT id FROM nas WHERE nasname = ? LIMIT 1`,
-    [input.ip]
-  );
-  if (existing[0]?.id) {
-    await pool.execute(
-      `UPDATE nas
-       SET shortname = ?, type = ?, secret = ?, description = COALESCE(description, '')
-       WHERE id = ?`,
-      [shortName, type, input.secret, Number(existing[0].id)]
-    );
-    return Number(existing[0].id);
-  }
-  const [ins] = await pool.execute(
-    `INSERT INTO nas (nasname, shortname, type, secret, description)
-     VALUES (?, ?, ?, ?, '')`,
-    [input.ip, shortName, type, input.secret]
-  );
-  return Number((ins as { insertId?: number }).insertId ?? 0) || null;
-}
-
-router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req: Request, res: Response) => {
-  try {
-    let modern: RowDataPacket[] = [];
-    if (!config.dmaMode && (await hasTable(pool, "nas_servers"))) {
-      const col = await getTableColumns(pool, "nas_servers");
-      const want = [
-        "id",
-        "legacy_nas_id",
-        "name",
-        "ip",
-        "type",
-        "mikrotik_api_enabled",
-        "mikrotik_api_user",
-        "status",
-        "coa_port",
-        "online_status",
-        "last_ping_ok",
-        "last_radius_ok",
-        "last_check_at",
-        "session_count",
-        "created_at",
-        "wireguard_tunnel_ip",
-      ];
-      const sel = want.filter((c) => col.has(c.toLowerCase()));
-      if (sel.length > 0 && col.has("tenant_id")) {
-        const [rows] = await pool.query<RowDataPacket[]>(
-          `SELECT ${sel.join(", ")} FROM nas_servers WHERE tenant_id = ?`,
-          [req.auth!.tenantId]
-        );
-        modern = rows.map((r: RowDataPacket) => {
-          const row = { ...r } as Record<string, unknown>;
-          if (!col.has("online_status")) row.online_status = "unknown";
-          if (!col.has("session_count")) row.session_count = 0;
-          if (!col.has("coa_port")) row.coa_port = 3799;
-          if (!col.has("last_ping_ok")) row.last_ping_ok = null;
-          if (!col.has("last_radius_ok")) row.last_radius_ok = null;
-          if (!col.has("last_check_at")) row.last_check_at = null;
-          if (!col.has("legacy_nas_id")) row.legacy_nas_id = null;
-          return row as RowDataPacket;
-        });
-      }
-    }
-    let legacy: RowDataPacket[] = [];
-    if (await hasTable(pool, "nas")) {
-      const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT id, nasname AS ip, shortname AS name, type, secret, description FROM nas`
-      );
-      legacy = rows;
-    }
-    const legacyAsModern = legacy.map((r) => ({
-      id: String(r.id ?? ""),
-      legacy_nas_id: r.id != null ? Number(r.id) : null,
-      name: String(r.name ?? ""),
-      ip: String(r.ip ?? ""),
-      type: String(r.type ?? "other"),
-      mikrotik_api_enabled: 0,
-      mikrotik_api_user: null,
-      status: "active",
-      coa_port: 3799,
-      online_status: "unknown",
-      last_ping_ok: null,
-      last_radius_ok: null,
-      last_check_at: null,
-      session_count: 0,
-      created_at: null,
-      dma_legacy_nas_only: true,
-    }));
-    // Keep backward compatibility for clients that still read `nas_legacy`,
-    // and expose a unified `nas_servers` array for existing frontend screens.
-    const merged = modern.length > 0 ? modern : legacyAsModern;
-    res.json({ nas_servers: merged, nas_legacy: legacy });
-  } catch (e) {
-    console.error("nas GET", e);
-    res.status(500).json({
-      error: "db_error",
-      detail: e instanceof Error ? e.message : String(e),
-      nas_servers: [],
-      nas_legacy: [],
-    });
-  }
-});
 
 const nasBody = z.object({
   name: z.string().min(1),
   ip: z.string().min(1),
   secret: z.string().min(1),
   type: z.string().optional(),
-  password: z.string().optional(),
+  coa_port: z.number().int().min(1).max(65535).optional(),
   mikrotik_api_enabled: z.boolean().optional(),
-  mikrotik_api_user: z.string().optional(),
-  mikrotik_api_password: z.string().optional(),
-  legacy_nas_id: z.number().int().nullable().optional(),
+  mikrotik_api_user: z.string().nullable().optional(),
+  mikrotik_api_password: z.string().nullable().optional(),
   wireguard_tunnel_ip: z.string().max(64).nullable().optional(),
+  status: z.enum(["active", "disabled"]).optional(),
 });
 
-router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
+router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id, name, ip, type, status, coa_port, mikrotik_api_enabled, mikrotik_api_user,
+            online_status, last_ping_ok, last_radius_ok, last_check_at, session_count,
+            wireguard_tunnel_ip, created_at, updated_at
+     FROM nas_devices
+     WHERE tenant_id = ?
+     ORDER BY name`,
+    [req.auth!.tenantId]
+  );
+  res.json({ nas_servers: rows, nas_devices: rows });
+});
+
+router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req, res) => {
   const parsed = nasBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_body" });
     return;
   }
   const id = randomUUID();
-  try {
-    let legacyOnlyMode = config.dmaMode || !(await hasTable(pool, "nas_servers"));
-    if (!legacyOnlyMode) {
-      const col = await getTableColumns(pool, "nas_servers");
-      // Some DMA databases may include a partial/legacy nas_servers table.
-      // If required modern columns are missing, fallback to legacy `nas` table writes.
-      const modernInsertable =
-        col.has("tenant_id") && col.has("name") && col.has("ip") && (col.has("secret_encrypted") || col.has("secret"));
-      if (!modernInsertable) legacyOnlyMode = true;
-    }
-    if (legacyOnlyMode) {
-      const legacyId = await upsertLegacyNas({
-        legacyId: parsed.data.legacy_nas_id ?? null,
-        ip: parsed.data.ip,
-        name: parsed.data.name,
-        type: parsed.data.type ?? "mikrotik",
-        secret: parsed.data.secret,
-      });
-      if (parsed.data.wireguard_tunnel_ip?.trim()) {
-        await upsertLegacyNas({
-          legacyId: null,
-          ip: parsed.data.wireguard_tunnel_ip.trim(),
-          name: `${parsed.data.name} WireGuard`,
-          type: parsed.data.type ?? "mikrotik",
-          secret: parsed.data.secret,
-        });
-      }
-      if (legacyId == null) {
-        res.status(500).json({
-          error: "nas_legacy_table_missing",
-          detail: "Legacy nas table is not available for DMA fallback insert.",
-        });
-        return;
-      }
-      res.status(201).json({
-        id: legacyId > 0 ? String(legacyId) : id,
-        dma_legacy_nas_only: true,
-      });
-      return;
-    }
-    const enc = encryptSecret(parsed.data.secret);
-    const col = await getTableColumns(pool, "nas_servers");
-    const fields: string[] = [];
-    const vals: (string | number | Uint8Array | null)[] = [];
-    const push = (f: string, v: string | number | Uint8Array | null) => {
-      if (col.has(f)) {
-        fields.push(f);
-        vals.push(v);
-      }
-    };
-    push("id", id);
-    push("tenant_id", req.auth!.tenantId);
-    push("legacy_nas_id", parsed.data.legacy_nas_id ?? null);
-    push("name", parsed.data.name);
-    push("ip", parsed.data.ip);
-    push("secret_encrypted", enc);
-    push("type", parsed.data.type ?? "mikrotik");
-    push("mikrotik_api_enabled", parsed.data.mikrotik_api_enabled ? 1 : 0);
-    push("mikrotik_api_user", parsed.data.mikrotik_api_user?.trim() || null);
-    if (parsed.data.password && parsed.data.password.trim()) {
-      push("password_encrypted", encryptSecret(parsed.data.password.trim()));
-    }
-    if (parsed.data.mikrotik_api_password && parsed.data.mikrotik_api_password.trim()) {
-      push("mikrotik_api_password_encrypted", encryptSecret(parsed.data.mikrotik_api_password.trim()));
-    }
-    push("status", "active");
-    if (col.has("coa_port")) {
-      fields.push("coa_port");
-      vals.push(3799);
-    }
-    if (col.has("online_status")) {
-      fields.push("online_status");
-      vals.push("unknown");
-    }
-    if (col.has("session_count")) {
-      fields.push("session_count");
-      vals.push(0);
-    }
-    if (col.has("wireguard_tunnel_ip")) {
-      push("wireguard_tunnel_ip", parsed.data.wireguard_tunnel_ip?.trim() || null);
-    }
-    if (fields.length === 0) {
-      res.status(500).json({ error: "nas_servers_schema", detail: "no insertable columns" });
-      return;
-    }
-    await pool.execute(
-      `INSERT INTO nas_servers (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`,
-      vals
-    );
-    // FreeRADIUS authorizes NAS clients from legacy `nas` table.
-    const legacyId = await upsertLegacyNas({
-      legacyId: parsed.data.legacy_nas_id ?? null,
-      ip: parsed.data.ip,
-      name: parsed.data.name,
-      type: parsed.data.type ?? "mikrotik",
-      secret: parsed.data.secret,
-    });
-    if (parsed.data.wireguard_tunnel_ip?.trim()) {
-      await upsertLegacyNas({
-        legacyId: null,
-        ip: parsed.data.wireguard_tunnel_ip.trim(),
-        name: `${parsed.data.name} WireGuard`,
-        type: parsed.data.type ?? "mikrotik",
-        secret: parsed.data.secret,
-      });
-    }
-    if (legacyId && col.has("legacy_nas_id")) {
-      await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
-        legacyId,
-        id,
-        req.auth!.tenantId,
-      ]);
-    }
-    res.status(201).json({ id });
-  } catch (e) {
-    console.error("nas POST", e);
-    res.status(500).json({
-      error: "db_error",
-      detail: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const body = parsed.data;
+  await pool.execute(
+    `INSERT INTO nas_devices
+      (id, tenant_id, name, ip, type, secret, coa_port, mikrotik_api_enabled,
+       mikrotik_api_user, mikrotik_api_password, wireguard_tunnel_ip, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      req.auth!.tenantId,
+      body.name,
+      body.ip,
+      body.type ?? "mikrotik",
+      body.secret,
+      body.coa_port ?? 3799,
+      body.mikrotik_api_enabled ? 1 : 0,
+      body.mikrotik_api_user?.trim() || null,
+      body.mikrotik_api_password?.trim() || null,
+      body.wireguard_tunnel_ip?.trim() || null,
+      body.status ?? "active",
+    ]
+  );
+  await radiusSync.syncNasDevice(id, req.auth!.tenantId);
+  res.status(201).json({ id });
 });
 
-const nasPatch = nasBody.partial();
-
-router.patch(
-  "/:id",
-  requireRole("admin", "manager"),
-  denyViewerWrites,
-  denyAccountant,
-  async (req: Request, res: Response) => {
-    const parsed = nasPatch.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "invalid_body" });
-      return;
-    }
-    let legacyOnlyMode = config.dmaMode || !(await hasTable(pool, "nas_servers"));
-    let modernCols: Set<string> | null = null;
-    if (!legacyOnlyMode) {
-      modernCols = await getTableColumns(pool, "nas_servers");
-      const modernPatchable = modernCols.has("tenant_id") && modernCols.has("name") && modernCols.has("ip");
-      if (!modernPatchable) legacyOnlyMode = true;
-    }
-    if (legacyOnlyMode) {
-      if (!(await hasTable(pool, "nas"))) {
-        res.status(503).json({ error: "nas_legacy_table_missing" });
-        return;
-      }
-      const legacyId = Number.parseInt(String(req.params.id), 10);
-      if (!Number.isFinite(legacyId)) {
-        res.status(400).json({ error: "invalid_nas_id" });
-        return;
-      }
-      try {
-        const [rows] = await pool.query<RowDataPacket[]>(
-          `SELECT id, nasname, shortname, type, secret FROM nas WHERE id = ? LIMIT 1`,
-          [legacyId]
-        );
-        const row = rows[0];
-        if (!row) {
-          res.status(404).json({ error: "not_found" });
-          return;
-        }
-        const nextIp = parsed.data.ip ?? String(row.nasname ?? "");
-        const nextName = parsed.data.name ?? String(row.shortname ?? "");
-        const nextType = parsed.data.type ?? String(row.type ?? "other");
-        const nextSecret = parsed.data.secret ?? String(row.secret ?? "");
-        await upsertLegacyNas({
-          legacyId,
-          ip: nextIp,
-          name: nextName,
-          type: nextType,
-          secret: nextSecret,
-        });
-        if (parsed.data.wireguard_tunnel_ip?.trim()) {
-          await upsertLegacyNas({
-            legacyId: null,
-            ip: parsed.data.wireguard_tunnel_ip.trim(),
-            name: `${nextName} WireGuard`,
-            type: nextType,
-            secret: nextSecret,
-          });
-        }
-        res.json({ ok: true, dma_legacy_nas_only: true });
-      } catch (e) {
-        console.error("nas PATCH legacy", e);
-        res.status(500).json({
-          error: "db_error",
-          detail: e instanceof Error ? e.message : String(e),
-        });
-      }
-      return;
-    }
-    const tenant = req.auth!.tenantId;
-    const [existing] = await pool.query<RowDataPacket[]>(
-      `SELECT id, name, ip, type, secret_encrypted, legacy_nas_id
-       FROM nas_servers
-       WHERE id = ? AND tenant_id = ?
-       LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!existing[0]) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    const b = parsed.data;
-    const col = modernCols ?? (await getTableColumns(pool, "nas_servers"));
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    if (b.name !== undefined) {
-      sets.push("name = ?");
-      vals.push(b.name);
-    }
-    if (b.ip !== undefined) {
-      sets.push("ip = ?");
-      vals.push(b.ip);
-    }
-    if (b.type !== undefined) {
-      sets.push("type = ?");
-      vals.push(b.type);
-    }
-    if (b.mikrotik_api_enabled !== undefined && col.has("mikrotik_api_enabled")) {
-      sets.push("mikrotik_api_enabled = ?");
-      vals.push(b.mikrotik_api_enabled ? 1 : 0);
-    }
-    if (b.mikrotik_api_user !== undefined && col.has("mikrotik_api_user")) {
-      sets.push("mikrotik_api_user = ?");
-      vals.push(b.mikrotik_api_user?.trim() || null);
-    }
-    if (b.legacy_nas_id !== undefined) {
-      sets.push("legacy_nas_id = ?");
-      vals.push(b.legacy_nas_id);
-    }
-    if (b.wireguard_tunnel_ip !== undefined && col.has("wireguard_tunnel_ip")) {
-      sets.push("wireguard_tunnel_ip = ?");
-      vals.push(b.wireguard_tunnel_ip?.trim() || null);
-    }
-    if (b.secret !== undefined && b.secret.length > 0) {
-      sets.push("secret_encrypted = ?");
-      vals.push(encryptSecret(b.secret));
-    }
-    if (b.password !== undefined && b.password.length > 0 && col.has("password_encrypted")) {
-      sets.push("password_encrypted = ?");
-      vals.push(encryptSecret(b.password));
-    }
-    if (
-      b.mikrotik_api_password !== undefined &&
-      b.mikrotik_api_password.length > 0 &&
-      col.has("mikrotik_api_password_encrypted")
-    ) {
-      sets.push("mikrotik_api_password_encrypted = ?");
-      vals.push(encryptSecret(b.mikrotik_api_password));
-    }
-    if (!sets.length) {
-      res.json({ ok: true });
-      return;
-    }
-    try {
-      await pool.query(`UPDATE nas_servers SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`, [
-        ...vals,
-        req.params.id,
-        tenant,
-      ]);
-      const currentName = String(existing[0].name ?? "");
-      const currentIp = String(existing[0].ip ?? "");
-      const currentType = String(existing[0].type ?? "mikrotik");
-      let currentSecret = "";
-      try {
-        currentSecret = decryptSecret(Buffer.from(existing[0].secret_encrypted as Uint8Array));
-      } catch {
-        currentSecret = "";
-      }
-      if (!currentSecret && (await hasTable(pool, "nas"))) {
-        const [plainNas] = await pool.query<RowDataPacket[]>(
-          `SELECT secret FROM nas WHERE nasname = ? LIMIT 1`,
-          [b.ip ?? currentIp]
-        );
-        if (plainNas[0]?.secret) currentSecret = String(plainNas[0].secret);
-      }
-      const syncedLegacyId = await upsertLegacyNas({
-        legacyId: b.legacy_nas_id ?? (existing[0].legacy_nas_id != null ? Number(existing[0].legacy_nas_id) : null),
-        ip: b.ip ?? currentIp,
-        name: b.name ?? currentName,
-        type: b.type ?? currentType,
-        secret: b.secret && b.secret.length > 0 ? b.secret : currentSecret,
-      });
-      if (b.wireguard_tunnel_ip?.trim()) {
-        await upsertLegacyNas({
-          legacyId: null,
-          ip: b.wireguard_tunnel_ip.trim(),
-          name: `${b.name ?? currentName} WireGuard`,
-          type: b.type ?? currentType,
-          secret: b.secret && b.secret.length > 0 ? b.secret : currentSecret,
-        });
-      }
-      if (syncedLegacyId && col.has("legacy_nas_id")) {
-        await pool.execute(`UPDATE nas_servers SET legacy_nas_id = ? WHERE id = ? AND tenant_id = ?`, [
-          syncedLegacyId,
-          req.params.id,
-          tenant,
-        ]);
-      }
-      res.json({ ok: true });
-    } catch (e) {
-      console.error("nas PATCH", e);
-      res.status(500).json({
-        error: "db_error",
-        detail: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-);
-
-router.delete(
-  "/:id",
-  requireRole("admin", "manager"),
-  denyViewerWrites,
-  denyAccountant,
-  async (req: Request, res: Response) => {
-    if (config.dmaMode) {
-      if (!(await hasTable(pool, "nas"))) {
-        res.status(503).json({ error: "nas_legacy_table_missing" });
-        return;
-      }
-      const legacyId = Number.parseInt(String(req.params.id), 10);
-      if (!Number.isFinite(legacyId)) {
-        res.status(400).json({ error: "invalid_nas_id" });
-        return;
-      }
-      try {
-        await pool.execute(`DELETE FROM nas WHERE id = ?`, [legacyId]);
-        res.json({ ok: true, dma_legacy_nas_only: true });
-      } catch (e) {
-        console.error("nas DELETE dma", e);
-        res.status(500).json({
-          error: "db_error",
-          detail: e instanceof Error ? e.message : String(e),
-        });
-      }
-      return;
-    }
-    const tenant = req.auth!.tenantId;
-    const [existing] = await pool.query<RowDataPacket[]>(
-      `SELECT id, ip, legacy_nas_id FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, tenant]
-    );
-    if (!existing[0]) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    const ip = String(existing[0].ip ?? "");
-    const legacyId = existing[0].legacy_nas_id != null ? Number(existing[0].legacy_nas_id) : null;
-    try {
-      await pool.execute(`DELETE FROM nas_servers WHERE id = ? AND tenant_id = ?`, [req.params.id, tenant]);
-      if (await hasTable(pool, "nas")) {
-        if (legacyId && Number.isFinite(legacyId)) {
-          await pool.execute(`DELETE FROM nas WHERE id = ?`, [legacyId]);
-        }
-        await pool.execute(`DELETE FROM nas WHERE nasname = ?`, [ip]);
-      }
-      res.json({ ok: true });
-    } catch (e) {
-      console.error("nas DELETE", e);
-      res.status(500).json({
-        error: "db_error",
-        detail: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-);
-
-router.post("/:id/coa-test", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req: Request, res: Response) => {
-  let nasIp: string | null = null;
-  if (config.dmaMode) {
-    if (!(await hasTable(pool, "nas"))) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    const [rows] = await pool.query<RowDataPacket[]>(`SELECT nasname FROM nas WHERE id = ? LIMIT 1`, [req.params.id]);
-    nasIp = rows[0]?.nasname != null ? String(rows[0].nasname) : null;
-  } else {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT ip FROM nas_servers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [req.params.id, req.auth!.tenantId]
-    );
-    nasIp = rows[0]?.ip != null ? String(rows[0].ip) : null;
-  }
-  if (!nasIp) {
-    res.status(404).json({ error: "not_found" });
+router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req, res) => {
+  const parsed = nasBody.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
     return;
   }
-  const testUser = "coa-probe-disconnect-invalid-user";
-  const r = await coa.disconnectUserForTenant(testUser, nasIp, req.auth!.tenantId);
-  res.json({ result: r });
-});
-
-/** Plaintext shared secret — admin/manager only (never expose to viewer/accountant). */
-router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req: Request, res: Response) => {
-  if (config.dmaMode) {
-    if (!(await hasTable(pool, "nas"))) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    const [plainRows] = await pool.query<RowDataPacket[]>(
-      `SELECT secret, nasname FROM nas WHERE id = ? LIMIT 1`,
-      [req.params.id]
-    );
-    const pr = plainRows[0];
-    if (pr?.secret != null && String(pr.secret).length > 0) {
-      res.json({ secret: String(pr.secret), source: "legacy_plain" as const });
-      return;
-    }
-    res.status(404).json({ error: "not_found" });
+  const body = parsed.data;
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const set = (column: string, value: unknown) => {
+    sets.push(`${column} = ?`);
+    values.push(value);
+  };
+  if (body.name !== undefined) set("name", body.name);
+  if (body.ip !== undefined) set("ip", body.ip);
+  if (body.secret !== undefined) set("secret", body.secret);
+  if (body.type !== undefined) set("type", body.type);
+  if (body.coa_port !== undefined) set("coa_port", body.coa_port);
+  if (body.mikrotik_api_enabled !== undefined) set("mikrotik_api_enabled", body.mikrotik_api_enabled ? 1 : 0);
+  if (body.mikrotik_api_user !== undefined) set("mikrotik_api_user", body.mikrotik_api_user?.trim() || null);
+  if (body.mikrotik_api_password !== undefined) set("mikrotik_api_password", body.mikrotik_api_password?.trim() || null);
+  if (body.wireguard_tunnel_ip !== undefined) set("wireguard_tunnel_ip", body.wireguard_tunnel_ip?.trim() || null);
+  if (body.status !== undefined) set("status", body.status);
+  if (!sets.length) {
+    res.json({ ok: true });
     return;
   }
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT secret_encrypted, ip
-     FROM nas_servers
-     WHERE id = ? AND tenant_id = ?
-     LIMIT 1`,
+  const [existing] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
     [req.params.id, req.auth!.tenantId]
   );
-  const row = rows[0];
-  if (!row?.secret_encrypted) {
+  if (!existing[0]) {
     res.status(404).json({ error: "not_found" });
     return;
   }
-  const fromEnc = tryDecryptSecret(Buffer.from(row.secret_encrypted as Uint8Array));
-  if (fromEnc !== null) {
-    res.json({ secret: fromEnc, source: "encrypted" as const });
+  await pool.execute(
+    `UPDATE nas_devices SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?`,
+    [...values, req.params.id, req.auth!.tenantId] as Array<string | number | null>
+  );
+  await radiusSync.syncNasDevice(req.params.id, req.auth!.tenantId);
+  res.json({ ok: true });
+});
+
+router.delete("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ip FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [req.params.id, req.auth!.tenantId]
+  );
+  if (!rows[0]) {
+    res.status(404).json({ error: "not_found" });
     return;
   }
-  if (await hasTable(pool, "nas")) {
-    const [plain] = await pool.query<RowDataPacket[]>(
-      `SELECT secret FROM nas WHERE nasname = ? LIMIT 1`,
-      [String(row.ip ?? "")]
-    );
-    if (plain[0]?.secret) {
-      res.json({ secret: String(plain[0].secret), source: "legacy_plain" as const });
-      return;
-    }
+  await pool.execute(`DELETE FROM nas_devices WHERE id = ? AND tenant_id = ?`, [req.params.id, req.auth!.tenantId]);
+  await pool.execute(`DELETE FROM nas WHERE nasname = ?`, [String(rows[0].ip)]);
+  res.json({ ok: true });
+});
+
+router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT secret FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [req.params.id, req.auth!.tenantId]
+  );
+  if (!rows[0]) {
+    res.status(404).json({ error: "not_found" });
+    return;
   }
-  res.status(500).json({
-    error: "secret_decrypt_failed",
-    detail: "Re-save the NAS secret in the panel (AES key may have changed) or fix nas.secret in MySQL.",
-  });
+  res.json({ secret: String(rows[0].secret ?? ""), source: "project" });
 });
 
 export default router;

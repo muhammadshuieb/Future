@@ -45,6 +45,9 @@ body {
 
 body {
   font-family: Cairo, Inter, system-ui, "Segoe UI", sans-serif;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+  word-break: break-word;
   color: hsl(var(--foreground));
   background-color: hsl(var(--background));
   background-image:
@@ -58,6 +61,14 @@ body {
 
 html[dir="ltr"] body {
   font-family: Inter, Cairo, system-ui, sans-serif;
+}
+
+pre,
+code,
+kbd,
+samp {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 /* Glass-morphism surface (used by cards, sidebar, header, modal) */

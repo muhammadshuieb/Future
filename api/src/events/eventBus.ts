@@ -1,9 +1,14 @@
 import { Redis } from "ioredis";
 import { createRedisClient } from "../lib/redis-connection.js";
+import { config } from "../config.js";
 import { type EventName, type EventPayloadByName } from "./eventTypes.js";
 
-const channel = "future-radius:domain-events";
-const pub = createRedisClient("eventbus-pub");
+const channel = config.eventsChannel;
+let pub: Redis | null = null;
+function getPub(): Redis {
+  if (!pub) pub = createRedisClient("eventbus-pub");
+  return pub;
+}
 
 type AnyHandler = (payload: unknown) => Promise<void> | void;
 const handlers = new Map<string, Set<AnyHandler>>();
@@ -36,7 +41,7 @@ export async function emitEvent<E extends EventName>(
   event: E,
   payload: EventPayloadByName[E]
 ): Promise<void> {
-  await pub.publish(channel, JSON.stringify({ event, payload, at: new Date().toISOString() }));
+  await getPub().publish(channel, JSON.stringify({ event, payload, at: new Date().toISOString() }));
 }
 
 export async function listenEvent<E extends EventName>(

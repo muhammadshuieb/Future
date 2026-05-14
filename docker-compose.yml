@@ -6,15 +6,14 @@ services:
     image: futureradius-mysql:local
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-radius}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-future_radius}
       MYSQL_INITDB_SKIP_TZINFO: "1"
-      # Must match api/freeradius so CREATE USER uses the same secret as rlm_sql (see z-futureradius-followup.sh).
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - future_radius_mysql_data:/var/lib/mysql
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
@@ -31,13 +30,15 @@ services:
       context: .
       dockerfile: docker/freeradius/Dockerfile
     image: futureradius-freeradius:local
+    # Match Dockerfile --platform; prevents arm64/amd64 mismatch "exec format error" on Docker Desktop.
+    platform: linux/amd64
     network_mode: host
     environment:
       MYSQL_HOST: 127.0.0.1
       MYSQL_USER: ${RADIUS_DB_USER:-radius}
       MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-future_radius}
       FREERADIUS_DEBUG: ${FREERADIUS_DEBUG:-0}
-      # After a full SQL restore, MySQL may still be busy; give it extra settle time before radiusd.
       MYSQL_SETTLE_SEC: ${FREERADIUS_MYSQL_SETTLE_SEC:-8}
     depends_on:
       mysql:
@@ -61,7 +62,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # WAHA listens on 3000 inside the container; host 3001 avoids clashing with the API (3000).
+  # WAHA listens on 3000 inside the container; published as host 3001.
   waha:
     image: devlikeapro/waha:latest
     ports:
@@ -88,16 +89,20 @@ services:
       - "timeout:2"
       - "attempts:5"
     environment:
-      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-future_radius}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       AES_SECRET_KEY: ${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
+      # Production image: bootstrap staff in `users` only when a password is provided.
+      STAFF_BOOTSTRAP_EMAIL: ${STAFF_BOOTSTRAP_EMAIL:-admin@futureradius.local}
+      STAFF_BOOTSTRAP_PASSWORD: ${STAFF_BOOTSTRAP_PASSWORD:-muhammadshuieb}
       DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
       PORT: "3000"
       BACKUP_DIR: /app/backups
       BACKUP_RETENTION_DAYS: "7"
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Damascus}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
+      # Browser-facing origin where `/api` and `/ws` are served (see `web` nginx). Used for OAuth redirect_uri, links, etc.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}
       PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:-http://localhost:8080}
       # Required when NODE_ENV=production (set in api Dockerfile). Override in .env for LAN/domain.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
@@ -106,10 +111,10 @@ services:
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
+      WHATSAPP_DEFAULT_COUNTRY_CODE: ${WHATSAPP_DEFAULT_COUNTRY_CODE:-963}
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       SQL_MIGRATIONS_DIR: /app/sql/migrations
-      DMA_MODE: ${DMA_MODE:-true}
       WIREGUARD_RUNTIME_DIR: /app/runtime/wireguard
       APP_UPDATE_ENABLED: ${APP_UPDATE_ENABLED:-false}
       APP_UPDATE_TOKEN: ${APP_UPDATE_TOKEN:-}
@@ -128,6 +133,13 @@ services:
       APP_UPDATE_COMPOSE_PROJECT_NAME: ${APP_UPDATE_COMPOSE_PROJECT_NAME:-}
       APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES: ${APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES:-2}
       APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE: ${APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE:-false}
+      # System Health page reads from these. They are docker-network names; safe to leave as defaults
+      # because the prometheus/alertmanager services are in the same compose project.
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-http://alertmanager:9093}
+      # Public Grafana URL exposed by docker-compose (host port 3300). The page renders an
+      # "Open Grafana" button when this is set so operators can deep-dive without leaving the panel.
+      GRAFANA_PUBLIC_URL: ${GRAFANA_PUBLIC_URL:-http://localhost:3300}
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro
@@ -154,37 +166,32 @@ services:
       start_period: 90s
     restart: unless-stopped
 
-  api-proxy:
-    build:
-      context: .
-      dockerfile: docker/nginx/Dockerfile
-    image: futureradius-api-proxy:local
-    ports:
-      - "3000:80"
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-    restart: unless-stopped
-
   worker:
     build:
       context: ./api
       dockerfile: Dockerfile
     command: ["node", "dist/workers/index.js"]
+    expose:
+      - "9101"
+    ports:
+      - "127.0.0.1:9101:9101"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     dns_opt:
       - "timeout:2"
       - "attempts:5"
     environment:
-      DMA_MODE: ${DMA_MODE:-true}
-      SKIP_BULLMQ_UPDATE_USAGE: ${SKIP_BULLMQ_UPDATE_USAGE:-0}
+      WORKER_METRICS_PORT: "9101"
+      # Synthetic probe runs radclient via `docker exec` inside the freeradius container
+      # (works regardless of network_mode:host quirks). Override CONTAINER name when running
+      # under a different compose project name (default: futureradius-freeradius-1).
+      SYNTH_RADIUS_VIA_DOCKER: ${SYNTH_RADIUS_VIA_DOCKER:-1}
+      SYNTH_RADIUS_CONTAINER: ${SYNTH_RADIUS_CONTAINER:-futureradius-freeradius-1}
+      SYNTH_RADIUS_HOST_PORT: ${SYNTH_RADIUS_HOST_PORT:-127.0.0.1:1812}
+      UPDATE_USAGE_EVERY_MS: ${UPDATE_USAGE_EVERY_MS:-60000}
       MIKROTIK_API_SYNC_MS: ${MIKROTIK_API_SYNC_MS:-0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
-      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-future_radius}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       AES_SECRET_KEY: ${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
@@ -195,38 +202,11 @@ services:
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
+      WHATSAPP_DEFAULT_COUNTRY_CODE: ${WHATSAPP_DEFAULT_COUNTRY_CODE:-963}
     volumes:
       - backup_data:/app/backups
       - ./sql:/app/sql:ro
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # Optional: isolate usage/quota/CoA cycles from other BullMQ jobs (profile: split-workers).
-  # Set SKIP_BULLMQ_UPDATE_USAGE=1 on the main `worker` when using this service.
-  worker-usage:
-    profiles: ["split-workers"]
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    command: ["node", "dist/workers/usage-standalone.js"]
-    dns_opt:
-      - "timeout:2"
-      - "attempts:5"
-    environment:
-      DMA_MODE: ${DMA_MODE:-true}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
-      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-radius}
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
-      AES_SECRET_KEY: ${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
-      DEFAULT_TENANT_ID: 00000000-0000-0000-0000-000000000001
-      UPDATE_USAGE_EVERY_MS: ${UPDATE_USAGE_EVERY_MS:-60000}
-    volumes:
-      - ./sql:/app/sql:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       mysql:
         condition: service_healthy
@@ -242,7 +222,7 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      api-proxy:
+      api:
         condition: service_healthy
     restart: unless-stopped
 
@@ -284,8 +264,66 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    user: "65534:65534"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    user: "65534:65534"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    environment:
+      ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    user: "472:472"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3300:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
-  mysql_data:
+  future_radius_mysql_data:
   backup_data:
   waha_sessions:
   wireguard_runtime:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:

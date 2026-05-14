@@ -20,6 +20,7 @@ export type CoaDisconnectJobData = {
   username: string;
   nasIp: string;
   acctSessionId?: string;
+  framedIp?: string;
 };
 
 const connection = createRedisClient("api-bullmq-queue");
@@ -40,11 +41,11 @@ export async function enqueueWahaInvoiceReceipt(data: WahaInvoiceReceiptJobData)
 
 export async function enqueueCoaDisconnect(data: CoaDisconnectJobData): Promise<Job> {
   return taskQueue.add(QueueJobNames.COA_DISCONNECT, data, {
-    priority: 10,
-    attempts: 2,
-    backoff: { type: "fixed", delay: 1000 },
+    priority: 1,
+    attempts: 8,
+    backoff: { type: "exponential", delay: 5000 },
     removeOnComplete: 1000,
-    removeOnFail: 2000,
+    removeOnFail: 5000,
   });
 }
 

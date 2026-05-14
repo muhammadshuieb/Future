@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+﻿import { execFile } from "child_process";
 import { promisify } from "util";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
@@ -38,10 +38,9 @@ export class NasHealthService {
   ) {}
 
   async refreshSessionsCounts(tenantId: string): Promise<void> {
-    if (config.dmaMode) return;
     if (!(await hasTable(this.pool, "radacct"))) return;
-    if (!(await hasTable(this.pool, "nas_servers"))) return;
-    const col = await getTableColumns(this.pool, "nas_servers");
+    if (!(await hasTable(this.pool, "nas_devices"))) return;
+    const col = await getTableColumns(this.pool, "nas_devices");
     if (!col.has("session_count")) return;
     const [byNas] = await this.pool.query<RowDataPacket[]>(
       `SELECT nasipaddress AS ip, COUNT(*) AS c
@@ -53,20 +52,19 @@ export class NasHealthService {
       map.set(String(r.ip), Number(r.c ?? 0));
     }
     const [servers] = await this.pool.query<RowDataPacket[]>(
-      `SELECT id, ip, name FROM nas_servers WHERE tenant_id = ? AND status = 'active'`,
+      `SELECT id, ip, name FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
       [tenantId]
     );
     for (const s of servers) {
       const ip = s.ip as string;
       const cnt = map.get(ip) ?? 0;
-      await this.pool.execute(`UPDATE nas_servers SET session_count = ? WHERE id = ?`, [cnt, s.id]);
+      await this.pool.execute(`UPDATE nas_devices SET session_count = ? WHERE id = ?`, [cnt, s.id]);
     }
   }
 
   async probeAll(tenantId: string): Promise<NasHealthEvent[]> {
-    if (config.dmaMode) return [];
-    if (!(await hasTable(this.pool, "nas_servers"))) return [];
-    const col = await getTableColumns(this.pool, "nas_servers");
+    if (!(await hasTable(this.pool, "nas_devices"))) return [];
+    const col = await getTableColumns(this.pool, "nas_devices");
     const canWriteHealth =
       col.has("online_status") &&
       col.has("last_ping_ok") &&
@@ -78,7 +76,7 @@ export class NasHealthService {
     const sessCol = col.has("session_count") ? ", session_count" : "";
     const statCol = col.has("online_status") ? ", online_status" : "";
     const [servers] = await this.pool.query<RowDataPacket[]>(
-      `SELECT id, ip, name${sessCol}${statCol} FROM nas_servers WHERE tenant_id = ? AND status = 'active'`,
+      `SELECT id, ip, name${sessCol}${statCol} FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
       [tenantId]
     );
     for (const s of servers) {
@@ -96,7 +94,7 @@ export class NasHealthService {
       const nextStatus = online ? "online" : "offline";
       if (canWriteHealth) {
         await this.pool.execute(
-          `UPDATE nas_servers SET last_ping_ok = ?, last_radius_ok = ?, online_status = ?, last_check_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
+          `UPDATE nas_devices SET last_ping_ok = ?, last_radius_ok = ?, online_status = ?, last_check_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
           [pingOk ? 1 : 0, radiusOk ? 1 : 0, nextStatus, id]
         );
       }

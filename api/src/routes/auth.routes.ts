@@ -1,19 +1,26 @@
+import bcrypt from "bcryptjs";
 import { Router } from "express";
 import jwt, { type SignOptions } from "jsonwebtoken";
-import { z } from "zod";
-import { pool } from "../db/pool.js";
-import { config } from "../config.js";
-import type { JwtPayload, Role } from "../middleware/auth.js";
-import { requireAuth } from "../middleware/auth.js";
-import { parseManagerPermissions, parsePermissionsObject } from "../lib/manager-permissions.js";
 import type { RowDataPacket } from "mysql2";
-import { loginRateLimiter } from "../middleware/rate-limit.js";
-import { getTableColumns, hasTable } from "../db/schemaGuards.js";
+import { z } from "zod";
+import { config } from "../config.js";
+import { pool } from "../db/pool.js";
+import { hasTable } from "../db/schemaGuards.js";
 import {
-  syncStaffUsersFromRmManagers,
-  tryLoginViaRmManagers,
-  tryLoginViaStaffUsers,
-} from "../services/rm-legacy-staff.service.js";
+  defaultFinancePermissions,
+  normalizeFinancePermissions,
+  accountantFinanceDefaults,
+} from "../lib/finance-permissions.js";
+import {
+  normalizeManagerPermissions,
+  parsePermissionsObject,
+} from "../lib/manager-permissions.js";
+import {
+  defaultSpeedProfilePermissionsAllOn,
+  normalizeSpeedProfilePermissions,
+} from "../lib/speed-profile-permissions.js";
+import { loginRateLimiter } from "../middleware/rate-limit.js";
+import { requireAuth, type JwtPayload, type Role } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -22,6 +29,50 @@ const loginBody = z.object({
   password: z.string().min(1),
 });
 
+/** Match `users.email` when the operator types `root` instead of the full bootstrap address. */
+function staffTableEmailCandidates(loginRaw: string): string[] {
+  const t = loginRaw.trim();
+  if (!t) return [];
+  const out = new Set<string>([t]);
+  const lower = t.toLowerCase();
+  const defaultStaff = (process.env.STAFF_BOOTSTRAP_EMAIL ?? "admin@futureradius.local").trim();
+  if (lower === "root" && defaultStaff) out.add(defaultStaff);
+  if (!t.includes("@")) {
+    out.add(`${t}@futureradius.local`);
+  }
+  return [...out];
+}
+
+async function managerJwtPermissions(
+  tenantId: string,
+  userRow: RowDataPacket
+): Promise<Record<string, boolean>> {
+  const userOverride = parsePermissionsObject(userRow.permissions_json ?? {});
+  const finance = normalizeFinancePermissions({ ...defaultFinancePermissions(), ...userOverride });
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT permissions_json FROM staff_role_permissions WHERE tenant_id = ? AND role = 'manager' LIMIT 1`,
+    [tenantId]
+  );
+  const roleDefaults = normalizeManagerPermissions(rows[0]?.permissions_json ?? {});
+  const manager = normalizeManagerPermissions({ ...roleDefaults, ...userOverride });
+  const mergedForSpeed = { ...parsePermissionsObject(rows[0]?.permissions_json ?? {}), ...userOverride };
+  const speed = {
+    ...defaultSpeedProfilePermissionsAllOn(),
+    ...normalizeSpeedProfilePermissions(mergedForSpeed),
+  };
+  return { ...finance, ...manager, ...speed };
+}
+
+async function viewerJwtPermissions(tenantId: string, userRow: RowDataPacket): Promise<Record<string, boolean>> {
+  const userOverride = parsePermissionsObject(userRow.permissions_json ?? {});
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT permissions_json FROM staff_role_permissions WHERE tenant_id = ? AND role = 'viewer' LIMIT 1`,
+    [tenantId]
+  );
+  const merged = { ...parsePermissionsObject(rows[0]?.permissions_json ?? {}), ...userOverride };
+  return normalizeSpeedProfilePermissions(merged);
+}
+
 router.post("/login", loginRateLimiter, async (req, res, next) => {
   try {
     const parsed = loginBody.safeParse(req.body);
@@ -29,88 +80,86 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       res.status(400).json({ error: "invalid_body" });
       return;
     }
-    const { email, password } = parsed.data;
-    // `email` field is treated as login identifier (managername or email) for backward compatibility with frontend payload.
-    let row =
-      (await tryLoginViaRmManagers(pool, config.defaultTenantId, email, password)) ??
-      (await tryLoginViaStaffUsers(pool, config.defaultTenantId, email, password)) ??
-      undefined;
-    if (!row?.active) {
-      res.status(401).json({ error: "invalid_credentials" });
+    const emailInput = parsed.data.email.trim();
+    const password = parsed.data.password;
+
+    if (!(await hasTable(pool, "users"))) {
+      res.status(503).json({ error: "auth_schema_missing" });
       return;
     }
-    // Legacy compatibility: after first successful manager login, hydrate staff_users when table exists.
-    void syncStaffUsersFromRmManagers(pool, config.defaultTenantId).catch((error) => {
-      console.warn("[auth] rm_managers -> staff_users sync skipped", error);
-    });
-    let roleTemplate: Record<string, boolean> = {};
-    try {
-      if (await hasTable(pool, "staff_role_permissions")) {
-        const rolePermCols = await getTableColumns(pool, "staff_role_permissions");
-        if (
-          rolePermCols.has("permissions_json") &&
-          rolePermCols.has("tenant_id") &&
-          rolePermCols.has("role")
-        ) {
-          const [rolePermRows] = await pool.query<RowDataPacket[]>(
-            `SELECT permissions_json
-             FROM staff_role_permissions
-             WHERE tenant_id = ? AND role = ?
-             LIMIT 1`,
-            [row.tenant_id as string, row.role as string]
-          );
-          roleTemplate = parsePermissionsObject(rolePermRows[0]?.permissions_json);
+
+    const candidates = staffTableEmailCandidates(emailInput);
+    const orEmail = candidates.map(() => "LOWER(TRIM(u.email)) = LOWER(?)").join(" OR ");
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT u.id, u.tenant_id, u.email, u.name, u.password_hash, u.status, u.permissions_json, u.wallet_balance,
+              (
+                SELECT r2.name
+                FROM user_roles ur2
+                JOIN roles r2 ON r2.id = ur2.role_id
+                WHERE ur2.user_id = u.id
+                ORDER BY CASE r2.name
+                  WHEN 'admin' THEN 1
+                  WHEN 'manager' THEN 2
+                  WHEN 'accountant' THEN 3
+                  WHEN 'viewer' THEN 4
+                  ELSE 5 END
+                LIMIT 1
+              ) AS role
+       FROM users u
+       WHERE (${orEmail})
+       LIMIT 1`,
+      candidates
+    );
+    const user = rows[0] as RowDataPacket | undefined;
+
+    if (user && String(user.status ?? "active") === "active") {
+      const ph = String(user.password_hash ?? "");
+      const ok = ph.length > 0 && (await bcrypt.compare(password, ph));
+      if (ok) {
+        const role = String(user.role ?? "viewer") as Role;
+        let permissions: Record<string, boolean> = {};
+        if (role === "manager") {
+          permissions = await managerJwtPermissions(String(user.tenant_id), user);
+        } else if (role === "viewer") {
+          permissions = await viewerJwtPermissions(String(user.tenant_id), user);
+        } else if (role === "accountant") {
+          permissions = normalizeFinancePermissions({
+            ...accountantFinanceDefaults(),
+            ...parsePermissionsObject(user.permissions_json ?? {}),
+          });
         }
-      }
-    } catch (error) {
-      const e = error as { code?: string; errno?: number };
-      // Old Radius Manager dumps may not include this table/column yet.
-      if (
-        !(
-          e?.code === "ER_NO_SUCH_TABLE" ||
-          e?.errno === 1146 ||
-          e?.code === "ER_BAD_FIELD_ERROR" ||
-          e?.errno === 1054
-        )
-      ) {
-        throw error;
+        const walletBalance = Number(user.wallet_balance ?? 0);
+        const payload: JwtPayload = {
+          sub: String(user.id),
+          name: String(user.name ?? ""),
+          email: String(user.email),
+          role,
+          tenantId: String(user.tenant_id),
+          permissions,
+          walletBalance,
+        };
+        const token = jwt.sign(payload, config.jwtSecret, {
+          expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"],
+        });
+        res.json({
+          token,
+          user: {
+            id: payload.sub,
+            name: payload.name,
+            email: payload.email,
+            role: payload.role,
+            tenantId: payload.tenantId,
+            permissions: payload.permissions,
+            walletBalance: payload.walletBalance,
+          },
+        });
+        return;
       }
     }
-    const userOverrides = parsePermissionsObject(row.permissions_json);
-    const mergedPermissions = parseManagerPermissions({ ...roleTemplate, ...userOverrides });
 
-    const managerLabel = row.name != null ? String(row.name).trim() : "";
-    const rawEmail = String(row.email ?? "").trim();
-    // DMA managers often have no email; JWT + frontend require a non-empty stable "login email" claim.
-    const loginEmail =
-      rawEmail || (managerLabel ? `${managerLabel}@radius.local` : "root@radius.local");
-
-    const payload: JwtPayload = {
-      sub: row.id as string,
-      name: row.name != null ? String(row.name) : undefined,
-      email: loginEmail,
-      role: row.role as Role,
-      tenantId: row.tenant_id as string,
-      permissions: mergedPermissions,
-      walletBalance: Number(row.wallet_balance ?? 0),
-    };
-    const token = jwt.sign(payload, config.jwtSecret, {
-      expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"],
-    });
-    res.json({
-      token,
-      user: {
-        id: payload.sub,
-        name: payload.name ?? null,
-        email: payload.email,
-        role: payload.role,
-        tenantId: payload.tenantId,
-        permissions: payload.permissions ?? {},
-        walletBalance: payload.walletBalance ?? 0,
-      },
-    });
-  } catch (e) {
-    next(e);
+    res.status(401).json({ error: "invalid_credentials" });
+  } catch (error) {
+    next(error);
   }
 });
 

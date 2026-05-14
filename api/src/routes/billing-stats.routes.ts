@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
@@ -109,7 +109,7 @@ router.get("/stats", requireRole("admin", "manager", "accountant", "viewer"), as
 
     let activeSubscribers = 0;
     if (await hasTable(pool, "radacct")) {
-      if (!config.dmaMode && (await hasTable(pool, "subscribers"))) {
+      if (await hasTable(pool, "subscribers")) {
         const [activeRows] = await conn.query<RowDataPacket[]>(
           `SELECT COUNT(DISTINCT r.username) AS c
            FROM radacct r
@@ -118,23 +118,6 @@ router.get("/stats", requireRole("admin", "manager", "accountant", "viewer"), as
            WHERE r.acctstoptime IS NULL
              AND r.username <> ''`,
           [tenantId]
-        );
-        activeSubscribers = Number(activeRows[0]?.c ?? 0);
-      } else if (await hasTable(pool, "rm_users")) {
-        const [activeRows] = await conn.query<RowDataPacket[]>(
-          `SELECT COUNT(DISTINCT r.username) AS c
-           FROM radacct r
-           INNER JOIN rm_users u ON BINARY u.username = BINARY r.username
-           WHERE r.acctstoptime IS NULL
-             AND r.username <> ''`
-        );
-        activeSubscribers = Number(activeRows[0]?.c ?? 0);
-      } else {
-        const [activeRows] = await conn.query<RowDataPacket[]>(
-          `SELECT COUNT(DISTINCT username) AS c
-           FROM radacct
-           WHERE acctstoptime IS NULL
-             AND username <> ''`
         );
         activeSubscribers = Number(activeRows[0]?.c ?? 0);
       }

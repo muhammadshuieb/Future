@@ -2,26 +2,15 @@ import mysql from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import type { Pool } from "mysql2/promise";
 import { config } from "../config.js";
-import { assertDmaSqlSafe } from "../dma/dma-sql-guard.js";
 
 export type DbRow = RowDataPacket;
 
-function guardSqlArg(first: unknown): void {
-  if (typeof first === "string") {
-    assertDmaSqlSafe(first);
-    return;
-  }
-  if (first && typeof first === "object" && "sql" in first) {
-    assertDmaSqlSafe(String((first as { sql: unknown }).sql));
-  }
-}
-
 /**
  * Shared MySQL pool (connection reuse). Single source for mysql2/promise.
- * When DMA_MODE is on, query/execute are guarded against hybrid tables (subscribers, packages, nas_servers).
  */
 const rawPool = mysql.createPool({
   ...config.db,
+  connectTimeout: Math.max(1000, Math.min(120_000, parseInt(process.env.MYSQL_CONNECT_TIMEOUT_MS ?? "10000", 10) || 10_000)),
   waitForConnections: true,
   connectionLimit: config.dbPoolConnectionLimit,
   queueLimit: config.dbPoolQueueLimit,
@@ -30,17 +19,15 @@ const rawPool = mysql.createPool({
   keepAliveInitialDelay: 0,
 });
 
-const origQuery = rawPool.query.bind(rawPool);
-(rawPool as Pool).query = ((sql: unknown, ...rest: unknown[]) => {
-  guardSqlArg(sql);
-  return (origQuery as (a: unknown, ...r: unknown[]) => unknown)(sql, ...rest);
-}) as Pool["query"];
-
-const origExecute = rawPool.execute.bind(rawPool);
-(rawPool as Pool).execute = ((sql: unknown, ...rest: unknown[]) => {
-  guardSqlArg(sql);
-  return (origExecute as (a: unknown, ...r: unknown[]) => unknown)(sql, ...rest);
-}) as Pool["execute"];
+(rawPool as import("node:events").EventEmitter).on(
+  "connection",
+  (conn: { query: (sql: string, cb: (err: unknown) => void) => void }) => {
+    // Pool emits callback-style connections; do not use .catch() on query() here.
+    conn.query("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci", () => {
+      /* ignore */
+    });
+  },
+);
 
 export const pool = rawPool;
 

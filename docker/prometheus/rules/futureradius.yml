@@ -1,0 +1,115 @@
+groups:
+  - name: futureradius-aaa
+    interval: 30s
+    rules:
+      - alert: AuthFailureSpike
+        expr: |
+          sum(rate(futureradius_auth_failed_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Login failures elevated"
+          description: "{{ $value | humanize }} failed logins/sec in the last 5m. Possible brute-force or panel outage."
+
+      - alert: BruteForceDetected
+        expr: |
+          increase(futureradius_auth_failed_total{reason="brute_force"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Brute-force threshold reached"
+          description: "Login attempts crossed BF_THRESHOLD within BF_WINDOW_SECONDS. Investigate Redis bf:* keys and panel access logs."
+
+      - alert: SyntheticRadiusFailing
+        expr: |
+          sum(rate(futureradius_synth_check_total{result="error"}[5m])) > 0
+            and on() sum(rate(futureradius_synth_check_total{result="reject"}[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "FreeRADIUS not answering synthetic probes"
+          description: "Synthetic radclient probes have stopped receiving Access-Reject. End-to-end RADIUS pipeline likely down."
+
+  - name: futureradius-nas
+    interval: 30s
+    rules:
+      - alert: CoaTimeoutSpike
+        expr: |
+          sum by (nas) (rate(futureradius_coa_disconnect_total{result="timeout"}[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CoA timeouts to {{ $labels.nas }}"
+          description: "{{ $value | humanize }} timeouts/sec for 10 minutes. NAS may be unreachable, CoA disabled, or wrong secret."
+
+      - alert: StaleSessionsSpike
+        expr: |
+          increase(futureradius_worker_stale_sessions_closed_total[10m]) > 50
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many stale sessions closed in the last 10m"
+          description: "{{ $value | humanize }} sessions auto-closed by the worker — usually caused by NAS reboots or interim-update gaps."
+
+  - name: futureradius-worker
+    interval: 30s
+    rules:
+      - alert: WorkerCycleSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le, mode) (rate(futureradius_worker_cycle_duration_seconds_bucket[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker cycle p95 > 30s ({{ $labels.mode }})"
+          description: "Background usage/quota cycle is taking too long; quota enforcement and stale cleanup will lag."
+
+      - alert: BullMqQueueLag
+        expr: |
+          futureradius_bullmq_queue_lag_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BullMQ {{ $labels.queue }} backlog > 5m"
+          description: "Oldest waiting job is older than 5 minutes — worker may be stuck or under-provisioned."
+
+  - name: futureradius-db
+    interval: 30s
+    rules:
+      - alert: MysqlPoolExhausted
+        expr: |
+          (futureradius_mysql_pool_connections{state="used"}
+            / on(instance) futureradius_mysql_pool_connections{state="total"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL pool > 90% utilised"
+          description: "Pool saturation increases tail latency; consider raising connectionLimit or audit slow queries."
+
+  - name: futureradius-availability
+    interval: 30s
+    rules:
+      - alert: ApiTargetDown
+        expr: |
+          up{job="futureradius-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API target is DOWN"
+          description: "Prometheus cannot scrape api:3000/metrics for 2 minutes."
+
+      - alert: WorkerTargetDown
+        expr: |
+          up{job="futureradius-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker target is DOWN"
+          description: "Prometheus cannot scrape worker:9101/metrics for 2 minutes."

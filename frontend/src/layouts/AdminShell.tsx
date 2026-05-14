@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { apiFetch } from "../lib/api";
 import {
   LayoutDashboard,
   Users,
@@ -32,10 +33,11 @@ import {
   Gauge,
   FolderKanban,
   Tag,
-  CreditCard,
   KeyRound,
   HardDrive,
   ArrowUpCircle,
+  Braces,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -43,7 +45,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { LogoMark } from "../components/brand/Logo";
-import { canOpenStaffSection } from "../lib/permissions";
+import { canOpenStaffSection, canViewSpeedProfiles } from "../lib/permissions";
 
 type NavItem = {
   to: string;
@@ -143,11 +145,10 @@ export function AdminShell() {
   const canOpenStaff = canOpenStaffSection(user?.role, user?.permissions);
   const isSubscribersRoute =
     location.pathname.startsWith("/users") ||
-    location.pathname.startsWith("/users/prepaid-cards") ||
-    location.pathname.startsWith("/users/prepaid-cards-list") ||
     location.pathname.startsWith("/packages") ||
     location.pathname.startsWith("/subscriber-zones") ||
-    location.pathname.startsWith("/online-users");
+    location.pathname.startsWith("/online-users") ||
+    location.pathname.startsWith("/speed-profiles");
   const isStaffRoute = location.pathname.startsWith("/staff");
   const isFinanceRoute =
     location.pathname.startsWith("/finance-dashboard") ||
@@ -160,7 +161,12 @@ export function AdminShell() {
     location.pathname.startsWith("/maintenance/updates") ||
     location.pathname.startsWith("/wireguard") ||
     location.pathname.startsWith("/observability") ||
-    location.pathname.startsWith("/server-logs");
+    location.pathname.startsWith("/system-health") ||
+    location.pathname.startsWith("/server-logs") ||
+    location.pathname.startsWith("/encoding-health") ||
+    location.pathname.startsWith("/qoe") ||
+    location.pathname.startsWith("/radius-monitor") ||
+    location.pathname.startsWith("/resellers");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
   const [financeOpen, setFinanceOpen] = useState(isFinanceRoute);
@@ -188,21 +194,62 @@ export function AdminShell() {
     setMobileNavOpen(false);
   }, [location.pathname]);
 
+  // Poll alert count every 30s for admin/manager so the sidebar can display a
+  // small red badge next to System Health whenever Alertmanager has firing alerts.
+  // Designed to fail silently if the endpoint is unavailable (older deployments).
+  const [alertsCount, setAlertsCount] = useState(0);
+  useEffect(() => {
+    const canSee = user?.role === "admin" || user?.role === "manager";
+    if (!canSee) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await apiFetch("/api/observability/system-health");
+        if (!res.ok) return;
+        const payload = (await res.json()) as { alerts?: { alertname: string }[] };
+        if (!cancelled) setAlertsCount(payload.alerts?.length ?? 0);
+      } catch {
+        // ignore
+      }
+    }
+    void poll();
+    const id = setInterval(() => void poll(), 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [user?.role]);
+
   const nav: NavItem[] = [
     { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, tone: "indigo" },
     { to: "/nas", labelKey: "nav.nas", icon: Server, tone: "cyan" },
     { to: "/settings", labelKey: "nav.settings", icon: Settings, tone: "slate" },
   ];
-  const maintenanceNav: NavItem[] =
-    user?.role === "admin" || user?.role === "manager"
+  const isAdminOrManager = user?.role === "admin" || user?.role === "manager";
+  const maintenanceNav: NavItem[] = [
+    ...(isAdminOrManager
       ? ([
           { to: "/maintenance", labelKey: "nav.backups", icon: HardDrive, tone: "orange" },
           { to: "/maintenance/updates", labelKey: "nav.updates", icon: ArrowUpCircle, tone: "emerald" },
           { to: "/wireguard", labelKey: "nav.wireguard", icon: KeyRound, tone: "sky" },
+          { to: "/system-health", labelKey: "nav.systemHealth", icon: Activity, tone: "rose" },
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
         ] as NavItem[])
-      : [];
+      : []),
+    ...(user?.role === "admin"
+      ? ([{ to: "/encoding-health", labelKey: "nav.encodingHealth", icon: Braces, tone: "fuchsia" }] as NavItem[])
+      : []),
+    ...(user?.role === "admin" || user?.permissions?.view_qoe
+      ? ([{ to: "/qoe/overview", labelKey: "nav.qoeOverview", icon: FolderKanban, tone: "teal" }] as NavItem[])
+      : []),
+    ...(user?.role === "admin" || user?.permissions?.view_radius_monitor
+      ? ([{ to: "/radius-monitor/overview", labelKey: "nav.radiusMonitor", icon: Radio, tone: "cyan" }] as NavItem[])
+      : []),
+    ...(user?.role === "admin" || user?.permissions?.view_resellers
+      ? ([{ to: "/resellers", labelKey: "nav.resellers", icon: UserCircle, tone: "violet" }] as NavItem[])
+      : []),
+  ];
   const whatsappNav: NavItem[] = [
     { to: "/whatsapp/connection", labelKey: "nav.whatsappConnection", icon: Link2, tone: "green" },
     { to: "/whatsapp/templates", labelKey: "nav.whatsappTemplates", icon: FileText, tone: "indigo" },
@@ -225,9 +272,14 @@ export function AdminShell() {
     { to: "/packages", labelKey: "nav.subscriberPlans", icon: Package, tone: "violet" },
     { to: "/subscriber-zones", labelKey: "nav.subscriberZones", icon: MapPin, tone: "rose" },
     { to: "/users", labelKey: "nav.subscribersItem", icon: Wifi, tone: "blue" },
-    { to: "/users/prepaid-cards", labelKey: "nav.prepaidCards", icon: CreditCard, tone: "fuchsia" },
-    { to: "/users/prepaid-cards-list", labelKey: "nav.prepaidCardsList", icon: FileText, tone: "purple" },
     { to: "/online-users", labelKey: "nav.onlineUsers", icon: Radio, tone: "green" },
+    ...(canViewSpeedProfiles(user?.role, user?.permissions)
+      ? ([
+          { to: "/speed-profiles", labelKey: "nav.speedProfiles", icon: Gauge, tone: "sky" },
+          { to: "/speed-profiles/schedules", labelKey: "nav.speedSchedules", icon: Activity, tone: "cyan" },
+          { to: "/speed-profiles/live", labelKey: "nav.speedLive", icon: Zap, tone: "amber" },
+        ] as NavItem[])
+      : []),
     { to: "/billing", labelKey: "nav.invoicesItem", icon: ReceiptText, tone: "emerald" },
   ];
 
@@ -383,6 +435,11 @@ export function AdminShell() {
                         <>
                           <IconTile Icon={Icon} tone={tone} active={isActive} small />
                           <span className="truncate">{t(labelKey)}</span>
+                          {to === "/system-health" && alertsCount > 0 ? (
+                            <span className="ms-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white shadow-md ring-1 ring-red-400/60">
+                              {alertsCount > 99 ? "99+" : alertsCount}
+                            </span>
+                          ) : null}
                         </>
                       )}
                     </NavLink>

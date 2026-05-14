@@ -62,6 +62,7 @@ export function CardBatchPage() {
   const [totalLimit, setTotalLimit] = useState(0);
   const [onlineLimit, setOnlineLimit] = useState(0);
   const [availableTime, setAvailableTime] = useState(0);
+  const [simultaneousUse, setSimultaneousUse] = useState(1);
   const [working, setWorking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busySeries, setBusySeries] = useState<string | null>(null);
@@ -138,6 +139,7 @@ export function CardBatchPage() {
         total_limit_mb: Number(totalLimit) || 0,
         online_time_limit: Number(onlineLimit) || 0,
         available_time_from_activation: Number(availableTime) || 0,
+        simultaneous_use: Math.max(1, Math.min(32, Math.floor(Number(simultaneousUse)) || 1)),
       };
       const r = await apiFetch("/api/rm-cards/batch", { method: "POST", body: JSON.stringify(body) });
       if (!r.ok) {
@@ -489,6 +491,14 @@ export function CardBatchPage() {
               </option>
             ))}
           </SelectField>
+          <TextField
+            label={t("packages.simUse")}
+            type="number"
+            min={1}
+            max={32}
+            value={String(simultaneousUse)}
+            onChange={(e) => setSimultaneousUse(Number(e.target.value) || 1)}
+          />
           <TextField label={t("prepaid.series.downloadLimitMb")} type="number" min={0} value={String(downLimit)} onChange={(e) => setDownLimit(Number(e.target.value) || 0)} />
           <TextField label={t("prepaid.series.uploadLimitMb")} type="number" min={0} value={String(upLimit)} onChange={(e) => setUpLimit(Number(e.target.value) || 0)} />
           <TextField label={t("prepaid.series.totalLimitMb")} type="number" min={0} value={String(totalLimit)} onChange={(e) => setTotalLimit(Number(e.target.value) || 0)} />

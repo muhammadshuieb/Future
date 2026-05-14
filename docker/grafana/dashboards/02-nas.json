@@ -1,0 +1,33 @@
+{
+  "uid": "fr-nas",
+  "title": "Future Radius — NAS Health",
+  "tags": ["future-radius", "nas"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CoA Disconnect outcomes by NAS",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "targets": [{ "expr": "sum by (nas, result) (rate(futureradius_coa_disconnect_total[5m]))", "legendFormat": "{{nas}} / {{result}}", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "CoA timeouts (last 1h, by NAS)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (nas) (increase(futureradius_coa_disconnect_total{result=\"timeout\"}[1h]))", "format": "table", "instant": true, "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Stale sessions auto-closed (NAS-Reboot heuristic)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(futureradius_worker_stale_sessions_closed_total[5m])", "legendFormat": "stale closed", "refId": "A" }]
+    }
+  ]
+}

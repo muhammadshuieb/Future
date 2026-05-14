@@ -6,7 +6,7 @@ const STORAGE_BASE = "fr_api_base";
 
 /** @returns {string} */
 export function getApiBase() {
-  return localStorage.getItem(STORAGE_BASE) || "http://localhost:3000";
+  return localStorage.getItem(STORAGE_BASE) || "http://localhost:8080";
 }
 
 /** @param {string} base */

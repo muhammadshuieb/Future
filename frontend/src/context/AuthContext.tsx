@@ -68,7 +68,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!parseUserFromToken(tok)) setStaffToken(null);
   }, []);
 
-  async function login(email: string, password: string) {
+  async function login(
+    email: string,
+    password: string
+  ): Promise<{ ok: true } | { ok: false; status: number; detail: string }> {
     const r = await apiFetch("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),

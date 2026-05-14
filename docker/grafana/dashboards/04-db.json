@@ -1,0 +1,47 @@
+{
+  "uid": "fr-db",
+  "title": "Future Radius — Database & Pool",
+  "tags": ["future-radius", "db"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "MySQL pool connections (worker)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "futureradius_mysql_pool_connections{job=\"futureradius-worker\"}", "legendFormat": "{{state}}", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "MySQL pool connections (api)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "futureradius_mysql_pool_connections{job=\"futureradius-api\"}", "legendFormat": "{{state}}", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Instrumented MySQL op latency p95 (s)",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, op) (rate(futureradius_mysql_query_duration_seconds_bucket[5m])))", "legendFormat": "{{op}} p95", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "HTTP request rate (api)",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (route, status) (rate(futureradius_http_requests_total[1m]))", "legendFormat": "{{route}} [{{status}}]", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "HTTP latency p95 (s)",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, route) (rate(futureradius_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}", "refId": "A" }]
+    }
+  ]
+}

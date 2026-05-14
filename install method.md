@@ -1,4 +1,4 @@
-# Future Radius Install Method (Ubuntu)
+﻿# Future Radius Install Method (Ubuntu)
 
 This guide covers a full installation on Ubuntu server, starting from Docker installation to running all services successfully.
 
@@ -6,7 +6,7 @@ This guide covers a full installation on Ubuntu server, starting from Docker ins
 
 > **Do not paste this whole file into the terminal.** Bash will try to run headings, bullets, and English sentences as commands. You will see errors like `command not found`, `syntax error near unexpected token '('` (from lines containing parentheses), or `This: command not found` (from words at the start of a line).
 
-These commands are meant for **Ubuntu (or Debian-based) Linux** in **Bash**—for example a VPS, bare-metal Ubuntu, or **WSL2** with the Ubuntu app. They **do not run in Windows PowerShell or CMD** (`apt`, paths like `/home/...`, and `sudo` behavior are Linux-specific).
+These commands are meant for **Ubuntu (or Debian-based) Linux** in **Bash**â€”for example a VPS, bare-metal Ubuntu, or **WSL2** with the Ubuntu app. They **do not run in Windows PowerShell or CMD** (`apt`, paths like `/home/...`, and `sudo` behavior are Linux-specific).
 
 **How to copy correctly**
 
@@ -156,7 +156,7 @@ docker compose logs --tail=200 freeradius
 API health endpoint:
 
 ```bash
-curl -s http://127.0.0.1:3000/health
+curl -s http://127.0.0.1:8080/health
 ```
 
 Expected response:
@@ -197,7 +197,7 @@ Installation is considered complete when:
 
 - `docker compose ps` shows all required services running.
 - `mysql` and `redis` are healthy.
-- `api` responds with `{"ok":true}` on `/health`.
+- `api` responds with `{"ok":true}` on `/health` (from another container as `http://api:3000/health`, or from the host via the UI nginx: `curl -s http://127.0.0.1:8080/health`).
 - `worker` is up without crash loop.
 - Frontend/UI is reachable on configured port.
 
@@ -225,7 +225,7 @@ Use `FREERADIUS_DEBUG=1` in `.env` for verbose output, then recreate the `freera
 
 ## 12) PPPoE speed / MikroTik queue (RADIUS reply)
 
-DMA mode maps **`rm_services.downrate` / `uprate`** (bytes per second, Radius Manager convention) into the RADIUS attribute **`Mikrotik-Rate-Limit`**. Services with **both rates zero** (e.g. template “Access list” profiles) send **no** rate attribute, so the router queue stays empty.
+PROJECT mode maps **`legacy_services.downrate` / `uprate`** (bytes per second, external schema convention) into the RADIUS attribute **`Mikrotik-Rate-Limit`**. Services with **both rates zero** (e.g. template â€œAccess listâ€‌ profiles) send **no** rate attribute, so the router queue stays empty.
 
-After changing a subscriber’s package or fixing service rates in `rm_services`, **push RADIUS again** from the admin UI (subscriber “sync RADIUS” / save) or `PATCH` the subscriber so `radreply` is rebuilt. Then reconnect the PPPoE session (or disconnect) so MikroTik applies the new reply.
+After changing a subscriberâ€™s package or fixing service rates in `legacy_services`, **push RADIUS again** from the admin UI (subscriber â€œsync RADIUSâ€‌ / save) or `PATCH` the subscriber so `radreply` is rebuilt. Then reconnect the PPPoE session (or disconnect) so MikroTik applies the new reply.
 

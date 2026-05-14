@@ -1,5 +1,5 @@
-Future Radius — FreeRADIUS 3 (Debian) + MySQL (Radius Manager schema)
-=======================================================================
+﻿Future Radius — FreeRADIUS 3 (Debian) + MySQL (external schema)
+================================================================
 
 Docker
 ------
@@ -8,79 +8,91 @@ Docker
 Debug (verbose, foreground):
   FREERADIUS_DEBUG=1 docker compose run --rm --service-ports freeradius
 
-Bare metal (مثال)
------------------
+Bare metal (example)
+--------------------
   sudo ln -sf /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
   sudo systemctl restart freeradius
-  sudo freeradius -X    # اختبار بدون systemd
+  sudo freeradius -X    # test without systemd
 
-الجلسات النشطة (Active sessions) — مصدر الحقيقة في MySQL
---------------------------------------------------------
-  FreeRADIUS لا يعرّف «online» كحالة منفصلة؛ النظام والـ SaaS يعتمدان على radacct:
+Active sessions (truth in MySQL)
+--------------------------------
+  FreeRADIUS does not expose a portable "online" state; this project and SaaS logic use radacct:
 
-    acctstoptime IS NULL  →  جلسة ما زالت مفتوحة (نشطة)
-    acctstoptime IS NOT NULL  →  جلسة منتهية
+    acctstoptime IS NULL   → session still open (active)
+    acctstoptime IS NOT NULL → session ended
 
-  هذا ما تستخدمه خدمات CoA واللوحة والمحاسبة في المشروع (استعلامات على radacct).
+  CoA, dashboards, and accounting use radacct-based queries.
 
-تنظيف radacct (احتفاظ 30 يوم للجلسات المغلقة)
-----------------------------------------------
-  - ملف: docker/mysql/opt/04-radacct-cleanup-event.sql
-  - يُنشئ EVENT يومي: حذف الصفوف حيث acctstoptime IS NOT NULL وأقدم من 30 يوم.
-  - يتطلب event_scheduler=ON (مفعّل في docker/mysql/conf.d/radius-import.cnf).
-  - لقاعدة قائمة: نفّذ الملف يدوياً كمسؤول MySQL.
+radacct cleanup (keep ~30 days of closed sessions)
+-------------------------------------------------
+  - File: docker/mysql/opt/04-radacct-cleanup-event.sql
+  - Daily EVENT: deletes rows where acctstoptime IS NOT NULL and older than ~30 days.
+  - Requires event_scheduler=ON (enabled in docker/mysql/conf.d/radius-import.cnf).
+  - Apply manually if needed: run the SQL file as a MySQL superuser.
 
-MikroTik — Interim-Update (استهلاك حي)
+MikroTik — Interim-Update (live usage)
 --------------------------------------
   /radius set [find] interim-update=1m
 
-  أو لكل خادم RADIUS المضاف:
+  Or per server index:
   /radius set numbers=0 interim-update=1m
 
-MikroTik — CoA / Disconnect (مهم جداً)
---------------------------------------
-  بدون قبول الحزم الواردة من خادم RADIUS، لن يعمل Disconnect-Request من المنفذ 3799:
+MikroTik — CoA / Disconnect (important)
+---------------------------------------
+  Without accepting incoming from the RADIUS server, Disconnect-Request on UDP 3799 will not work:
 
   /radius incoming
   set accept=yes
 
-  (في WinBox: IP → RADIUS → Incoming → Accept)
+  (WinBox: IP → RADIUS → Incoming → Accept)
 
-  تحقق أن سر NAS في جدول nas يطابق إعدادات /radius على الميكروتيك.
+  Ensure the NAS secret in table `nas` matches `/radius` on the MikroTik.
 
-اختبار سريع
+Quick tests
 -----------
   radtest USER PASSWORD RADIUS_HOST 0 SECRET
   radtest -x USER PASSWORD RADIUS_HOST 1812 SECRET
 
 FreeRADIUS 3.2.x (Debian bookworm)
 -----------------------------------
-  - يتطلب تعريف group_attribute في كتلة sql (مضبوط في mods-available/sql.template)؛
-    بدونه يفشل التحميل برسالة: Reference "${group_attribute}" not found في queries.conf.
+  - `group_attribute` must be defined in the sql module (see mods-available/sql.template);
+    otherwise startup fails with: Reference "${group_attribute}" not found in queries.conf.
 
-NAS IP (WireGuard / «unknown client»)
+NAS IP (WireGuard / "unknown client")
 -------------------------------------
-  عمود nasname يجب أن يطابق مصدر حزم UDP 1812 كما يراه السيرفر (وليس عنوان حقل Address في الميكروتيك).
-  مثال: سيرفر النفق 10.20.0.1 والميكروتيك 10.20.0.2 → سجّل في nas نفس السرّ مع nasname = 10.20.0.2.
-  إن ظهر في radius.log: Ignoring request ... unknown client <ip> فأضف ذلك الـ ip في جدول nas ثم:
+  `nasname` should match the UDP 1812 source as seen by the server (not necessarily the MikroTik "Address").
+  Example: server on 10.20.0.1 and MikroTik on 10.20.0.2 → register in `nas` with the same secret and nasname = 10.20.0.2.
+  If radius.log shows: Ignoring request ... unknown client <ip>, add that IP to `nas`, then:
   docker compose restart freeradius
 
-ملاحظات
--------
-- مصادقة المستخدمين من radcheck / radreply؛ أسرار NAS من جدول nas (read_clients = yes).
-- authorize_check_query في queries.conf يقرأ المستخدم من radcheck؛ عمودا nasname و secret خاصان بجدول nas ويُستخدمان عبر client_query وليس authorize_check_query.
-- عمود server غير موجود في nas لدى Radius Manager؛ صورة Docker تُعيد تعريف client_query في
-  mods-available/sql.template (NULL AS server) بعد تضمين queries.conf الافتراضي.
+Notes
+-----
+- User auth from radcheck / radreply; NAS rows from `nas` (read_clients = yes).
+- authorize_check_query in queries.conf reads users from radcheck; nasname and secret come from `nas` via client_query, not authorize_check_query.
+- If `server` column is missing in nas for external schema: Docker image patches client_query in mods-available/sql.template (NULL AS server) after merging default queries.conf.
 
-- إن ظهر Access denied for user 'radius'@'...' فالمستخدم غير مُنشأ أو كلمة المرور
-  لا تطابق RADIUS_DB_PASSWORD في .env (نفس القيمة لـ freeradius MYSQL_PASSWORD).
-  عند أول تهيئة MySQL تُنشأ من docker/mysql/init/z-futureradius-followup.sh؛ يدوياً:
+- Access denied for user 'radius'@'...': user not created or password mismatch vs RADIUS_DB_PASSWORD in .env (same value as freeradius MYSQL_PASSWORD).
+  On first MySQL init, docker/mysql/init/z-futureradius-followup.sh may run; you can fix with:
   ALTER USER 'radius'@'%' IDENTIFIED BY '...'; GRANT ALL ON radius.* TO 'radius'@'%'; FLUSH PRIVILEGES;
 
-- بعد استعادة dump كامل لـ radius.sql: غالباً تُفقد صلاحيات مستخدم MySQL لـ FreeRADIUS؛
-  طابق كلمة مرور المستخدم مع RADIUS_DB_PASSWORD ثم أعد تشغيل freeradius. حتى ذلك، قد يدور الحاوية
-  بإعادة تشغيل سريعة (CPU مرتفع وواجهة Docker تُظهره كمتوقف).
+- After importing a full radius.sql dump: MySQL grants for the FreeRADIUS user may be missing.
+  Align the radius user password with RADIUS_DB_PASSWORD, then restart freeradius. Otherwise you may see high CPU / Docker appearing hung.
 
-فهارس radacct
--------------
-  نفّذ sql/migrations/003_radacct_indexes.sql على قاعدة radius (مرة واحدة).
+radacct indexes
+---------------
+  Apply sql/migrations/003_radacct_indexes.sql once on the radius database.
+
+Simultaneous-Use (concurrent session limit)
+------------------------------------------
+  Policy file policy.d/futureradius-simultaneous-use calls futureradius_check_simultaneous_use after the sql authorize step.
+  After Dockerfile changes: docker compose build freeradius && docker compose up -d freeradius
+
+  Projects with legacy_cards: store simultaneous_use on cards; see sql/migrations/998-rm-cards-simultaneous-use.sql
+  (numeric migrations run when legacy_users exists).
+
+Troubleshooting: "exec /docker-entrypoint.sh: exec format error"
+----------------------------------------------------------------
+  Usually CPU architecture mismatch (e.g. arm64 image on amd64 host) or CRLF line endings on *.sh.
+  Fix: rebuild after pulling latest — Dockerfile uses FROM --platform=linux/amd64 and compose sets
+  platform: linux/amd64 for freeradius. Re-normalize line endings: git add --renormalize docker/freeradius/*.sh
+  Then: docker compose build --no-cache freeradius && docker compose up -d freeradius

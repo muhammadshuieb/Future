@@ -1,0 +1,9 @@
+# Shell copied into Linux images must use LF only (CRLF breaks shebang / entrypoint).
+docker/**/*.sh text eol=lf
+
+# Frontend sources: stable UTF-8 + LF (avoids Arabic mojibake and broken bundles on Windows checkouts).
+frontend/**/*.ts text eol=lf
+frontend/**/*.tsx text eol=lf
+frontend/**/*.css text eol=lf
+frontend/**/*.html text eol=lf
+frontend/**/*.json text eol=lf

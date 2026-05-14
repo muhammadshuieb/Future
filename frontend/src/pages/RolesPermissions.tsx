@@ -14,6 +14,13 @@ const permissionKeys = [
   "manage_managers",
   "transfer_balance",
   "disconnect_users",
+  "view_speed_profiles",
+  "create_speed_profile",
+  "edit_speed_profile",
+  "delete_speed_profile",
+  "manage_speed_schedules",
+  "apply_speed_override",
+  "view_speed_profile_logs",
 ] as const;
 type PermissionKey = (typeof permissionKeys)[number];
 const permissionSections: Array<{ key: string; perms: PermissionKey[] }> = [
@@ -21,6 +28,18 @@ const permissionSections: Array<{ key: string; perms: PermissionKey[] }> = [
   { key: "billing", perms: ["manage_invoices", "transfer_balance"] },
   { key: "administration", perms: ["manage_managers"] },
   { key: "connectivity", perms: ["disconnect_users"] },
+  {
+    key: "speedProfiles",
+    perms: [
+      "view_speed_profiles",
+      "create_speed_profile",
+      "edit_speed_profile",
+      "delete_speed_profile",
+      "manage_speed_schedules",
+      "apply_speed_override",
+      "view_speed_profile_logs",
+    ],
+  },
 ];
 
 type RoleItem = {
@@ -39,6 +58,13 @@ function defaultPermissions(): Record<PermissionKey, boolean> {
     manage_managers: true,
     transfer_balance: true,
     disconnect_users: true,
+    view_speed_profiles: true,
+    create_speed_profile: true,
+    edit_speed_profile: true,
+    delete_speed_profile: true,
+    manage_speed_schedules: true,
+    apply_speed_override: true,
+    view_speed_profile_logs: true,
   };
 }
 

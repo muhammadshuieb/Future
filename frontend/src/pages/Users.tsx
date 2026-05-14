@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Download, Eye, EyeOff, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Download, Eye, EyeOff, FileText, Plus, Power, RefreshCw, Trash2, Wallet } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -10,7 +10,9 @@ import { ColumnVisibilityMenu, useColumnVisibility } from "../components/ui/Colu
 import { SelectField, TextField, TextAreaField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
-import { canManageOperations } from "../lib/permissions";
+import { canManageOperations, canRecordFinance } from "../lib/permissions";
+import { SubscriberInvoicePaymentModal } from "../components/subscribers/SubscriberInvoicePaymentModal";
+import { printSubscriberFinancialReport } from "../lib/subscriber-financial-report-print";
 import { cn } from "../lib/utils";
 
 type SubscriberRow = {
@@ -41,6 +43,7 @@ type SubscriberRow = {
   address?: string | null;
   region_name?: string | null;
   is_online?: number | string | null;
+  simultaneous_use?: string | number | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
 type Nas = { id: string; name: string; ip: string };
@@ -100,6 +103,12 @@ function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
       typeof value.quota_total_bytes === "string" ||
       typeof value.quota_total_bytes === "bigint"
         ? value.quota_total_bytes
+        : null,
+    simultaneous_use:
+      value.simultaneous_use != null && value.simultaneous_use !== ""
+        ? typeof value.simultaneous_use === "number"
+          ? value.simultaneous_use
+          : String(value.simultaneous_use)
         : null,
   };
 }
@@ -185,10 +194,10 @@ function isExplicitlyDisabled(row: SubscriberRow): boolean {
 }
 
 function getDisplayState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
+  if (isExplicitlyDisabled(row)) return "disabled";
   const fromState = getRowState(row);
   // Expiration should be distinct from manual disable.
   if (fromState === "expired") return "expired";
-  if (isExplicitlyDisabled(row)) return "disabled";
   return fromState;
 }
 
@@ -211,6 +220,7 @@ export function UsersPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const canManage = canManageOperations(user?.role);
+  const canFinance = canRecordFinance(user?.role);
   const canRevealPassword = user?.role === "admin" || user?.role === "manager";
   const [items, setItems] = useState<SubscriberRow[]>([]);
   const [packages, setPackages] = useState<Pkg[]>([]);
@@ -226,6 +236,8 @@ export function UsersPage() {
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
   const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<string | null>(null);
+  const [paymentModal, setPaymentModal] = useState<{ id: string; username: string } | null>(null);
+  const [reportLoadingId, setReportLoadingId] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
     title: string;
@@ -254,6 +266,7 @@ export function UsersPage() {
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [regionId, setRegionId] = useState("");
+  const [simultaneousUse, setSimultaneousUse] = useState("1");
   const [pageSize, setPageSize] = useState<number>(25);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalItems, setTotalItems] = useState<number>(0);
@@ -453,6 +466,7 @@ export function UsersPage() {
           pool: pool || undefined,
           notes: notes || undefined,
           region_id: regionId || null,
+          simultaneous_use: Math.max(1, Math.min(32, parseInt(simultaneousUse, 10) || 1)),
         }),
       });
       if (!r.ok) {
@@ -475,6 +489,7 @@ export function UsersPage() {
       setAddress("");
       setNotes("");
       setRegionId("");
+      setSimultaneousUse("1");
       setSelectedIds([]);
       await load();
     } finally {
@@ -497,6 +512,7 @@ export function UsersPage() {
     setAddress("");
     setNotes("");
     setRegionId("");
+    setSimultaneousUse("1");
     setModal(true);
   }
 
@@ -534,7 +550,12 @@ export function UsersPage() {
       const res = await apiFetch(`/api/subscribers/${id}/password`);
       if (!res.ok) {
         const raw = await readApiError(res);
-        setMsg({ type: "err", text: formatStaffApiError(res.status, raw, t) });
+        setMsg({
+          type: "err",
+          text: raw.toLowerCase().includes("password_unavailable")
+            ? t("profile.passwordUnavailableHash")
+            : formatStaffApiError(res.status, raw, t),
+        });
         return;
       }
       const data = (await res.json()) as { password?: string };
@@ -581,6 +602,40 @@ export function UsersPage() {
     a.download = "subscribers-selected.csv";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function runFinancialReport(row: SubscriberRow, previewWindow: Window) {
+    if (!canFinance) return;
+    setReportLoadingId(row.id);
+    setMsg(null);
+    try {
+      const res = await printSubscriberFinancialReport(
+        row.id,
+        {
+          title: t("users.financialReportPrint.title"),
+          subscriber: t("users.financialReportPrint.subscriber"),
+          since: t("users.financialReportPrint.since"),
+          expires: t("users.financialReportPrint.expires"),
+          package: t("users.financialReportPrint.package"),
+          invoices: t("users.financialReportPrint.invoices"),
+          issueDate: t("users.financialReportPrint.issueDate"),
+          payments: t("users.financialReportPrint.payments"),
+          paymentDate: t("users.financialReportPrint.paymentDate"),
+          totals: t("users.financialReportPrint.totals"),
+          invoiced: t("users.financialReportPrint.invoiced"),
+          paid: t("users.financialReportPrint.paid"),
+          outstanding: t("users.financialReportPrint.outstanding"),
+          noData: t("users.financialReportPrint.noData"),
+          loadError: t("users.financialReportPrint.loadError"),
+        },
+        previewWindow
+      );
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error || t("users.financialReportError") });
+      }
+    } finally {
+      setReportLoadingId(null);
+    }
   }
 
   async function deleteOne(id: string, username: string) {
@@ -1033,6 +1088,36 @@ export function UsersPage() {
                       >
                         {t("users.profile")}
                       </Link>
+                      {canFinance ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="px-2 py-1 text-xs"
+                            onClick={() => setPaymentModal({ id: s.id, username: s.username })}
+                          >
+                            <Wallet className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
+                            {t("users.paymentInvoice")}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="px-2 py-1 text-xs"
+                            onClick={() => {
+                              const preview = window.open("", "_blank", "noopener,noreferrer");
+                              if (!preview) {
+                                setMsg({ type: "err", text: t("users.financialReportPopupBlocked") });
+                                return;
+                              }
+                              void runFinancialReport(s, preview);
+                            }}
+                            disabled={reportLoadingId === s.id}
+                          >
+                            <FileText className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
+                            {reportLoadingId === s.id ? t("common.loading") : t("users.financialReport")}
+                          </Button>
+                        </>
+                      ) : null}
                       {canManage ? (
                         <Button
                           type="button"
@@ -1146,6 +1231,14 @@ export function UsersPage() {
               </option>
             ))}
           </SelectField>
+          <TextField
+            label={t("packages.simUse")}
+            type="number"
+            min={1}
+            max={32}
+            value={simultaneousUse}
+            onChange={(e) => setSimultaneousUse(e.target.value)}
+          />
           <SelectField label={`${t("users.nas")} (${t("common.optional")})`} value={nasId} onChange={(e) => setNasId(e.target.value)}>
             <option value="">—</option>
             {nasList.map((n) => (
@@ -1199,6 +1292,27 @@ export function UsersPage() {
           action?.();
         }}
       />
+      {paymentModal ? (
+        <SubscriberInvoicePaymentModal
+          open
+          subscriberId={paymentModal.id}
+          username={paymentModal.username}
+          packages={packages}
+          onClose={() => setPaymentModal(null)}
+          onFinished={(result) => {
+            if (result.allocation) {
+              setMsg({ type: "ok", text: t("users.paymentAllocationDone") });
+            } else if (result.deferred) {
+              setMsg({ type: "ok", text: t("users.paymentDeferred") });
+            } else if (result.partial) {
+              setMsg({ type: "ok", text: t("users.paymentPartial") });
+            } else {
+              setMsg({ type: "ok", text: t("users.packagePaid") });
+            }
+            void load();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

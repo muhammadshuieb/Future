@@ -7,6 +7,7 @@ import {
   resolveWhatsAppSessionOwnerPhone,
   sendOperationalAlertWhatsApp,
 } from "../services/whatsapp.service.js";
+import { pruneRadpostauth } from "../services/radpostauth-retention.service.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -29,6 +30,8 @@ const bodySchema = z.object({
   backup_alert_phone: z.string().max(32).optional(),
   backup_alert_use_session_owner: z.boolean().optional(),
   server_log_retention_days: z.number().int().min(3).max(90),
+  radpostauth_retention_enabled: z.boolean().optional(),
+  radpostauth_retention_months: z.number().int().min(1).max(36).optional(),
   user_idle_timeout_minutes: z.number().int().min(2).max(10080).optional(),
   mikrotik_interim_update_minutes: z.number().int().min(1).max(60).optional(),
   disconnect_on_activation: z.boolean().optional(),
@@ -57,6 +60,10 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
     const next: SystemSettingsInput = {
       ...cur,
       ...parsed.data,
+      radpostauth_retention_enabled:
+        parsed.data.radpostauth_retention_enabled ?? cur.radpostauth_retention_enabled,
+      radpostauth_retention_months:
+        parsed.data.radpostauth_retention_months ?? cur.radpostauth_retention_months,
       user_idle_timeout_minutes: parsed.data.user_idle_timeout_minutes ?? cur.user_idle_timeout_minutes,
       mikrotik_interim_update_minutes:
         parsed.data.mikrotik_interim_update_minutes ?? cur.mikrotik_interim_update_minutes,
@@ -86,6 +93,20 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
     res.status(500).json({ error: "system_settings_save_failed" });
   }
 });
+
+router.post(
+  "/radpostauth-prune",
+  routePolicy({ allow: ["admin", "manager"] }),
+  async (req, res) => {
+    try {
+      const result = await pruneRadpostauth(req.auth!.tenantId);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      console.error("system settings radpostauth prune", e);
+      res.status(500).json({ error: "radpostauth_prune_failed" });
+    }
+  }
+);
 
 router.post("/test-alert", routePolicy({ allow: ["admin", "manager"] }), async (req, res) => {
   try {

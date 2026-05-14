@@ -27,7 +27,6 @@ type StaffRow = {
   allowed_negative_balance?: number;
   parent_staff_id?: string | null;
   permissions_json?: Record<string, boolean> | string | null;
-  legacy_source?: string;
 };
 
 const roles: StaffRow["role"][] = ["admin", "manager", "accountant", "viewer"];
@@ -122,7 +121,6 @@ export function StaffUsersPage() {
   const [allowedNegativeBalance, setAllowedNegativeBalance] = useState("0");
   const [permissions, setPermissions] = useState<Record<ManagerPermissionKey, boolean>>(defaultManagerPermissions());
   const [parentStaffId, setParentStaffId] = useState("");
-  const isLegacyEditing = modal === "edit" && String(editId ?? "").startsWith("rm:");
   const [topupTarget, setTopupTarget] = useState<StaffRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StaffRow | null>(null);
   const staffColumns = useMemo(
@@ -515,7 +513,7 @@ export function StaffUsersPage() {
               ))}
             </SelectField>
           </div>
-          {role === "manager" || isLegacyEditing ? (
+          {role === "manager" ? (
             <div className="space-y-3 rounded-xl border border-[hsl(var(--border))] p-3">
               <TextField
                 label={t("staff.openingBalance")}

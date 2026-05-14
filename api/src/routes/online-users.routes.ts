@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { z } from "zod";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
@@ -37,17 +37,7 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
   }
 
   const username = String(row.username ?? "");
-  if (config.dmaMode) {
-    if (await hasTable(pool, "rm_users")) {
-      const [owned] = await pool.query<RowDataPacket[]>(
-        `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
-        [username]
-      );
-      if (!owned[0]) {
-        return { status: "not_found" };
-      }
-    }
-  } else if (await hasTable(pool, "subscribers")) {
+  if (await hasTable(pool, "subscribers")) {
     const [owned] = await pool.query<RowDataPacket[]>(
       `SELECT id FROM subscribers WHERE tenant_id = ? AND username = ? LIMIT 1`,
       [tenantId, username]
@@ -55,14 +45,8 @@ async function disconnectSessionByRadacctId(tenantId: string, radacctid: string)
     if (!owned[0]) {
       return { status: "not_found" };
     }
-  } else if (await hasTable(pool, "rm_users")) {
-    const [owned] = await pool.query<RowDataPacket[]>(
-      `SELECT username FROM rm_users WHERE username = ? LIMIT 1`,
-      [username]
-    );
-    if (!owned[0]) {
-      return { status: "not_found" };
-    }
+  } else {
+    return { status: "not_found" };
   }
 
   const nasIp = String(row.nasipaddress ?? "");

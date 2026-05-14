@@ -1,4 +1,4 @@
--- radacct grows without bound on busy ISPs. Partitioning is a DBA/maintenance task — NOT auto-applied.
+﻿-- radacct grows without bound on busy ISPs. Partitioning is a DBA/maintenance task â€” NOT auto-applied.
 -- Review MySQL version, PRIMARY KEY requirements for partitioning, and backup before ALTER.
 --
 -- Example pattern (adapt dates / engine / PK to your schema):
@@ -12,6 +12,6 @@
 -- For RANGE COLUMNS (common in 8.0):
 -- ALTER TABLE radacct PARTITION BY RANGE COLUMNS (acctstarttime) (...);
 --
--- Prefer archiver jobs (see docker/mysql/opt scripts) + indexes (npm run apply:dma-indexes) before partitioning.
+-- Prefer archiver jobs (see docker/mysql/opt scripts) + indexes (npm run apply:project-indexes) before partitioning.
 
-SELECT 'radacct-partitioning-template: read comments only — no DDL executed' AS note;
+SELECT 'radacct-partitioning-template: read comments only â€” no DDL executed' AS note;

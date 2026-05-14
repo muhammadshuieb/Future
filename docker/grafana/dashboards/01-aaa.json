@@ -1,0 +1,69 @@
+{
+  "uid": "fr-aaa",
+  "title": "Future Radius — AAA",
+  "tags": ["future-radius", "aaa"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active subscribers",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "max(futureradius_radius_active_subscribers)", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Open RADIUS sessions",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "max(futureradius_radius_open_sessions)", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Login failures (5m)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(increase(futureradius_auth_failed_total[5m]))", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Brute-force triggers (1h)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(increase(futureradius_auth_failed_total{reason=\"brute_force\"}[1h]))", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Login failures by reason",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (surface, reason) (rate(futureradius_auth_failed_total[1m]))", "legendFormat": "{{surface}}/{{reason}}", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Synthetic radclient probe results",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (result) (rate(futureradius_synth_check_total[2m]))", "legendFormat": "{{result}}", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Quota denials per cycle",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(futureradius_worker_quota_denied_total[5m])", "legendFormat": "denied", "refId": "A" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Expired subscribers handled",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(futureradius_worker_expired_handled_total[5m])", "legendFormat": "expired", "refId": "A" }]
+    }
+  ]
+}

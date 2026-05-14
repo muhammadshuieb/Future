@@ -1,4 +1,4 @@
-import type { PoolConnection, RowDataPacket } from "mysql2/promise";
+﻿import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { pool } from "../db/pool.js";
 import { withTransaction } from "../db/transaction.js";
 import { hasTable } from "../db/schemaGuards.js";
@@ -29,20 +29,20 @@ export async function chargeManagerWalletWithConnection(
   conn: PoolConnection,
   input: ChargeInput
 ): Promise<{ balance: number }> {
-  if (!(await hasTable(pool, "rm_managers"))) {
+  if (!(await hasTable(pool, "users"))) {
     throw new ManagerBalanceError("staff_not_found", "manager_not_found");
   }
-  const managerName = String(input.staffId ?? "").replace(/^rm:/i, "").trim();
-  if (!managerName) {
+  const staffUserId = String(input.staffId ?? "").trim();
+  if (!staffUserId) {
     throw new ManagerBalanceError("staff_not_found", "manager_not_found");
   }
   const [rows] = await conn.query<RowDataPacket[]>(
-    `SELECT managername, balance AS wallet_balance, COALESCE(allowed_negative_balance, 0) AS allowed_negative_balance,
-            COALESCE(enablemanager, 1) AS active
-     FROM rm_managers
-     WHERE managername = ?
+    `SELECT wallet_balance, COALESCE(allowed_negative_balance, 0) AS allowed_negative_balance,
+            CASE WHEN status = 'active' THEN 1 ELSE 0 END AS active
+     FROM users
+     WHERE id = ? AND tenant_id = ?
      LIMIT 1 FOR UPDATE`,
-    [managerName]
+    [staffUserId, input.tenantId]
   );
   const row = rows[0];
   if (!row || Number(row.active ?? 1) !== 1) {
@@ -58,6 +58,10 @@ export async function chargeManagerWalletWithConnection(
     throw new ManagerBalanceError("insufficient_balance", "insufficient_manager_balance");
   }
   const next = current - amount;
-  await conn.execute(`UPDATE rm_managers SET balance = ? WHERE managername = ?`, [next, managerName]);
+  await conn.execute(`UPDATE users SET wallet_balance = ? WHERE id = ? AND tenant_id = ?`, [
+    next,
+    staffUserId,
+    input.tenantId,
+  ]);
   return { balance: next };
 }

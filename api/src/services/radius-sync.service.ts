@@ -1,0 +1,157 @@
+import type { Pool } from "mysql2/promise";
+import type { RowDataPacket } from "mysql2";
+import {
+  evaluateSubscriberAccessFromRow,
+  loadSubscriberAccessRow,
+} from "../lib/subscriber-access-guard.js";
+
+type SyncLogStatus = "success" | "failed";
+
+export class RadiusSyncService {
+  constructor(private readonly pool: Pool) {}
+
+  async syncAll(tenantId: string): Promise<void> {
+    await this.syncNasDevices(tenantId);
+    await this.syncPackages(tenantId);
+    await this.syncSubscribers(tenantId);
+  }
+
+  async syncPackage(packageId: string, tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT id, name, mikrotik_rate_limit, default_framed_pool, simultaneous_use
+       FROM packages
+       WHERE id = ? AND tenant_id = ? AND active = 1
+       LIMIT 1`,
+      [packageId, tenantId]
+    );
+    const pkg = rows[0];
+    if (!pkg) return;
+    await this.pool.execute(`DELETE FROM radgroupreply WHERE groupname = ?`, [String(pkg.id)]);
+    const replies: Array<[string, string]> = [];
+    if (pkg.mikrotik_rate_limit) replies.push(["Mikrotik-Rate-Limit", String(pkg.mikrotik_rate_limit)]);
+    if (pkg.default_framed_pool) replies.push(["Framed-Pool", String(pkg.default_framed_pool)]);
+    for (const [attribute, value] of replies) {
+      await this.pool.execute(
+        `INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, ?, ':=', ?)`,
+        [String(pkg.id), attribute, value]
+      );
+    }
+    await this.log(tenantId, "package", packageId, "success");
+  }
+
+  async syncSubscriber(subscriberId: string, tenantId: string): Promise<void> {
+    const access = await loadSubscriberAccessRow(this.pool, { tenantId, subscriberId });
+    if (!access) return;
+    const username = access.username.trim();
+    if (!username) return;
+    const gate = evaluateSubscriberAccessFromRow(access);
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute(`DELETE FROM radcheck WHERE username = ?`, [username]);
+      await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
+      await conn.execute(`DELETE FROM radusergroup WHERE username = ?`, [username]);
+      const password = String(access.credential_password ?? "").trim();
+      if (!gate.ok || !password) {
+        await conn.execute(
+          `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
+          [username]
+        );
+        await conn.commit();
+        await this.log(tenantId, "subscriber", subscriberId, "success");
+        return;
+      }
+      await conn.execute(
+        `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Cleartext-Password', ':=', ?)`,
+        [username, password]
+      );
+      await conn.execute(
+        `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)`,
+        [username, String(Math.max(1, Number(access.package_simultaneous_use ?? 1)))]
+      );
+      if (access.expiration_date) {
+        await conn.execute(
+          `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Expiration', ':=', DATE_FORMAT(?, '%d %b %Y %H:%i:%s'))`,
+          [username, access.expiration_date]
+        );
+      }
+      if (access.package_id) {
+        await conn.execute(
+          `INSERT INTO radusergroup (username, groupname, priority) VALUES (?, ?, 1)`,
+          [username, String(access.package_id)]
+        );
+      }
+      const replies: Array<[string, string]> = [];
+      if (access.mikrotik_rate_limit) replies.push(["Mikrotik-Rate-Limit", access.mikrotik_rate_limit]);
+      const framedIp = access.ip_address || access.framed_ip_address;
+      if (framedIp) replies.push(["Framed-IP-Address", framedIp]);
+      if (access.mikrotik_address_list) replies.push(["Mikrotik-Address-List", access.mikrotik_address_list]);
+      const poolName = access.pool || access.default_framed_pool;
+      if (poolName) replies.push(["Framed-Pool", poolName]);
+      for (const [attribute, value] of replies) {
+        await conn.execute(
+          `INSERT INTO radreply (username, attribute, op, value) VALUES (?, ?, ':=', ?)`,
+          [username, attribute, value]
+        );
+      }
+      await conn.commit();
+      await this.log(tenantId, "subscriber", subscriberId, "success");
+    } catch (error) {
+      await conn.rollback();
+      await this.log(tenantId, "subscriber", subscriberId, "failed", error);
+      throw error;
+    } finally {
+      conn.release();
+    }
+  }
+
+  async syncNasDevice(nasDeviceId: string, tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT id, name, ip, type, secret FROM nas_devices WHERE id = ? AND tenant_id = ? AND status = 'active' LIMIT 1`,
+      [nasDeviceId, tenantId]
+    );
+    const row = rows[0];
+    if (!row) return;
+    await this.pool.execute(`DELETE FROM nas WHERE nasname = ?`, [String(row.ip)]);
+    await this.pool.execute(
+      `INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description)
+       VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)`,
+      [String(row.ip), String(row.name), String(row.type ?? "other"), String(row.secret), String(row.id)]
+    );
+    await this.log(tenantId, "nas", nasDeviceId, "success");
+  }
+
+  private async syncPackages(tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(`SELECT id FROM packages WHERE tenant_id = ?`, [tenantId]);
+    for (const row of rows) await this.syncPackage(String(row.id), tenantId);
+  }
+
+  private async syncSubscribers(tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(`SELECT id FROM subscribers WHERE tenant_id = ?`, [tenantId]);
+    for (const row of rows) await this.syncSubscriber(String(row.id), tenantId);
+  }
+
+  private async syncNasDevices(tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(`SELECT id FROM nas_devices WHERE tenant_id = ?`, [tenantId]);
+    for (const row of rows) await this.syncNasDevice(String(row.id), tenantId);
+  }
+
+  private async log(
+    tenantId: string,
+    entityType: string,
+    entityId: string,
+    status: SyncLogStatus,
+    error?: unknown
+  ): Promise<void> {
+    try {
+      const message = error instanceof Error ? error.message : error ? String(error) : null;
+      await this.pool.execute(
+        `INSERT INTO radius_sync_logs (tenant_id, entity_type, entity_id, status, message)
+         VALUES (?, ?, ?, ?, ?)`,
+        [tenantId, entityType, entityId, status, message]
+      );
+    } catch {
+      // Sync logging must never break the operational write path.
+    }
+  }
+}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+﻿import { useCallback, useEffect, useState } from "react";
+import { CalendarClock, Pencil, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -12,7 +12,19 @@ import { canManageOperations } from "../lib/permissions";
 import { cn } from "../lib/utils";
 
 type Pkg = Record<string, unknown>;
+type SpeedSchedule = {
+  id: string;
+  package_id: string;
+  name: string;
+  rate_limit: string;
+  days_of_week: number[];
+  start_time: string;
+  end_time: string;
+  active: number | boolean;
+  disconnect_fallback: number | boolean;
+};
 const currencies = ["USD", "SYP", "TRY"] as const;
+const weekDays = [0, 1, 2, 3, 4, 5, 6];
 
 function quotaGbToBytesString(gbStr: string): string {
   const n = parseFloat(String(gbStr).replace(",", "."));
@@ -38,12 +50,22 @@ function bytesToQuotaGbField(bytes: unknown): string {
   }
 }
 
+function formatMbpsFromBits(bits: unknown): string {
+  const n = Number(bits ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  const mbps = n / (1024 * 1024);
+  if (mbps >= 100) return String(Math.round(mbps));
+  if (mbps >= 10) return String(Math.round(mbps * 10) / 10);
+  return String(Math.round(mbps * 100) / 100);
+}
+
 export function PackagesPage() {
   const { t, isRtl, locale } = useI18n();
   const { user } = useAuth();
   const canManage = canManageOperations(user?.role);
 
   const [items, setItems] = useState<Pkg[]>([]);
+  const [schedules, setSchedules] = useState<SpeedSchedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState<"create" | "edit" | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
@@ -63,9 +85,15 @@ export function PackagesPage() {
   const [accountType, setAccountType] = useState<"subscriptions" | "cards">("subscriptions");
   const [framedPool, setFramedPool] = useState("");
   const [allowedNasIds, setAllowedNasIds] = useState<string[]>([]);
-  const [allowedManagerNames, setAllowedManagerNames] = useState<string[]>([]);
+  const [allowedStaffNames, setAllowedStaffNames] = useState<string[]>([]);
   const [nasOptions, setNasOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [managerOptions, setManagerOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [scheduleName, setScheduleName] = useState("");
+  const [scheduleRate, setScheduleRate] = useState("");
+  const [scheduleStart, setScheduleStart] = useState("18:00");
+  const [scheduleEnd, setScheduleEnd] = useState("02:00");
+  const [scheduleDays, setScheduleDays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,6 +112,11 @@ export function PackagesPage() {
         const raw = await readApiError(r);
         setLoadError(formatStaffApiError(r.status, raw, t));
       }
+      const sr = await apiFetch("/api/dynamic-speed/schedules");
+      if (sr.ok) {
+        const payload = (await sr.json()) as { items: SpeedSchedule[] };
+        setSchedules(payload.items);
+      }
     } finally {
       setLoading(false);
     }
@@ -92,6 +125,14 @@ export function PackagesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  function resetScheduleDraft() {
+    setScheduleName("");
+    setScheduleRate("");
+    setScheduleStart("18:00");
+    setScheduleEnd("02:00");
+    setScheduleDays([0, 1, 2, 3, 4, 5, 6]);
+  }
 
   function openCreate() {
     setEditId(null);
@@ -105,7 +146,8 @@ export function PackagesPage() {
     setAccountType("subscriptions");
     setFramedPool("");
     setAllowedNasIds([]);
-    setAllowedManagerNames([]);
+    setAllowedStaffNames([]);
+    resetScheduleDraft();
     setFormError(null);
     setModal("create");
   }
@@ -124,9 +166,10 @@ export function PackagesPage() {
     setAllowedNasIds(
       Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.map((v) => String(v)) : []
     );
-    setAllowedManagerNames(
+    setAllowedStaffNames(
       Array.isArray(p.available_manager_names) ? p.available_manager_names.map((v) => String(v)) : []
     );
+    resetScheduleDraft();
     setFormError(null);
     setModal("edit");
   }
@@ -150,10 +193,16 @@ export function PackagesPage() {
             account_type: accountType,
             default_framed_pool: framedPool || null,
             allowed_nas_ids: allowedNasIds,
-            available_manager_names: allowedManagerNames,
+            available_manager_names: allowedStaffNames,
           }),
         });
         if (r.ok) {
+          const created = (await r.json().catch(() => ({}))) as { id?: string };
+          const createdId = String(created.id ?? "");
+          if (scheduleRate.trim() && createdId) {
+            const scheduleOk = await createScheduleForPackage(createdId, false);
+            if (!scheduleOk) return;
+          }
           setModal(null);
           await load();
         } else {
@@ -174,10 +223,14 @@ export function PackagesPage() {
             account_type: accountType,
             default_framed_pool: framedPool || null,
             allowed_nas_ids: allowedNasIds,
-            available_manager_names: allowedManagerNames,
+            available_manager_names: allowedStaffNames,
           }),
         });
         if (r.ok) {
+          if (scheduleRate.trim()) {
+            const scheduleOk = await createScheduleForPackage(editId, false);
+            if (!scheduleOk) return;
+          }
           setModal(null);
           await load();
         } else {
@@ -219,9 +272,82 @@ export function PackagesPage() {
     );
   }
   function toggleManager(id: string) {
-    setAllowedManagerNames((current) =>
+    setAllowedStaffNames((current) =>
       current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
     );
+  }
+
+  function toggleScheduleDay(day: number) {
+    setScheduleDays((current) =>
+      current.includes(day) ? current.filter((x) => x !== day) : [...current, day].sort((a, b) => a - b)
+    );
+  }
+
+  async function createScheduleForPackage(packageId: string, refresh = true): Promise<boolean> {
+    if (!packageId || !scheduleRate.trim()) return true;
+    if (scheduleDays.length === 0) return false;
+    const r = await apiFetch("/api/dynamic-speed/schedules", {
+      method: "POST",
+      body: JSON.stringify({
+        package_id: packageId,
+        name: scheduleName || t("packages.dynamicSpeed.defaultName"),
+        rate_limit: scheduleRate,
+        days_of_week: scheduleDays,
+        start_time: scheduleStart,
+        end_time: scheduleEnd,
+        active: true,
+        disconnect_fallback: true,
+      }),
+    });
+    if (!r.ok) {
+      const raw = await readApiError(r);
+      setFormError(formatStaffApiError(r.status, raw, t));
+      return false;
+    }
+    resetScheduleDraft();
+    if (refresh) await load();
+    return true;
+  }
+
+  async function saveScheduleForEditingPackage() {
+    if (!editId) return;
+    setScheduleBusy(true);
+    setFormError(null);
+    try {
+      await createScheduleForPackage(editId);
+    } finally {
+      setScheduleBusy(false);
+    }
+  }
+
+  async function deleteSchedule(id: string) {
+    setScheduleBusy(true);
+    try {
+      const r = await apiFetch(`/api/dynamic-speed/schedules/${id}`, { method: "DELETE" });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setFormError(formatStaffApiError(r.status, raw, t));
+        return;
+      }
+      await load();
+    } finally {
+      setScheduleBusy(false);
+    }
+  }
+
+  async function applyDynamicSpeedsNow() {
+    setScheduleBusy(true);
+    try {
+      const r = await apiFetch("/api/dynamic-speed/apply-now", { method: "POST", body: JSON.stringify({}) });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        const message = formatStaffApiError(r.status, raw, t);
+        if (modal) setFormError(message);
+        else setLoadError(message);
+      }
+    } finally {
+      setScheduleBusy(false);
+    }
   }
 
   return (
@@ -289,6 +415,20 @@ export function PackagesPage() {
                 <dd className="text-end font-medium">{String(p.mikrotik_rate_limit ?? "—")}</dd>
               </div>
               <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="opacity-60">{t("packages.downloadSpeed")}</dt>
+                <dd className="text-end font-medium">{formatMbpsFromBits(p.downrate)} Mbps</dd>
+              </div>
+              <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="opacity-60">{t("packages.uploadSpeed")}</dt>
+                <dd className="text-end font-medium">{formatMbpsFromBits(p.uprate)} Mbps</dd>
+              </div>
+              <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
+                <dt className="opacity-60">{t("packages.dynamicSpeed.title")}</dt>
+                <dd className="text-end font-medium">
+                  {schedules.filter((s) => String(s.package_id) === String(p.id)).length}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
                 <dt className="opacity-60">{t("packages.quotaGb")}</dt>
                 <dd className="text-end font-mono">
                   {String(p.quota_total_bytes ?? "0") === "0"
@@ -333,7 +473,12 @@ export function PackagesPage() {
             </div>
           ) : null}
           <TextField label={t("packages.name")} value={name} onChange={(e) => setName(e.target.value)} required />
-          <TextField label={t("packages.rateLimit")} value={rate} onChange={(e) => setRate(e.target.value)} />
+          <TextField
+            label={t("packages.rateLimit")}
+            value={rate}
+            onChange={(e) => setRate(e.target.value)}
+            placeholder={t("packages.rateExamplePlaceholder")}
+          />
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField
               label={t("packages.quotaGb")}
@@ -401,10 +546,10 @@ export function PackagesPage() {
                   <input
                     type="checkbox"
                     checked={
-                      managerOptions.length > 0 && allowedManagerNames.length === managerOptions.length
+                      managerOptions.length > 0 && allowedStaffNames.length === managerOptions.length
                     }
                     onChange={(e) =>
-                      setAllowedManagerNames(
+                      setAllowedStaffNames(
                         e.target.checked ? managerOptions.map((m) => m.id) : []
                       )
                     }
@@ -419,7 +564,7 @@ export function PackagesPage() {
                       <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{m.name}</span>
                       <input
                         type="checkbox"
-                        checked={allowedManagerNames.includes(m.id)}
+                        checked={allowedStaffNames.includes(m.id)}
                         onChange={() => toggleManager(m.id)}
                       />
                     </label>
@@ -428,6 +573,112 @@ export function PackagesPage() {
               </div>
             </div>
           </div>
+          {canManage ? (
+            <div className="space-y-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-semibold">
+                  <CalendarClock className="h-4 w-4 text-[hsl(var(--primary))]" />
+                  {t("packages.dynamicSpeed.title")}
+                </h3>
+                <Button type="button" variant="outline" onClick={() => void applyDynamicSpeedsNow()} disabled={scheduleBusy}>
+                  <Zap className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+                  {t("packages.dynamicSpeed.applyNow")}
+                </Button>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-5">
+                <TextField
+                  label={t("packages.dynamicSpeed.name")}
+                  value={scheduleName}
+                  onChange={(e) => setScheduleName(e.target.value)}
+                />
+                <TextField
+                  label={t("packages.rateLimit")}
+                  value={scheduleRate}
+                  onChange={(e) => setScheduleRate(e.target.value)}
+                />
+                <TextField
+                  label={t("packages.dynamicSpeed.start")}
+                  type="time"
+                  value={scheduleStart}
+                  onChange={(e) => setScheduleStart(e.target.value)}
+                />
+                <TextField
+                  label={t("packages.dynamicSpeed.end")}
+                  type="time"
+                  value={scheduleEnd}
+                  onChange={(e) => setScheduleEnd(e.target.value)}
+                />
+                {modal === "edit" ? (
+                  <div className="flex items-end">
+                    <Button
+                      type="button"
+                      onClick={() => void saveScheduleForEditingPackage()}
+                      disabled={scheduleBusy || scheduleDays.length === 0 || !scheduleRate.trim()}
+                    >
+                      {t("common.save")}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {weekDays.map((day) => (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => toggleScheduleDay(day)}
+                    className={cn(
+                      "rounded-md border px-3 py-1 text-xs",
+                      scheduleDays.includes(day)
+                        ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]"
+                        : "border-[hsl(var(--border))] opacity-70"
+                    )}
+                  >
+                    {t(`weekday.${day}`)}
+                  </button>
+                ))}
+              </div>
+              {modal === "edit" && editId ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="border-b border-[hsl(var(--border))] text-xs opacity-70">
+                      <tr>
+                        <th className="px-2 py-2 text-start">{t("packages.dynamicSpeed.name")}</th>
+                        <th className="px-2 py-2 text-start">{t("packages.rateLimit")}</th>
+                        <th className="px-2 py-2 text-start">{t("packages.dynamicSpeed.window")}</th>
+                        <th className="px-2 py-2 text-start">{t("packages.dynamicSpeed.days")}</th>
+                        <th className="px-2 py-2 text-end">{t("common.delete")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {schedules
+                        .filter((s) => String(s.package_id) === editId)
+                        .map((s) => (
+                          <tr key={s.id} className="border-b border-[hsl(var(--border))]/60">
+                            <td className="px-2 py-2">{s.name}</td>
+                            <td className="px-2 py-2 font-mono">{s.rate_limit}</td>
+                            <td className="px-2 py-2 font-mono">
+                              {String(s.start_time).slice(0, 5)} - {String(s.end_time).slice(0, 5)}
+                            </td>
+                            <td className="px-2 py-2">{s.days_of_week.map((d) => t(`weekday.${d}`)).join(", ")}</td>
+                            <td className="px-2 py-2 text-end">
+                              <button
+                                type="button"
+                                className="rounded-lg p-2 text-red-600 hover:bg-red-500/10"
+                                onClick={() => void deleteSchedule(s.id)}
+                                disabled={scheduleBusy}
+                                aria-label={t("common.delete")}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => setModal(null)}>
               {t("common.cancel")}

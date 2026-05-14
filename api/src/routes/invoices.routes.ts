@@ -1,8 +1,7 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
 import { RadiusService } from "../services/radius.service.js";
@@ -27,7 +26,7 @@ const currencySchema = z.enum(["USD", "SYP", "TRY"]);
 router.use(requireAuth);
 
 router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
-  const query = z.object({ subscriber_id: z.string().uuid().optional() }).safeParse(req.query);
+  const query = z.object({ subscriber_id: z.string().min(1).max(128).optional() }).safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: "invalid_query" });
     return;
@@ -45,17 +44,13 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
 });
 
 const invBody = z.object({
-  subscriber_id: z.string().uuid(),
+  subscriber_id: z.string().min(1).max(128),
   period: z.enum(["monthly", "yearly", "one_time"]).optional(),
   amount: z.number(),
   currency: currencySchema.optional(),
 });
 
 router.post("/generate-monthly", requireRole("admin", "manager", "accountant"), async (req, res) => {
-  if (config.dmaMode) {
-    res.status(410).json({ error: "gone", reason: "dma_mode" });
-    return;
-  }
   if (req.auth!.role === "manager" && !requestHasManagerPermission(req, "manage_invoices")) {
     res.status(403).json({ error: "forbidden", detail: "missing_manager_permission" });
     return;
@@ -69,6 +64,7 @@ router.post("/generate-monthly", requireRole("admin", "manager", "accountant"), 
   const id = randomUUID();
   const invNo = `INV-${Date.now()}`;
   const today = new Date().toISOString().slice(0, 10);
+  let packageRows: RowDataPacket[];
   const [p] = await pool.query<RowDataPacket[]>(
     `SELECT billing_period_days, p.currency
      FROM subscribers s
@@ -76,8 +72,13 @@ router.post("/generate-monthly", requireRole("admin", "manager", "accountant"), 
      WHERE s.id = ? AND s.tenant_id = ?`,
     [parsed.data.subscriber_id, t]
   );
-  const days = (p[0]?.billing_period_days as number) ?? 30;
-  const currency = parsed.data.currency ?? String(p[0]?.currency ?? "USD");
+  packageRows = p;
+  if (!packageRows[0]) {
+    res.status(404).json({ error: "subscriber_not_found" });
+    return;
+  }
+  const days = (packageRows[0]?.billing_period_days as number) ?? 30;
+  const currency = parsed.data.currency ?? String(packageRows[0]?.currency ?? "USD");
   await pool.execute(
     `INSERT INTO invoices (id, tenant_id, subscriber_id, period, invoice_no, issue_date, due_date,
       amount, currency, status, meta)
@@ -103,10 +104,6 @@ const markPaidBody = z.object({
 });
 
 router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), async (req, res) => {
-  if (config.dmaMode) {
-    res.status(410).json({ error: "gone", reason: "dma_mode" });
-    return;
-  }
   if (req.auth!.role === "manager" && !requestHasManagerPermission(req, "manage_invoices")) {
     res.status(403).json({ error: "forbidden", detail: "missing_manager_permission" });
     return;
@@ -146,10 +143,11 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       const paidAt = new Date();
       await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [req.params.id, t]);
       const payId = randomUUID();
+      const invCurrency = String(inv.currency ?? "USD").slice(0, 8);
       await conn.execute(
-        `INSERT INTO payments (id, tenant_id, invoice_id, amount, method, paid_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [payId, t, req.params.id, amount, parsed.data.payment_method ?? "manual", paidAt]
+        `INSERT INTO payments (id, tenant_id, invoice_id, subscriber_id, amount, currency, method, status, paid_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'posted', ?)`,
+        [payId, t, req.params.id, subscriberId, amount, invCurrency, parsed.data.payment_method ?? "manual", paidAt]
       );
 
       let metaDays = 30;
@@ -160,13 +158,15 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         metaDays = 30;
       }
       const extendDays = parsed.data.extend_days ?? metaDays;
+      let subRows: RowDataPacket[];
       const [sub] = await conn.query<RowDataPacket[]>(
         `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
         [subscriberId, t]
       );
+      subRows = sub;
       let nextExpiration: Date | null = null;
-      if (sub[0]) {
-        const current = new Date(sub[0].expiration_date as string);
+      if (subRows[0] && sub[0]) {
+        const current = new Date(subRows[0].expiration_date as string);
         nextExpiration = extendSubscriptionByDaysNoon(current, extendDays);
         await conn.execute(
           `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
@@ -202,11 +202,12 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         radiusSync = "failed";
         radiusReason = pr.reason;
       } else {
+        let username: string | null = null;
         const [subRows] = await pool.query<RowDataPacket[]>(
           `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
           [tx.subscriberId, t]
         );
-        const username = subRows[0]?.username != null ? String(subRows[0].username) : null;
+        username = subRows[0]?.username != null ? String(subRows[0].username) : null;
         if (username) {
           let shouldDisconnect = true;
           try {

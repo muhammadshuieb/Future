@@ -4,11 +4,12 @@ set -euo pipefail
 export MYSQL_HOST="${MYSQL_HOST:-mysql}"
 export MYSQL_USER="${MYSQL_USER:-radius}"
 export MYSQL_PASSWORD="${MYSQL_PASSWORD:-radius123}"
+export MYSQL_DATABASE="${MYSQL_DATABASE:-future_radius}"
 
 TEMPLATE="/etc/freeradius/3.0/mods-available/sql.template"
 OUT="/etc/freeradius/3.0/mods-available/sql"
 
-envsubst '$MYSQL_HOST $MYSQL_USER $MYSQL_PASSWORD' < "$TEMPLATE" > "$OUT"
+envsubst '$MYSQL_HOST $MYSQL_USER $MYSQL_PASSWORD $MYSQL_DATABASE' < "$TEMPLATE" > "$OUT"
 
 # After a large SQL restore, MySQL can accept TCP while still busy with recovery; starting
 # FreeRADIUS too early causes SQL pool failures and a tight Docker restart loop (high CPU,
@@ -41,7 +42,7 @@ if ! freeradius -C; then
   sed -n '1,140p' "$OUT" >&2 || true
   echo "[freeradius] Running freeradius -XC for detailed parser/runtime error:" >&2
   freeradius -XC >&2 || true
-  echo "[freeradius] Typical causes: wrong MYSQL_PASSWORD vs MySQL user '${MYSQL_USER}'; or SQL errors loading NAS clients (Radius Manager nas has no server column — see sql.template client_query)." >&2
+  echo "[freeradius] Typical causes: wrong MYSQL_PASSWORD vs MySQL user '${MYSQL_USER}'; or SQL errors loading NAS clients (see sql.template client_query)." >&2
   exit 1
 fi
 

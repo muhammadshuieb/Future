@@ -25,7 +25,6 @@ import inventoryRoutes from "./routes/inventory.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import adminBackupRoutes from "./routes/admin-backup.routes.js";
 import staffRoutes from "./routes/staff.routes.js";
-import maintenanceRestoreSqlRoutes from "./routes/maintenance-restore-sql.routes.js";
 import maintenanceGoogleCallbackRoutes from "./routes/maintenance-google-callback.routes.js";
 import maintenanceRoutes from "./routes/maintenance.routes.js";
 import maintenanceUpdatesRoutes, { startAutoUpdateLoop } from "./routes/maintenance-updates.routes.js";
@@ -37,24 +36,36 @@ import serverLogsRoutes from "./routes/server-logs.routes.js";
 import systemSettingsRoutes from "./routes/system-settings.routes.js";
 import wireguardRoutes from "./routes/wireguard.routes.js";
 import regionsRoutes from "./routes/regions.routes.js";
-import rmCardsRoutes from "./routes/rm-cards.routes.js";
 import billingStatsRoutes from "./routes/billing-stats.routes.js";
+import metricsRoutes from "./routes/metrics.routes.js";
+import internalAlertsRoutes from "./routes/internal-alerts.routes.js";
+import dynamicSpeedRoutes from "./routes/dynamic-speed.routes.js";
+import speedProfilesRoutes from "./routes/speed-profiles.routes.js";
+import encodingHealthRoutes from "./routes/encoding-health.routes.js";
+import portalEnterpriseRoutes from "./routes/portal.routes.js";
+import qoeRoutes from "./routes/qoe.routes.js";
+import resellersRoutes from "./routes/resellers.routes.js";
+import resellerPortalRoutes from "./routes/reseller-portal.routes.js";
+import radiusMonitorRoutes from "./routes/radius-monitor.routes.js";
+import { metricsMiddleware } from "./middleware/metrics.middleware.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import {
   ensurePortalTenantAndStaffTables,
-  logRadiusManagerUserCount,
 } from "./services/portal-schema-bootstrap.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
-import { ensureBillingTables } from "./services/billing-schema-bootstrap.service.js";
+import { buildCharsetVerificationReport } from "./services/encoding-verification.service.js";
+import {
+  ensureBillingTables,
+  ensureSubscriberWhatsAppOptOutColumn,
+} from "./services/billing-schema-bootstrap.service.js";
 import { ensureRadiusDbUser } from "./services/radius-db-user.service.js";
 import { normalizeWhatsAppSettingsFromEnv } from "./services/whatsapp.service.js";
 import { syncWireGuardRuntime } from "./services/wireguard-runtime.service.js";
-import { logDmaSchemaSnapshot } from "./services/dma-schema-snapshot.service.js";
-import { DmaForbiddenHybridSqlError } from "./dma/dma-sql-guard.js";
 import { createRedisClient } from "./lib/redis-connection.js";
+import { ensureDynamicSpeedTables } from "./services/dynamic-speed.service.js";
 
 const app = express();
-// nginx (web / api-proxy) sets X-Forwarded-*; required or express-rate-limit throws on /login.
+// nginx (`web` frontend) sets X-Forwarded-*; required or express-rate-limit throws on /login.
 app.set("trust proxy", process.env.TRUST_PROXY === "0" ? false : 1);
 app.use(helmet());
 
@@ -168,6 +179,15 @@ app.use(
   })
 );
 app.use(express.json({ limit: "4mb" }));
+app.use((_req, res, next) => {
+  const origJson = res.json.bind(res);
+  res.json = (body?: unknown) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return origJson(body);
+  };
+  next();
+});
+app.use(metricsMiddleware);
 
 app.get("/", (_req, res) => {
   res.json({
@@ -210,7 +230,6 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/admin", adminBackupRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/maintenance", maintenanceGoogleCallbackRoutes);
-app.use("/api/maintenance", maintenanceRestoreSqlRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
 app.use("/api/maintenance", maintenanceUpdatesRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
@@ -221,26 +240,22 @@ app.use("/api/server-logs", serverLogsRoutes);
 app.use("/api/system-settings", systemSettingsRoutes);
 app.use("/api/wireguard", wireguardRoutes);
 app.use("/api/regions", regionsRoutes);
-app.use("/api/rm-cards", rmCardsRoutes);
 app.use("/api/billing", billingStatsRoutes);
+app.use("/metrics", metricsRoutes);
+app.use("/api/internal/alerts", internalAlertsRoutes);
+app.use("/api/dynamic-speed", dynamicSpeedRoutes);
+app.use("/api/speed-profiles", speedProfilesRoutes);
+app.use("/api/encoding-health", encodingHealthRoutes);
+app.use("/api/portal", portalEnterpriseRoutes);
+app.use("/api/qoe", qoeRoutes);
+app.use("/api/resellers", resellersRoutes);
+app.use("/api/reseller-portal", resellerPortalRoutes);
+app.use("/api/radius-monitor", radiusMonitorRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
 // Must be declared AFTER all routes.
 app.use(
   (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    if (err instanceof DmaForbiddenHybridSqlError) {
-      console.error(`[http_error] ${req.method} ${req.originalUrl} dma_sql_guard: ${err.message}`);
-      log.error(`dma_sql_guard ${req.method} ${req.originalUrl}: ${err.message}`, {
-        method: req.method,
-        url: req.originalUrl,
-        table: err.table,
-        status: 409,
-      }, "http");
-      if (!res.headersSent) {
-        res.status(409).json({ error: "dma_hybrid_sql_forbidden", table: err.table });
-      }
-      return;
-    }
     const e = err instanceof Error ? err : new Error(String(err));
     // log.error only persists to server_logs — mirror to stderr so `docker compose logs api` shows failures.
     console.error(`[http_error] ${req.method} ${req.originalUrl}: ${e.message}`);
@@ -341,32 +356,40 @@ async function start() {
   await waitForDbReady();
   await startRedisWebSocketBridge();
   try {
-    await ensurePortalTenantAndStaffTables();
-  } catch (error) {
-    console.error("[bootstrap] portal schema (tenants/staff) failed", error);
-  }
-  try {
     const report = await applyAllMigrations();
     console.log(
-      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped} benign=${report.benign}${config.dmaMode ? " (DMA_MODE)" : ""}`
+      `[bootstrap] migrations ran=${report.ran} failed=${report.failed} skipped=${report.skipped} benign=${report.benign}`
     );
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);
   }
   try {
+    const charsetReport = await buildCharsetVerificationReport(pool);
+    if (charsetReport.warnings.length > 0) {
+      const slice = charsetReport.warnings.slice(0, 30);
+      for (const w of slice) console.warn(`[charset] ${w}`);
+      if (charsetReport.warnings.length > slice.length) {
+        console.warn(`[charset] ...and ${charsetReport.warnings.length - slice.length} more`);
+      }
+    }
+  } catch (e) {
+    console.warn("[charset] schema verification skipped", e instanceof Error ? e.message : e);
+  }
+  try {
+    await ensurePortalTenantAndStaffTables();
+  } catch (error) {
+    console.error("[bootstrap] portal tenant seed failed", error);
+  }
+  try {
     await ensureBillingTables();
+    await ensureSubscriberWhatsAppOptOutColumn();
   } catch (error) {
     console.error("[bootstrap] billing schema ensure failed", error);
   }
   try {
-    await logRadiusManagerUserCount();
+    await ensureDynamicSpeedTables(pool);
   } catch (error) {
-    console.error("[bootstrap] rm_users count log failed", error);
-  }
-  try {
-    await logDmaSchemaSnapshot(pool);
-  } catch (error) {
-    console.error("[bootstrap] dma schema snapshot failed", error);
+    console.error("[bootstrap] dynamic speed schema ensure failed", error);
   }
   // From this point `server_logs` should exist — flush anything buffered.
   markDbReady();
@@ -397,6 +420,12 @@ async function start() {
     startAutoUpdateLoop();
   } catch (error) {
     console.error("[bootstrap] auto update loop failed", error);
+  }
+  try {
+    const { startDiskMonitor } = await import("./services/disk-monitor.service.js");
+    startDiskMonitor();
+  } catch (error) {
+    console.error("[bootstrap] disk monitor failed", error);
   }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {
