@@ -25,6 +25,17 @@ const nasBody = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 });
 
+router.post(
+  "/sync-radius",
+  requireRole("admin", "manager"),
+  denyViewerWrites,
+  denyAccountant,
+  async (req, res) => {
+    await radiusSync.syncAllNasDevices(req.auth!.tenantId);
+    res.json({ ok: true });
+  }
+);
+
 router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT id, name, ip, type, status, coa_port, mikrotik_api_enabled, mikrotik_api_user,
@@ -123,7 +134,10 @@ router.delete("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcc
     return;
   }
   await pool.execute(`DELETE FROM nas_devices WHERE id = ? AND tenant_id = ?`, [req.params.id, req.auth!.tenantId]);
-  await pool.execute(`DELETE FROM nas WHERE nasname = ?`, [String(rows[0].ip)]);
+  await pool.execute(`DELETE FROM nas WHERE description = ? OR nasname = ?`, [
+    req.params.id,
+    String(rows[0].ip),
+  ]);
   res.json({ ok: true });
 });
 

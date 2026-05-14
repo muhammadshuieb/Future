@@ -65,6 +65,12 @@ NAS IP (WireGuard / "unknown client")
   If radius.log shows: Ignoring request ... unknown client <ip>, add that IP to `nas`, then:
   docker compose restart freeradius
 
+  Panel → NAS devices drive table `nas` via the API (`radius-sync`). After adding/editing a NAS, the row is tagged in
+  `nas.description` with the device UUID. If `nas` drifted (imports, old data), call:
+    POST /api/nas/sync-radius   (admin/manager, authenticated)
+  then `docker compose restart freeradius`. Optional second `nas` row: set `wireguard_tunnel_ip` on the device when RADIUS
+  packets arrive from the tunnel IP instead of `ip`.
+
 Notes
 -----
 - User auth from radcheck / radreply; NAS rows from `nas` (read_clients = yes).

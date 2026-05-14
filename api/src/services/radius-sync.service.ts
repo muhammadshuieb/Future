@@ -16,6 +16,11 @@ export class RadiusSyncService {
     await this.syncSubscribers(tenantId);
   }
 
+  /** Rebuild `nas` from all `nas_devices` for this tenant (idempotent; fixes missing/stale RADIUS clients). */
+  async syncAllNasDevices(tenantId: string): Promise<void> {
+    await this.syncNasDevices(tenantId);
+  }
+
   async syncPackage(packageId: string, tenantId: string): Promise<void> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT id, name, mikrotik_rate_limit, default_framed_pool, simultaneous_use
@@ -107,17 +112,51 @@ export class RadiusSyncService {
 
   async syncNasDevice(nasDeviceId: string, tenantId: string): Promise<void> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
-      `SELECT id, name, ip, type, secret FROM nas_devices WHERE id = ? AND tenant_id = ? AND status = 'active' LIMIT 1`,
+      `SELECT id, name, ip, type, secret, status, wireguard_tunnel_ip
+       FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
       [nasDeviceId, tenantId]
     );
     const row = rows[0];
-    if (!row) return;
-    await this.pool.execute(`DELETE FROM nas WHERE nasname = ?`, [String(row.ip)]);
-    await this.pool.execute(
-      `INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description)
-       VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)`,
-      [String(row.ip), String(row.name), String(row.type ?? "other"), String(row.secret), String(row.id)]
-    );
+    if (!row) {
+      await this.pool.execute(`DELETE FROM nas WHERE description = ?`, [nasDeviceId]);
+      return;
+    }
+
+    const deviceId = String(row.id);
+    await this.pool.execute(`DELETE FROM nas WHERE description = ?`, [deviceId]);
+
+    const statusNorm = String(row.status ?? "")
+      .trim()
+      .toLowerCase();
+    if (statusNorm !== "active") {
+      await this.log(tenantId, "nas", nasDeviceId, "success");
+      return;
+    }
+
+    const secret = String(row.secret ?? "");
+    const type = String(row.type ?? "other");
+    const nameRaw = String(row.name ?? "nas").trim() || "nas";
+    const shortBase = nameRaw.length > 32 ? nameRaw.slice(0, 32) : nameRaw;
+
+    const primaryIp = String(row.ip ?? "").trim();
+    const wgRaw =
+      row.wireguard_tunnel_ip != null && String(row.wireguard_tunnel_ip).trim() !== ""
+        ? String(row.wireguard_tunnel_ip).trim()
+        : "";
+    const nasNames = new Set<string>();
+    if (primaryIp) nasNames.add(primaryIp);
+    if (wgRaw && wgRaw !== primaryIp) nasNames.add(wgRaw);
+
+    for (const nasname of nasNames) {
+      const isWgOnly = nasname === wgRaw && primaryIp && wgRaw !== primaryIp;
+      const shortname = (isWgOnly ? `${shortBase.slice(0, 28)}-wg` : shortBase).slice(0, 32);
+      await this.pool.execute(
+        `INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description)
+         VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)`,
+        [nasname, shortname, type, secret, deviceId]
+      );
+    }
+
     await this.log(tenantId, "nas", nasDeviceId, "success");
   }
 
