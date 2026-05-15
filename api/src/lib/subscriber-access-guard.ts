@@ -5,7 +5,7 @@
 
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { hasTable } from "../db/schemaGuards.js";
+import { hasTable, hasColumn } from "../db/schemaGuards.js";
 
 export type SubscriberAccessRow = {
   tenant_status: string | null;
@@ -94,6 +94,9 @@ export type LoadedSubscriberAccess = SubscriberAccessRow & {
   framed_ip_address: string | null;
   mikrotik_address_list: string | null;
   default_framed_pool: string | null;
+  nas_server_id: string | null;
+  /** Package JSON whitelist; null when column absent or unrestricted. */
+  package_allowed_nas_ids: unknown;
 };
 
 export async function loadSubscriberAccessRow(
@@ -108,9 +111,15 @@ export async function loadSubscriberAccessRow(
         WHERE i.tenant_id = s.tenant_id AND i.subscriber_id = s.id
           AND i.status = 'sent' AND i.due_date < CURDATE())`
     : `0`;
+  const pkgNasSelect = (await hasColumn(pool, "packages", "allowed_nas_ids"))
+    ? "p.allowed_nas_ids AS package_allowed_nas_ids"
+    : "CAST(NULL AS JSON) AS package_allowed_nas_ids";
+  const nasColSelect = (await hasColumn(pool, "subscribers", "nas_server_id"))
+    ? "s.nas_server_id"
+    : "CAST(NULL AS CHAR(36)) AS nas_server_id";
 
   let sql = `SELECT s.id, s.tenant_id, s.username, s.status AS subscriber_status, s.expiration_date,
-       s.package_id, s.used_bytes, s.pool,
+       s.package_id, s.used_bytes, s.pool, ${nasColSelect},
        sc.password AS credential_password,
        (SELECT ip_address FROM subscriber_static_ips WHERE subscriber_id = s.id LIMIT 1) AS ip_address,
        t.status AS tenant_status,
@@ -118,6 +127,7 @@ export async function loadSubscriberAccessRow(
        p.active AS package_active, p.quota_total_bytes,
        p.simultaneous_use AS package_simultaneous_use,
        p.mikrotik_rate_limit, p.framed_ip_address, p.mikrotik_address_list, p.default_framed_pool,
+       ${pkgNasSelect},
        ${overdueSql} AS overdue_invoices
      FROM subscribers s
      INNER JOIN tenants t ON t.id = s.tenant_id
@@ -169,5 +179,7 @@ export async function loadSubscriberAccessRow(
     framed_ip_address: row.framed_ip_address != null ? String(row.framed_ip_address) : null,
     mikrotik_address_list: row.mikrotik_address_list != null ? String(row.mikrotik_address_list) : null,
     default_framed_pool: row.default_framed_pool != null ? String(row.default_framed_pool) : null,
+    nas_server_id: row.nas_server_id != null ? String(row.nas_server_id) : null,
+    package_allowed_nas_ids: row.package_allowed_nas_ids ?? null,
   };
 }

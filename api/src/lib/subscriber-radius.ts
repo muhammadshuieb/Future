@@ -6,6 +6,7 @@ import {
   evaluateSubscriberAccessFromRow,
   loadSubscriberAccessRow,
 } from "./subscriber-access-guard.js";
+import { subscriberNasAllowedForPackage } from "./package-access-scope.js";
 
 export class RadiusPushError extends Error {
   constructor(public readonly reason: string) {
@@ -53,6 +54,11 @@ export async function pushRadiusForSubscriber(
   const gate = evaluateSubscriberAccessFromRow(access);
   if (!gate.ok) return gate;
   if (!access.package_id) return { ok: false, reason: "no_package" };
+  if (
+    !subscriberNasAllowedForPackage(access.nas_server_id, access.package_allowed_nas_ids)
+  ) {
+    return { ok: false, reason: "nas_not_allowed_for_package" };
+  }
 
   const pkg = await radius.getPackage(tenantId, access.package_id);
   if (!pkg) return { ok: false, reason: "invalid_package" };

@@ -213,6 +213,15 @@ export function formatStaffApiError(status: number, raw: string, t: (key: string
   if (low.includes("allocation_exceeds_balance")) return t("api.error_allocation_exceeds");
   if (low.includes("allocation_currency_mismatch")) return t("api.error_allocation_currency");
   if (low.includes("invalid_allocations_defer")) return t("api.error_allocation_defer");
+  if (low.includes("subscriber_nas_not_in_package_allowed_list")) {
+    return t("api.error_subscriber_nas_not_in_package");
+  }
+  if (low.includes("manager_not_allowed_for_package")) {
+    return t("api.error_manager_not_allowed_for_package");
+  }
+  if (low.includes("package_not_assigned_to_manager")) {
+    return t("api.error_package_not_assigned_to_manager");
+  }
   return raw || t("api.error_generic");
 }
 

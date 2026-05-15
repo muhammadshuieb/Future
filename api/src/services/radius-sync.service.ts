@@ -4,6 +4,7 @@ import {
   evaluateSubscriberAccessFromRow,
   loadSubscriberAccessRow,
 } from "../lib/subscriber-access-guard.js";
+import { subscriberNasAllowedForPackage } from "../lib/package-access-scope.js";
 
 type SyncLogStatus = "success" | "failed";
 
@@ -57,7 +58,10 @@ export class RadiusSyncService {
       await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
       await conn.execute(`DELETE FROM radusergroup WHERE username = ?`, [username]);
       const password = String(access.credential_password ?? "").trim();
-      if (!gate.ok || !password) {
+      const nasOk =
+        !access.package_id ||
+        subscriberNasAllowedForPackage(access.nas_server_id, access.package_allowed_nas_ids);
+      if (!gate.ok || !password || !nasOk) {
         await conn.execute(
           `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
           [username]
@@ -173,6 +177,15 @@ export class RadiusSyncService {
   private async syncNasDevices(tenantId: string): Promise<void> {
     const [rows] = await this.pool.query<RowDataPacket[]>(`SELECT id FROM nas_devices WHERE tenant_id = ?`, [tenantId]);
     for (const row of rows) await this.syncNasDevice(String(row.id), tenantId);
+  }
+
+  /** Re-sync RADIUS rows for every subscriber on this package (e.g. NAS allow-list changed). */
+  async syncSubscribersUsingPackage(packageId: string, tenantId: string): Promise<void> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT id FROM subscribers WHERE tenant_id = ? AND package_id = ?`,
+      [tenantId, packageId]
+    );
+    for (const row of rows) await this.syncSubscriber(String(row.id), tenantId);
   }
 
   private async log(

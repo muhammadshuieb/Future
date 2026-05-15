@@ -1205,6 +1205,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     "api.error_billing_tables": "جداول الفوترة (invoices / payments) غير جاهزة. أعد تشغيل خدمة الـ API (Docker: docker compose restart api) ليُنشئ الجداول الناقصة تلقائياً عند التشغيل.",
     "api.error_invalid_body": "بيانات النموذج غير صالحة.",
     "api.error_quota": "قيمة الحصة يجب أن تكون رقماً صحيحاً.",
+    "api.error_subscriber_nas_not_in_package":
+      "خادم NAS المختار للمشترك غير ضمن الشبكات المسموحة لهذه الباقة. اختر NAS مسموحاً أو عدّل الباقة.",
+    "api.error_manager_not_allowed_for_package": "لا يمكنك تعيين هذه الباقة — غير مدرجة ضمن «متاحة للمدراء» لهذا الحساب.",
+    "api.error_package_not_assigned_to_manager": "لا يمكن تعديل هذه الباقة — غير متاحة لحسابك.",
     "api.error_api_outdated":
       "خادم الـ API لا يوفّر هذا المسار (غالباً نسخة قديمة). أعد بناء وتشغيل الـ API من المشروع الحالي (مثلاً: مجلد api ثم npm run build ثم إعادة تشغيل الخدمة أو docker compose build api && docker compose up -d api).",
     "api.secret_required": "سر NAS مطلوب عند إنشاء خادم جديد.",
@@ -2413,6 +2417,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     "api.error_billing_tables": "Billing tables (invoices / payments) are not ready. Restart the API (Docker: docker compose restart api) so startup can create missing tables.",
     "api.error_invalid_body": "Invalid form data.",
     "api.error_quota": "Quota must be a whole number.",
+    "api.error_subscriber_nas_not_in_package":
+      "The subscriber NAS is not in this package's allowed NAS list. Pick an allowed NAS or edit the package.",
+    "api.error_manager_not_allowed_for_package":
+      "You cannot assign this package — it is not available for your manager account.",
+    "api.error_package_not_assigned_to_manager": "You cannot edit this package — it is not available for your account.",
     "api.error_api_outdated":
       "The API server does not expose this route (often an outdated build). Rebuild and restart the API from the current project (e.g. cd api, npm run build, then restart the service, or docker compose build api && docker compose up -d api).",
     "api.secret_required": "NAS shared secret is required when creating a new server.",

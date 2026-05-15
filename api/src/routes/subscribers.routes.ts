@@ -19,6 +19,8 @@ import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
+import { assertStaffCanAssignPackage, assertSubscriberFitsPackageNas } from "../lib/package-subscriber-validation.js";
+import { hasColumn } from "../db/schemaGuards.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
@@ -30,6 +32,7 @@ router.use(requireAuth);
 const subscriberBody = z.object({
   customer_id: z.string().nullable().optional(),
   package_id: z.string().nullable().optional(),
+  nas_server_id: z.string().nullable().optional(),
   username: z.string().min(1),
   password: z.string().min(1).optional(),
   status: z.enum(["active", "disabled", "expired", "suspended"]).optional(),
@@ -146,6 +149,28 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
     res.status(400).json({ error: "invalid_body" });
     return;
   }
+  const tenantId = req.auth!.tenantId;
+  const assignCheck = await assertStaffCanAssignPackage(
+    pool,
+    tenantId,
+    req.auth!.role,
+    req.auth!.sub,
+    parsed.data.package_id ?? null
+  );
+  if (!assignCheck.ok) {
+    res.status(403).json({ error: assignCheck.error });
+    return;
+  }
+  const nasCheck = await assertSubscriberFitsPackageNas(
+    pool,
+    tenantId,
+    parsed.data.package_id ?? null,
+    parsed.data.nas_server_id ?? null
+  );
+  if (!nasCheck.ok) {
+    res.status(400).json({ error: nasCheck.error });
+    return;
+  }
   const id = randomUUID();
   const body = parsed.data;
   const exp = body.expiration_date;
@@ -153,7 +178,7 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
     exp === null ? "NULL" : exp === undefined ? "CURDATE()" : "?";
   const insertArgs: (string | null)[] = [
     id,
-    req.auth!.tenantId,
+    tenantId,
     body.customer_id ?? null,
     body.package_id ?? null,
     body.username,
@@ -162,16 +187,26 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   if (exp !== null && exp !== undefined) {
     insertArgs.push(exp);
   }
-  await pool.execute(
-    `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, username, status, expiration_date)
+  const withNas = await hasColumn(pool, "subscribers", "nas_server_id");
+  if (withNas) {
+    insertArgs.splice(4, 0, body.nas_server_id ?? null);
+    await pool.execute(
+      `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, nas_server_id, username, status, expiration_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ${expFragment})`,
+      insertArgs
+    );
+  } else {
+    await pool.execute(
+      `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, username, status, expiration_date)
      VALUES (?, ?, ?, ?, ?, ?, ${expFragment})`,
-    insertArgs
-  );
+      insertArgs
+    );
+  }
   await pool.execute(
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,
-    [id, req.auth!.tenantId, body.password as string]
+    [id, tenantId, body.password as string]
   );
-  await radiusSync.syncSubscriber(id, req.auth!.tenantId);
+  await radiusSync.syncSubscriber(id, tenantId);
   res.status(201).json({ id });
 });
 
@@ -472,6 +507,43 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
     return;
   }
   const body = parsed.data;
+  const tenantId = req.auth!.tenantId;
+
+  if (body.package_id !== undefined || body.nas_server_id !== undefined) {
+    const [curRows] = await pool.query<RowDataPacket[]>(
+      `SELECT package_id, nas_server_id FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, tenantId]
+    );
+    const cur = curRows[0];
+    if (!cur) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const nextPkg = body.package_id !== undefined ? body.package_id : cur.package_id != null ? String(cur.package_id) : null;
+    const nextNas =
+      body.nas_server_id !== undefined
+        ? body.nas_server_id
+        : cur.nas_server_id != null
+          ? String(cur.nas_server_id)
+          : null;
+    const assignCheck = await assertStaffCanAssignPackage(
+      pool,
+      tenantId,
+      req.auth!.role,
+      req.auth!.sub,
+      nextPkg
+    );
+    if (!assignCheck.ok) {
+      res.status(403).json({ error: assignCheck.error });
+      return;
+    }
+    const nasCheck = await assertSubscriberFitsPackageNas(pool, tenantId, nextPkg, nextNas);
+    if (!nasCheck.ok) {
+      res.status(400).json({ error: nasCheck.error });
+      return;
+    }
+  }
+
   const sets: string[] = [];
   const values: unknown[] = [];
   const set = (column: string, value: unknown) => {
@@ -480,13 +552,16 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
   };
   if (body.customer_id !== undefined) set("customer_id", body.customer_id);
   if (body.package_id !== undefined) set("package_id", body.package_id);
+  if (body.nas_server_id !== undefined && (await hasColumn(pool, "subscribers", "nas_server_id"))) {
+    set("nas_server_id", body.nas_server_id);
+  }
   if (body.username !== undefined) set("username", body.username);
   if (body.status !== undefined) set("status", body.status);
   if (body.expiration_date !== undefined) set("expiration_date", body.expiration_date);
   if (sets.length) {
     await pool.execute(
       `UPDATE subscribers SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?`,
-      [...values, req.params.id, req.auth!.tenantId] as Array<string | number | null>
+      [...values, req.params.id, tenantId] as Array<string | number | null>
     );
   }
   if (body.password !== undefined) {
@@ -494,10 +569,10 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
       `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE password = VALUES(password), updated_at = CURRENT_TIMESTAMP`,
-      [req.params.id, req.auth!.tenantId, body.password]
+      [req.params.id, tenantId, body.password]
     );
   }
-  await radiusSync.syncSubscriber(req.params.id, req.auth!.tenantId);
+  await radiusSync.syncSubscriber(req.params.id, tenantId);
   res.json({ ok: true });
 });
 
