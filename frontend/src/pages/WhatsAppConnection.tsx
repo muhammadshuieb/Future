@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { QrCode, RefreshCw, Save, Wifi } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
-import { whatsAppEmojiPreviewSrc } from "../lib/whatsappEmoji";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { TextField } from "../components/ui/TextField";
@@ -27,9 +26,6 @@ type Settings = {
   auto_send_new: boolean;
   usage_alert_thresholds: number[];
   company_name: string;
-  emoji_image_url: string;
-  emoji_image_preview_url?: string;
-  attach_emoji_image: boolean;
 };
 
 type QrResponse = {
@@ -50,17 +46,13 @@ export function WhatsAppConnectionPage() {
     auto_send_new: true,
     usage_alert_thresholds: [10, 20, 30, 50],
     company_name: "",
-    emoji_image_url: "",
-    attach_emoji_image: false,
   });
   const [qr, setQr] = useState<QrResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [uploadingEmoji, setUploadingEmoji] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testingImage, setTestingImage] = useState(false);
   const [autoConfiguring, setAutoConfiguring] = useState(false);
 
   const requiresAutoConfig = useCallback((cfg: Settings) => !cfg.enabled, []);
@@ -175,25 +167,6 @@ export function WhatsAppConnectionPage() {
     return status.connected ? t("dash.connected") : t("dash.disconnected");
   }, [status, t]);
 
-  async function uploadEmojiImage(file: File) {
-    setUploadingEmoji(true);
-    setError(null);
-    setInfo(null);
-    try {
-      const form = new FormData();
-      form.append("image", file);
-      const r = await apiFetch("/api/whatsapp/emoji-image", { method: "POST", body: form });
-      if (!r.ok) throw new Error(await readApiError(r));
-      const data = (await r.json()) as { settings: Settings };
-      setSettings(data.settings);
-      setInfo(t("whatsapp.emojiUploaded"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUploadingEmoji(false);
-    }
-  }
-
   async function saveSettings() {
     setSaving(true);
     setError(null);
@@ -216,25 +189,6 @@ export function WhatsAppConnectionPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function testImageSend() {
-    setTestingImage(true);
-    setError(null);
-    setInfo(null);
-    try {
-      const r = await apiFetch("/api/whatsapp/test-image", { method: "POST", body: "{}" });
-      const data = (await r.json().catch(() => ({}))) as { sent?: boolean; phone?: string; error?: string };
-      if (!r.ok) {
-        throw new Error(data.error ?? (await readApiError(r)));
-      }
-      setInfo(t("whatsapp.imageTestOk").replace("{phone}", data.phone ?? ""));
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTestingImage(false);
     }
   }
 
@@ -371,46 +325,6 @@ export function WhatsAppConnectionPage() {
             onChange={(e) => setSettings((s) => ({ ...s, company_name: e.target.value }))}
             placeholder={t("whatsapp.companyNamePlaceholder")}
           />
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">{t("whatsapp.emojiImageUpload")}</label>
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              disabled={uploadingEmoji}
-              className="block w-full text-sm file:me-3 file:rounded-lg file:border-0 file:bg-[hsl(var(--primary))] file:px-3 file:py-2 file:text-sm file:font-medium file:text-[hsl(var(--primary-foreground))]"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void uploadEmojiImage(file);
-                e.target.value = "";
-              }}
-            />
-            {uploadingEmoji ? <p className="text-xs opacity-60">{t("common.loading")}</p> : null}
-            {whatsAppEmojiPreviewSrc(settings.emoji_image_preview_url, settings.emoji_image_url) ? (
-              <img
-                key={settings.emoji_image_url}
-                src={whatsAppEmojiPreviewSrc(settings.emoji_image_preview_url, settings.emoji_image_url)}
-                alt=""
-                className="h-20 w-20 rounded-lg border border-[hsl(var(--border))] object-contain bg-white/5 p-1"
-              />
-            ) : null}
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={settings.attach_emoji_image}
-              onChange={(e) => setSettings((s) => ({ ...s, attach_emoji_image: e.target.checked }))}
-            />
-            {t("whatsapp.attachEmojiImage")}
-          </label>
-          <p className="text-xs opacity-60">{t("whatsapp.emojiImageHint")}</p>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void testImageSend()}
-            disabled={testingImage || !settings.attach_emoji_image || !settings.emoji_image_url}
-          >
-            {testingImage ? t("common.loading") : t("whatsapp.testImage")}
-          </Button>
         </div>
       </Card>
 

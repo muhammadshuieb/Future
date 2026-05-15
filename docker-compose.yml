@@ -110,10 +110,8 @@ services:
       GOOGLE_BACKUP_CLIENT_SECRET: ${GOOGLE_BACKUP_CLIENT_SECRET:-}
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
-      WAHA_EMOJI_FETCH_BASE_URL: ${WAHA_EMOJI_FETCH_BASE_URL:-http://api:3000}
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
       WHATSAPP_DEFAULT_COUNTRY_CODE: ${WHATSAPP_DEFAULT_COUNTRY_CODE:-963}
-      WHATSAPP_ASSETS_DIR: /app/data/whatsapp-assets
       RADIUS_DB_USER: ${RADIUS_DB_USER:-radius}
       RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:?set RADIUS_DB_PASSWORD in .env}
       SQL_MIGRATIONS_DIR: /app/sql/migrations
@@ -146,7 +144,6 @@ services:
       ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
     volumes:
       - backup_data:/app/backups
-      - whatsapp_assets:/app/data/whatsapp-assets
       - ./sql:/app/sql:ro
       - wireguard_runtime:/app/runtime/wireguard
       - ./:/workspace/future-radius
@@ -201,13 +198,10 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Damascus}
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
       WAHA_INTERNAL_URL: ${WAHA_INTERNAL_URL:-http://waha:3000}
-      WAHA_EMOJI_FETCH_BASE_URL: ${WAHA_EMOJI_FETCH_BASE_URL:-http://api:3000}
       WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
       WHATSAPP_DEFAULT_COUNTRY_CODE: ${WHATSAPP_DEFAULT_COUNTRY_CODE:-963}
-      WHATSAPP_ASSETS_DIR: /app/data/whatsapp-assets
     volumes:
       - backup_data:/app/backups
-      - whatsapp_assets:/app/data/whatsapp-assets
       - ./sql:/app/sql:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -356,7 +350,6 @@ services:
 volumes:
   future_radius_mysql_data:
   backup_data:
-  whatsapp_assets:
   waha_sessions:
   wireguard_runtime:
   prometheus_data:

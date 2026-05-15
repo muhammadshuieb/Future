@@ -1,10 +1,7 @@
 import { Router } from "express";
-import multer from "multer";
-import fs from "fs";
 import { z } from "zod";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { emojiMimetypeFromExt, resolveEmojiAssetFile } from "../lib/whatsapp-assets.js";
 import {
   applyProfessionalArabicTemplates,
   deleteWhatsAppLogs,
@@ -19,49 +16,14 @@ import {
   sendExpiryReminders,
   sendUsageThresholdAlerts,
   testWhatsAppConnection,
-  testWhatsAppImageSend,
   updateWhatsAppSettings,
   updateWhatsAppTemplate,
-  uploadWhatsAppEmojiImage,
 } from "../services/whatsapp.service.js";
-
-const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function whatsappErrorDetail(e: unknown): { detail?: string } {
   if (config.nodeEnv === "production") return {};
   return { detail: e instanceof Error ? e.message : String(e) };
 }
-
-/** Public asset route — WAHA fetches emoji images without auth. */
-export const whatsappAssetRoutes = Router();
-whatsappAssetRoutes.get("/assets/:tenantId/emoji.:ext", (req, res) => {
-  const tenantId = String(req.params.tenantId ?? "");
-  const ext = String(req.params.ext ?? "");
-  if (!uuidRe.test(tenantId)) {
-    res.status(404).json({ error: "not_found" });
-    return;
-  }
-  const filePath = resolveEmojiAssetFile(tenantId, ext);
-  if (!filePath || !fs.existsSync(filePath)) {
-    res.status(404).json({ error: "not_found" });
-    return;
-  }
-  res.setHeader("Content-Type", emojiMimetypeFromExt(ext));
-  res.setHeader("Cache-Control", "private, max-age=3600");
-  res.sendFile(filePath, (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: "not_found" });
-  });
-});
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ok = ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.mimetype);
-    if (ok) cb(null, true);
-    else cb(new Error("invalid_image_type"));
-  },
-});
 
 const router = Router();
 router.use(requireAuth);
@@ -97,8 +59,6 @@ const settingsBody = z.object({
   auto_send_new: z.boolean(),
   usage_alert_thresholds: z.array(z.number().int()).default([10, 20, 30, 50]),
   company_name: z.string().max(128).optional().default(""),
-  emoji_image_url: z.string().max(512).optional().default(""),
-  attach_emoji_image: z.boolean().optional().default(false),
 }).refine((x) => x.usage_alert_thresholds.every((n) => [10, 20, 30, 50].includes(n)), {
   message: "invalid_thresholds",
 });
@@ -128,26 +88,6 @@ router.put("/settings", async (req, res) => {
   }
 });
 
-router.post("/emoji-image", upload.single("image"), async (req, res) => {
-  const file = req.file;
-  if (!file) {
-    res.status(400).json({ error: "invalid_image" });
-    return;
-  }
-  try {
-    const settings = await uploadWhatsAppEmojiImage(req.auth!.tenantId, file.buffer, file.mimetype);
-    res.json({ settings });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("whatsapp emoji upload", e);
-    if (msg === "invalid_image_type") {
-      res.status(400).json({ error: "invalid_image_type" });
-      return;
-    }
-    res.status(500).json({ error: "whatsapp_emoji_upload_failed" });
-  }
-});
-
 router.post("/test", async (req, res) => {
   try {
     const status = await testWhatsAppConnection(req.auth!.tenantId);
@@ -155,29 +95,6 @@ router.post("/test", async (req, res) => {
   } catch (e) {
     console.error("whatsapp test", e);
     res.status(500).json({ error: "whatsapp_test_failed", ...whatsappErrorDetail(e) });
-  }
-});
-
-const testImageBody = z.object({
-  phone: z.string().max(32).optional(),
-});
-
-router.post("/test-image", async (req, res) => {
-  const parsed = testImageBody.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    res.status(400).json({ error: "invalid_body" });
-    return;
-  }
-  try {
-    const result = await testWhatsAppImageSend(req.auth!.tenantId, parsed.data.phone ?? null);
-    if (!result.sent) {
-      res.status(400).json({ error: result.error ?? "image_test_failed", phone: result.phone });
-      return;
-    }
-    res.json(result);
-  } catch (e) {
-    console.error("whatsapp test image", e);
-    res.status(500).json({ error: "whatsapp_test_image_failed", ...whatsappErrorDetail(e) });
   }
 });
 

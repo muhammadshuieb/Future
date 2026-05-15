@@ -5,13 +5,6 @@ import { config } from "../config.js";
 import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
-import {
-  buildWahaMediaFileVariants,
-  resolveEmojiPreviewUrl,
-  saveWhatsAppEmojiImage,
-  type WahaMediaFilePayload,
-} from "../lib/whatsapp-assets.js";
-
 type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
 type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid" | "financial_report";
 
@@ -26,8 +19,6 @@ type WhatsAppSettingsRow = RowDataPacket & {
   auto_send_new: number;
   usage_alert_thresholds: string | null;
   company_name: string | null;
-  emoji_image_url: string | null;
-  attach_emoji_image: number | null;
   last_check_ok: number | null;
   last_check_at: string | null;
   last_error: string | null;
@@ -77,10 +68,6 @@ export type WhatsAppSettingsView = {
   auto_send_new: boolean;
   usage_alert_thresholds: number[];
   company_name: string;
-  emoji_image_url: string;
-  /** Browser-ready URL for preview (absolute when stored as relative path). */
-  emoji_image_preview_url: string;
-  attach_emoji_image: boolean;
 };
 
 export type WhatsAppTemplateView = {
@@ -223,8 +210,6 @@ async function ensureSchemaInner(): Promise<void> {
     "VARCHAR(64) NOT NULL DEFAULT '10,20,30,50' AFTER auto_send_new"
   );
   await addColumnIfMissing("whatsapp_settings", "company_name", "VARCHAR(128) NOT NULL DEFAULT ''");
-  await addColumnIfMissing("whatsapp_settings", "emoji_image_url", "VARCHAR(512) NULL");
-  await addColumnIfMissing("whatsapp_settings", "attach_emoji_image", "TINYINT(1) NOT NULL DEFAULT 0");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_templates (
       tenant_id CHAR(36) NOT NULL,
@@ -368,18 +353,6 @@ async function buildTemplateVars(
   return { company_name, ...extra };
 }
 
-function imageMimetypeFromUrl(url: string): string {
-  const low = url.toLowerCase();
-  if (low.endsWith(".webp")) return "image/webp";
-  if (low.endsWith(".gif")) return "image/gif";
-  if (low.endsWith(".jpg") || low.endsWith(".jpeg")) return "image/jpeg";
-  return "image/png";
-}
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function getSettingsRow(tenantId: string): Promise<WhatsAppSettingsRow> {
   await ensureSchema();
   await ensureTenantDefaults(tenantId);
@@ -485,98 +458,7 @@ async function sendWahaMessage(
   return { providerId: providerId || null };
 }
 
-function wahaMediaFileBody(file: WahaMediaFilePayload): Record<string, string> {
-  if (file.data) {
-    return { mimetype: file.mimetype, filename: file.filename, data: file.data };
-  }
-  if (file.url) {
-    return { mimetype: file.mimetype, filename: file.filename, url: file.url };
-  }
-  throw new Error("waha_media_file_empty");
-}
-
-async function postWahaMediaEndpoint(
-  settings: WhatsAppSettingsRow,
-  chatId: string,
-  endpoint: "sendImage" | "sendFile",
-  file: WahaMediaFilePayload
-): Promise<{ providerId: string | null }> {
-  const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
-  const session = String(settings.session_name ?? "").trim();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (settings.api_key) {
-    headers.Authorization = `Bearer ${settings.api_key}`;
-    headers["X-Api-Key"] = settings.api_key;
-  }
-  const response = await wahaFetch(`${baseUrl}/api/${endpoint}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      session,
-      chatId,
-      file: wahaMediaFileBody(file),
-    }),
-  });
-  const textBody = await response.text();
-  if (!response.ok) {
-    throw new Error(`waha_${endpoint}_failed: ${response.status} ${textBody.slice(0, 300)}`);
-  }
-  let parsed: unknown = null;
-  try {
-    parsed = JSON.parse(textBody);
-  } catch {
-    parsed = null;
-  }
-  const providerId =
-    typeof parsed === "object" && parsed !== null && "id" in parsed
-      ? String((parsed as { id?: unknown }).id ?? "")
-      : null;
-  return { providerId: providerId || null };
-}
-
-/** Send branding image via WAHA sendImage (preferred) or sendFile (fallback). */
-async function sendWahaImage(
-  settings: WhatsAppSettingsRow,
-  phone: string,
-  storedImage: string
-): Promise<{ providerId: string | null }> {
-  const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
-  const session = String(settings.session_name ?? "").trim();
-  if (!baseUrl || !session) throw new Error("waha_not_configured");
-
-  const runtime = await getSessionRuntimeStatus(settings);
-  if (!runtime.connected) {
-    throw new Error(`waha_session_not_ready:${runtime.status ?? "unknown"}`);
-  }
-
-  const headers: Record<string, string> = {};
-  if (settings.api_key) {
-    headers.Authorization = `Bearer ${settings.api_key}`;
-    headers["X-Api-Key"] = settings.api_key;
-  }
-  const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
-
-  const variants = await buildWahaMediaFileVariants(storedImage);
-  if (variants.length === 0) {
-    throw new Error("emoji_file_unavailable");
-  }
-
-  const errors: string[] = [];
-  for (const file of variants) {
-    const mode = file.data ? "base64" : "url";
-    for (const endpoint of ["sendImage", "sendFile"] as const) {
-      try {
-        return await postWahaMediaEndpoint(settings, chatId, endpoint, file);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`${endpoint}/${mode}: ${msg}`);
-      }
-    }
-  }
-  throw new Error(`waha_media_send_failed: ${errors.join(" | ").slice(0, 900)}`);
-}
-
-/** Sends optional branding emoji/sticker image then the text body. */
+/** Sends finalized WhatsApp text via WAHA sendText. */
 async function deliverWhatsAppMessage(
   settings: WhatsAppSettingsRow,
   phone: string,
@@ -585,22 +467,8 @@ async function deliverWhatsAppMessage(
 ): Promise<{ providerId: string | null; messageBody: string }> {
   const tenantId = String(settings.tenant_id);
   const finalText = await finalizeWhatsAppText(tenantId, settings, template, templateVars);
-  const storedImage = String(settings.emoji_image_url ?? "").trim();
-  const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && storedImage.length > 0;
-  let lastId: string | null = null;
-  if (attachEmoji) {
-    try {
-      const img = await sendWahaImage(settings, phone, storedImage);
-      lastId = img.providerId;
-      await sleepMs(500);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("[whatsapp] emoji image send failed", msg, { tenantId, storedImage });
-      await setLastCheck(tenantId, false, `image_attach_failed: ${msg.slice(0, 500)}`);
-    }
-  }
   const textResult = await sendWahaMessage(settings, phone, finalText);
-  return { providerId: textResult.providerId ?? lastId, messageBody: finalText };
+  return { providerId: textResult.providerId, messageBody: finalText };
 }
 
 async function resolveWahaChatId(
@@ -921,25 +789,7 @@ export async function getWhatsAppSettings(tenantId: string): Promise<WhatsAppSet
     auto_send_new: Boolean(settings.auto_send_new),
     usage_alert_thresholds: parseUsageThresholds(settings.usage_alert_thresholds),
     company_name: String(settings.company_name ?? ""),
-    emoji_image_url: String(settings.emoji_image_url ?? ""),
-    emoji_image_preview_url: resolveEmojiPreviewUrl(settings.emoji_image_url),
-    attach_emoji_image: Boolean(Number(settings.attach_emoji_image ?? 0)),
   };
-}
-
-export async function uploadWhatsAppEmojiImage(
-  tenantId: string,
-  buffer: Buffer,
-  mimetype: string
-): Promise<WhatsAppSettingsView> {
-  await ensureSchema();
-  await ensureTenantDefaults(tenantId);
-  const relPath = await saveWhatsAppEmojiImage(tenantId, buffer, mimetype);
-  await pool.execute(
-    `UPDATE whatsapp_settings SET emoji_image_url = ?, attach_emoji_image = 1 WHERE tenant_id = ?`,
-    [relPath, tenantId]
-  );
-  return getWhatsAppSettings(tenantId);
 }
 
 export async function updateWhatsAppSettings(
@@ -954,21 +804,14 @@ export async function updateWhatsAppSettings(
     auto_send_new: boolean;
     usage_alert_thresholds: number[];
     company_name?: string;
-    emoji_image_url?: string;
-    attach_emoji_image?: boolean;
   }
 ): Promise<WhatsAppSettingsView> {
   await ensureSchema();
   await ensureTenantDefaults(tenantId);
-  const existing = await getSettingsRow(tenantId);
-  let emojiUrl = (input.emoji_image_url ?? "").trim().slice(0, 512) || null;
-  if (!emojiUrl && input.attach_emoji_image && existing.emoji_image_url) {
-    emojiUrl = String(existing.emoji_image_url).trim().slice(0, 512) || null;
-  }
   await pool.execute(
     `UPDATE whatsapp_settings
      SET enabled = ?, waha_url = ?, session_name = ?, api_key = ?, reminder_days = ?, message_interval_seconds = ?, auto_send_new = ?,
-         usage_alert_thresholds = ?, company_name = ?, emoji_image_url = ?, attach_emoji_image = ?,
+         usage_alert_thresholds = ?, company_name = ?,
          last_check_ok = NULL, last_check_at = NULL, last_error = NULL
      WHERE tenant_id = ?`,
     [
@@ -981,38 +824,10 @@ export async function updateWhatsAppSettings(
       input.auto_send_new ? 1 : 0,
       parseUsageThresholds(input.usage_alert_thresholds.join(",")).join(","),
       (input.company_name ?? "").trim().slice(0, 128),
-      emojiUrl,
-      input.attach_emoji_image ? 1 : 0,
       tenantId,
     ]
   );
   return getWhatsAppSettings(tenantId);
-}
-
-/** Send a test image to verify WAHA sendImage + stored emoji file (uses connected session owner phone). */
-export async function testWhatsAppImageSend(
-  tenantId: string,
-  phoneInput?: string | null
-): Promise<{ sent: boolean; phone: string | null; error?: string }> {
-  const settings = await getSettingsRow(tenantId);
-  if (!settings.enabled) return { sent: false, phone: null, error: "whatsapp_disabled" };
-  const storedImage = String(settings.emoji_image_url ?? "").trim();
-  if (!storedImage) return { sent: false, phone: null, error: "emoji_not_uploaded" };
-  if (!Boolean(Number(settings.attach_emoji_image ?? 0))) {
-    return { sent: false, phone: null, error: "attach_emoji_disabled" };
-  }
-  const phone = normalizePhone(phoneInput ?? "") ?? (await getSessionOwnerPhoneFromRuntime(settings));
-  if (!phone) return { sent: false, phone: null, error: "missing_test_phone" };
-  try {
-    await ensureSessionReady(settings);
-    const result = await sendWahaImage(settings, phone, storedImage);
-    await setLastCheck(tenantId, true, result.providerId ? null : "image_sent_no_provider_id");
-    return { sent: true, phone };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    await setLastCheck(tenantId, false, `image_test_failed: ${msg.slice(0, 500)}`);
-    return { sent: false, phone, error: msg.slice(0, 300) };
-  }
 }
 
 export async function testWhatsAppConnection(tenantId: string): Promise<WhatsAppStatus> {
