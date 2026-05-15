@@ -34,7 +34,7 @@ export function subscriptionRenewalBaseDate(
  * Expiration is always anchored at 12:00 (local server time).
  */
 export function extendSubscriptionByDaysNoon(
-  currentExpiration: Date,
+  currentExpiration: Date | string | null | undefined,
   days: number
 ): Date {
   const safeDays = Math.max(1, Math.floor(Number(days) || 1));
