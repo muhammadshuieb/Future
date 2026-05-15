@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Download, Eye, EyeOff, Plus, RefreshCw } from "lucide-react";
+import { Download, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -375,10 +375,11 @@ export function UsersPage() {
       const rSub = await apiFetch(`/api/subscribers/?${subscribersListQuery}`);
       if (rSub.ok) {
         const j = (await rSub.json()) as {
-          items: Record<string, unknown>[];
+          items?: Record<string, unknown>[];
           meta?: { total?: number };
         };
-        const nextItems = j.items.map(asSubscriberRow);
+        const rawItems = Array.isArray(j.items) ? j.items : [];
+        const nextItems = rawItems.map(asSubscriberRow);
         setItems(nextItems);
         setTotalItems(Number(j.meta?.total ?? nextItems.length ?? 0));
         setSelectedIds((current) => current.filter((id) => nextItems.some((item) => item.id === id)));
@@ -404,10 +405,11 @@ export function UsersPage() {
       const errParts: string[] = [];
       if (rSub.ok) {
         const j = (await rSub.json()) as {
-          items: Record<string, unknown>[];
+          items?: Record<string, unknown>[];
           meta?: { total?: number };
         };
-        const nextItems = j.items.map(asSubscriberRow);
+        const rawItems = Array.isArray(j.items) ? j.items : [];
+        const nextItems = rawItems.map(asSubscriberRow);
         setItems(nextItems);
         setTotalItems(Number(j.meta?.total ?? nextItems.length ?? 0));
         setSelectedIds((current) => current.filter((id) => nextItems.some((item) => item.id === id)));
@@ -436,6 +438,9 @@ export function UsersPage() {
         setRegions([]);
       }
       if (errParts.length) setLoadError(errParts.join("\n"));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setLoadError(`${t("nav.users")}: ${message.trim() || t("common.error")}`);
     } finally {
       setLoading(false);
     }
