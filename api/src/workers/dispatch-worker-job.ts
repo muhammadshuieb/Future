@@ -11,6 +11,7 @@ import {
   resolveWhatsAppSessionOwnerPhone,
   sendExpiryReminders,
   sendInvoicePaidWhatsApp,
+  sendNewSubscriberWhatsApp,
   sendPaymentDueReminders,
   sendUsageThresholdAlerts,
   testWhatsAppConnection,
@@ -21,6 +22,7 @@ import {
   QueueJobNames,
   type CoaDisconnectJobData,
   type WahaInvoiceReceiptJobData,
+  type WahaNewSubscriberJobData,
 } from "../services/task-queue.service.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
@@ -260,6 +262,21 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
         amount: payload.amount,
         currency: payload.currency,
         paidAt: payload.paidAt,
+      });
+      return { ok: true };
+    }
+    case QueueJobNames.WAHA_SEND_NEW_SUBSCRIBER: {
+      const payload = job.data as WahaNewSubscriberJobData;
+      await sendNewSubscriberWhatsApp({
+        tenantId: payload.tenantId,
+        subscriberId: payload.subscriberId,
+        phone: payload.phone,
+        username: payload.username,
+        fullName: payload.fullName,
+        password: payload.password,
+        packageName: payload.packageName,
+        speed: payload.speed,
+        expirationDate: payload.expirationDate,
       });
       return { ok: true };
     }

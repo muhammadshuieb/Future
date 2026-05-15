@@ -157,7 +157,7 @@ export async function loadEmojiFileForWahaSend(
     const url = resolveWahaEmojiFetchUrl(t);
     if (!url) return null;
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!resp.ok) return null;
       const buffer = Buffer.from(await resp.arrayBuffer());
       if (buffer.length === 0) return null;

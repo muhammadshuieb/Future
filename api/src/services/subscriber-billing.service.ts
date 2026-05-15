@@ -402,7 +402,7 @@ export async function recordPackagePayment(
         ]);
       }
       if (b.send_whatsapp_reminder) {
-        await sendSubscriberBillingDemandWhatsApp({ tenantId, subscriberId, headline: "تذكير بفاتورة جديدة" }).catch(
+        void sendSubscriberBillingDemandWhatsApp({ tenantId, subscriberId, headline: "تذكير بفاتورة جديدة" }).catch(
           () => {}
         );
       }

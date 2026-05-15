@@ -18,10 +18,8 @@ import {
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
-import {
-  sendNewSubscriberWhatsApp,
-  sendSubscriberFinancialReportWhatsApp,
-} from "../services/whatsapp.service.js";
+import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
+import { enqueueWahaNewSubscriber } from "../services/task-queue.service.js";
 import {
   assertStaffCanAssignPackage,
   assertSubscriberFitsPackageNas,
@@ -314,9 +312,7 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,
     [id, tenantId, body.password as string]
   );
-  await radiusSync.syncSubscriber(id, tenantId, {
-    simultaneousUse: body.simultaneous_use,
-  });
+
   let packageName = "-";
   let speed = "-";
   if (body.package_id) {
@@ -333,20 +329,33 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
     [body.first_name?.trim(), body.last_name?.trim()].filter(Boolean).join(" ").trim() || body.username;
   const expirationForWhatsApp =
     exp === undefined ? new Date().toISOString().slice(0, 10) : exp === null ? null : exp;
-  void sendNewSubscriberWhatsApp({
-    tenantId,
-    subscriberId: id,
-    phone: body.phone ?? null,
-    username: body.username,
-    fullName,
-    password: body.password as string,
-    packageName,
-    speed,
-    expirationDate: expirationForWhatsApp,
-  }).catch((err) => {
-    console.error("[subscribers] welcome WhatsApp failed", err);
-  });
+
   res.status(201).json({ id });
+
+  void (async () => {
+    try {
+      await radiusSync.syncSubscriber(id, tenantId, {
+        simultaneousUse: body.simultaneous_use,
+      });
+    } catch (err) {
+      console.error("[subscribers] radius sync after create failed", err);
+    }
+    try {
+      await enqueueWahaNewSubscriber({
+        tenantId,
+        subscriberId: id,
+        phone: body.phone ?? null,
+        username: body.username,
+        fullName,
+        password: body.password as string,
+        packageName,
+        speed,
+        expirationDate: expirationForWhatsApp,
+      });
+    } catch (err) {
+      console.error("[subscribers] welcome WhatsApp enqueue failed", err);
+    }
+  })();
 });
 
 router.get(

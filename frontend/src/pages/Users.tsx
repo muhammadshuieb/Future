@@ -473,7 +473,7 @@ export function UsersPage() {
       setRegionId("");
       setSimultaneousUse("1");
       setSelectedIds([]);
-      await load();
+      void load();
     } finally {
       setSaving(false);
     }
