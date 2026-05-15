@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Download, Eye, EyeOff, FileText, Plus, Power, RefreshCw, Trash2, Wallet } from "lucide-react";
+import { Download, Eye, EyeOff, Plus, RefreshCw } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -12,6 +12,7 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 import { canManageOperations, canRecordFinance } from "../lib/permissions";
 import { SubscriberInvoicePaymentModal } from "../components/subscribers/SubscriberInvoicePaymentModal";
+import { SubscriberRowActions } from "../components/subscribers/SubscriberRowActions";
 import { printSubscriberFinancialReport } from "../lib/subscriber-financial-report-print";
 import { cn } from "../lib/utils";
 
@@ -43,6 +44,13 @@ type SubscriberRow = {
   address?: string | null;
   region_name?: string | null;
   is_online?: number | string | null;
+  active_sessions?: number | string | null;
+  subscriber_ui_status?: string | null;
+  active_session_id?: string | null;
+  session_framed_ip?: string | null;
+  session_nas_ip?: string | null;
+  session_nas_name?: string | null;
+  last_seen_at?: string | null;
   simultaneous_use?: string | number | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
@@ -60,9 +68,12 @@ type SortKey =
   | "created_by"
   | "created_at"
   | "start_date"
-  | "expiration_date";
+  | "expiration_date"
+  | "last_seen";
 
 function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
+  const activeSess = value.active_sessions;
+  const isOnlineRaw = value.is_online ?? activeSess;
   return {
     id: String(value.id ?? ""),
     username: String(value.username ?? ""),
@@ -88,11 +99,24 @@ function asSubscriberRow(value: Record<string, unknown>): SubscriberRow {
     phone: value.phone != null ? String(value.phone) : null,
     address: value.address != null ? String(value.address) : null,
     region_name: value.region_name != null ? String(value.region_name) : null,
+    subscriber_ui_status:
+      value.subscriber_ui_status != null ? String(value.subscriber_ui_status) : null,
+    active_session_id: value.active_session_id != null ? String(value.active_session_id) : null,
+    session_framed_ip: value.session_framed_ip != null ? String(value.session_framed_ip) : null,
+    session_nas_ip: value.session_nas_ip != null ? String(value.session_nas_ip) : null,
+    session_nas_name: value.session_nas_name != null ? String(value.session_nas_name) : null,
+    last_seen_at: value.last_seen_at != null ? String(value.last_seen_at) : null,
+    active_sessions:
+      typeof activeSess === "number"
+        ? activeSess
+        : typeof activeSess === "string"
+          ? Number(activeSess)
+          : null,
     is_online:
-      typeof value.is_online === "number"
-        ? value.is_online
-        : typeof value.is_online === "string"
-          ? Number(value.is_online)
+      typeof isOnlineRaw === "number"
+        ? isOnlineRaw
+        : typeof isOnlineRaw === "string"
+          ? Number(isOnlineRaw)
           : null,
     used_bytes:
       typeof value.used_bytes === "number" || typeof value.used_bytes === "string" || typeof value.used_bytes === "bigint"
@@ -158,34 +182,6 @@ function formatNasLabel(row: SubscriberRow): string {
   return "—";
 }
 
-function getRowState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
-  if (Number(row.is_online ?? 0) > 0) return "online";
-  const smart = String(row.state ?? "").trim().toUpperCase();
-  if (smart === "LIMITED") return "limited";
-  if (smart === "BLOCKED") return "disabled";
-  if (smart === "EXPIRED") return "expired";
-  if (smart === "ACTIVE") return "active";
-  const status = String(row.status ?? "").trim().toLowerCase();
-  if (status === "online" || status === "connected") return "online";
-  if (status === "disabled" || status === "inactive" || status === "suspended") return "disabled";
-  const exp = row.expiration_date ? new Date(row.expiration_date) : null;
-  if (exp && !Number.isNaN(exp.getTime()) && exp.getTime() < Date.now()) return "expired";
-  if (status === "expired") return "expired";
-  if (status === "active" || status === "enabled") return "active";
-  return "default";
-}
-
-function getRowClass(row: SubscriberRow): string {
-  const state = getDisplayState(row);
-  if (state === "online")
-    return "bg-emerald-500/15 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20";
-  if (state === "limited") return "bg-cyan-500/15 hover:bg-cyan-500/20";
-  if (state === "expired") return "bg-amber-500/20 hover:bg-amber-500/25";
-  if (state === "disabled") return "bg-red-500/20 hover:bg-red-500/25";
-  if (state === "active") return "bg-emerald-500/20 hover:bg-emerald-500/25";
-  return "hover:bg-[hsl(var(--muted))]/30";
-}
-
 function isExplicitlyDisabled(row: SubscriberRow): boolean {
   const status = String(row.status ?? "").trim().toLowerCase();
   if (status === "disabled" || status === "inactive" || status === "suspended" || status === "blocked") return true;
@@ -193,26 +189,88 @@ function isExplicitlyDisabled(row: SubscriberRow): boolean {
   return smart === "BLOCKED";
 }
 
-function getDisplayState(row: SubscriberRow): "online" | "limited" | "expired" | "disabled" | "active" | "default" {
-  if (isExplicitlyDisabled(row)) return "disabled";
-  const fromState = getRowState(row);
-  // Expiration should be distinct from manual disable.
-  if (fromState === "expired") return "expired";
-  return fromState;
+function formatLastSeen(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toISOString().slice(0, 16).replace("T", " ");
 }
 
-function getDisplayStatusLabel(
-  row: SubscriberRow,
+type SubscriberUiKind = "disabled" | "expired" | "online" | "active";
+
+function dateOnlyExpired(expirationDate: string | null | undefined): boolean {
+  if (!expirationDate) return false;
+  const d = new Date(expirationDate);
+  if (Number.isNaN(d.getTime())) return false;
+  const ymd = d.toISOString().slice(0, 10);
+  const today = new Date();
+  const todayYmd = today.toISOString().slice(0, 10);
+  return ymd <= todayYmd;
+}
+
+function resolveSubscriberUiKind(row: SubscriberRow): SubscriberUiKind {
+  const fromApi = String(row.subscriber_ui_status ?? "").trim().toLowerCase();
+  if (fromApi === "disabled" || fromApi === "expired" || fromApi === "online" || fromApi === "active") {
+    return fromApi;
+  }
+  if (isExplicitlyDisabled(row)) return "disabled";
+  if (String(row.status ?? "").toLowerCase() === "expired" || dateOnlyExpired(row.expiration_date)) return "expired";
+  if (Number(row.is_online ?? 0) > 0) return "online";
+  return "active";
+}
+
+function subscriberStatusPresentation(
+  kind: SubscriberUiKind,
   t: (key: string) => string
-): string {
-  const state = getDisplayState(row);
-  if (state === "online") return t("users.state.online");
-  if (state === "limited") return t("users.state.limited");
-  if (state === "expired") return t("users.state.expired");
-  if (state === "disabled") return t("users.state.disabled");
-  if (state === "active") return t("users.state.active");
-  const raw = String(row.state ?? row.status ?? "").trim();
-  return raw || "—";
+): { badgeClass: string; dotClass: string; rowClass: string; label: string } {
+  switch (kind) {
+    case "online":
+      return {
+        badgeClass:
+          "border border-blue-500/30 bg-blue-500/12 text-blue-800 dark:border-blue-500/35 dark:bg-blue-500/15 dark:text-blue-200",
+        dotClass: "bg-blue-500 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]",
+        rowClass:
+          "border-s-[3px] border-s-blue-500/55 bg-blue-500/[0.045] hover:bg-blue-500/[0.07] dark:bg-blue-500/[0.06] dark:hover:bg-blue-500/[0.09]",
+        label: t("users.state.online"),
+      };
+    case "active":
+      return {
+        badgeClass:
+          "border border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200",
+        dotClass: "bg-emerald-500 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]",
+        rowClass:
+          "border-s-[3px] border-s-emerald-500/40 bg-emerald-500/[0.04] hover:bg-emerald-500/[0.07] dark:bg-emerald-500/[0.05] dark:hover:bg-emerald-500/[0.08]",
+        label: t("users.state.active"),
+      };
+    case "expired":
+      return {
+        badgeClass:
+          "border border-amber-500/35 bg-amber-500/12 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/14 dark:text-amber-100",
+        dotClass: "bg-amber-400 shadow-[0_0_0_1px_rgba(251,191,36,0.45)]",
+        rowClass:
+          "border-s-[3px] border-s-amber-500/50 bg-amber-500/[0.06] hover:bg-amber-500/[0.09] dark:bg-amber-500/[0.07] dark:hover:bg-amber-500/[0.1]",
+        label: t("users.state.expired"),
+      };
+    case "disabled":
+    default:
+      return {
+        badgeClass:
+          "border border-red-500/35 bg-red-500/10 text-red-900 dark:border-red-500/40 dark:bg-red-500/12 dark:text-red-200",
+        dotClass: "bg-red-500 shadow-[0_0_0_1px_rgba(239,68,68,0.35)]",
+        rowClass:
+          "border-s-[3px] border-s-red-500/50 bg-red-500/[0.05] hover:bg-red-500/[0.08] dark:bg-red-500/[0.06] dark:hover:bg-red-500/[0.09]",
+        label: t("users.state.disabled"),
+      };
+  }
+}
+
+function formatSessionNetwork(row: SubscriberRow): string {
+  const name = row.session_nas_name?.trim();
+  const ip = row.session_nas_ip?.trim();
+  if (name && ip) return `${name} (${ip})`;
+  if (name) return name;
+  if (ip) return ip;
+  return "—";
 }
 
 export function UsersPage() {
@@ -267,7 +325,7 @@ export function UsersPage() {
   const [notes, setNotes] = useState("");
   const [regionId, setRegionId] = useState("");
   const [simultaneousUse, setSimultaneousUse] = useState("1");
-  const [pageSize, setPageSize] = useState<number>(25);
+  const [pageSize, setPageSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalItems, setTotalItems] = useState<number>(0);
   const [searchText, setSearchText] = useState<string>(searchParams.get("q") ?? "");
@@ -292,10 +350,11 @@ export function UsersPage() {
       { key: "created_at", label: t("users.createdAt"), defaultVisible: false },
       { key: "start_date", label: t("users.startDate"), defaultVisible: false },
       { key: "expiration_date", label: t("users.expires") },
+      { key: "last_seen", label: t("users.lastSeen") },
     ],
     [t]
   );
-  const userColumnVisibility = useColumnVisibility("users", userColumns);
+  const userColumnVisibility = useColumnVisibility("users-v2", userColumns);
 
   const subscribersListQuery = useMemo(() => {
     const q = new URLSearchParams({
@@ -720,6 +779,13 @@ export function UsersPage() {
                 status: disabled ? "active" : "disabled",
                 state: disabled ? "ACTIVE" : "BLOCKED",
                 is_online: disabled ? item.is_online : 0,
+                subscriber_ui_status: disabled
+                  ? dateOnlyExpired(item.expiration_date) || String(item.status ?? "").toLowerCase() === "expired"
+                    ? "expired"
+                    : Number(item.is_online ?? 0) > 0
+                      ? "online"
+                      : "active"
+                  : "disabled",
               }
             : item
         )
@@ -748,7 +814,9 @@ export function UsersPage() {
       return;
     }
     setSortKey(key);
-    setSortDir("asc");
+    setSortDir(
+      key === "created_at" || key === "start_date" || key === "expiration_date" || key === "last_seen" ? "desc" : "asc"
+    );
   }
 
   function header(label: string, key: SortKey, alignClass: string) {
@@ -756,7 +824,7 @@ export function UsersPage() {
     return (
       <th
         className={cn(
-          "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+          "sticky top-0 z-20 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
           alignClass
         )}
       >
@@ -773,7 +841,7 @@ export function UsersPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" dir={isRtl ? "rtl" : "ltr"}>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("users.title")}</h1>
@@ -808,7 +876,7 @@ export function UsersPage() {
                 className={controlSelectClass}
                 value={pageSize}
                 onChange={(e) => {
-                  setPageSize(Number(e.target.value) || 25);
+                  setPageSize(Number(e.target.value) || 50);
                   setCurrentPage(1);
                 }}
               >
@@ -920,11 +988,16 @@ export function UsersPage() {
       ) : null}
 
       <div className="glass overflow-hidden rounded-2xl p-0">
-        <div className="max-w-full overflow-x-auto">
-          <table className="sticky-list-table users-table w-full table-fixed text-xs sm:text-sm">
+        <div className="max-h-[min(78vh,1200px)] max-w-full overflow-auto">
+          <table className="sticky-list-table users-table w-full text-xs">
             <thead>
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs font-medium uppercase tracking-wide opacity-70">
-                <th className="sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-[10px] font-semibold uppercase tracking-wide opacity-75">
+                <th
+                  className={cn(
+                    "sticky top-0 z-20 w-8 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
+                    isRtl ? "text-right" : "text-left"
+                  )}
+                >
                   <input
                     ref={selectAllRef}
                     type="checkbox"
@@ -945,7 +1018,7 @@ export function UsersPage() {
                 {userColumnVisibility.isVisible("password") ? (
                   <th
                     className={cn(
-                      "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                      "sticky top-0 z-20 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
                       isRtl ? "text-right" : "text-left"
                     )}
                   >
@@ -961,7 +1034,7 @@ export function UsersPage() {
                 {userColumnVisibility.isVisible("remaining_quota") ? (
                   <th
                     className={cn(
-                      "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                      "sticky top-0 z-20 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
                       isRtl ? "text-right" : "text-left"
                     )}
                   >
@@ -986,9 +1059,12 @@ export function UsersPage() {
                 {userColumnVisibility.isVisible("expiration_date")
                   ? header(t("users.expires"), "expiration_date", isRtl ? "text-right" : "text-left")
                   : null}
+                {userColumnVisibility.isVisible("last_seen")
+                  ? header(t("users.lastSeen"), "last_seen", isRtl ? "text-right" : "text-left")
+                  : null}
                 <th
                   className={cn(
-                    "sticky top-0 z-20 bg-[hsl(var(--card))]/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/75",
+                    "sticky top-0 z-20 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
                     isRtl ? "text-left" : "text-right"
                   )}
                 >
@@ -997,163 +1073,168 @@ export function UsersPage() {
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((s) => (
-                <tr key={String(s.id)} className={cn("border-b border-[hsl(var(--border))]/60 transition", getRowClass(s))}>
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedSet.has(s.id)}
-                      onChange={() => toggleOne(s.id)}
-                      aria-label={s.username}
-                    />
-                  </td>
-                  {userColumnVisibility.isVisible("username") ? <td className="px-4 py-3">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Link className="font-medium text-[hsl(var(--primary))] hover:underline" to={`/users/${s.id}`}>
-                        {String(s.username)}
-                      </Link>
-                      {Number(s.is_online ?? 0) > 0 ? (
-                        <span className="inline-flex items-center rounded-full bg-emerald-500/25 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                          {t("users.onlineNow")}
-                        </span>
-                      ) : null}
-                    </div>
-                  </td> : null}
-                  {userColumnVisibility.isVisible("full_name") ? <td className="px-4 py-3 opacity-90">
-                    {[s.first_name, s.last_name].filter(Boolean).join(" ").trim() || String(s.nickname ?? "—")}
-                  </td> : null}
-                  {userColumnVisibility.isVisible("phone") ? <td className="px-4 py-3 opacity-90">{String(s.phone ?? "—")}</td> : null}
-                  {userColumnVisibility.isVisible("password") ? <td className="px-4 py-3">
-                    {canRevealPassword ? (
-                      <div className="flex items-center gap-2">
-                        <code className="rounded bg-[hsl(var(--muted))] px-2 py-1 text-xs">
-                          {revealedPasswords[s.id] || t("users.passwordHidden")}
-                        </code>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="px-2 py-1 text-xs"
-                          onClick={() => (revealedPasswords[s.id] ? hidePassword(s.id) : void revealPassword(s.id))}
-                          disabled={passwordLoadingId === s.id}
-                        >
-                          {revealedPasswords[s.id] ? (
-                            <EyeOff className={cn("h-4 w-4", isRtl ? "ms-1" : "me-1")} />
-                          ) : (
-                            <Eye className={cn("h-4 w-4", isRtl ? "ms-1" : "me-1")} />
-                          )}
-                          {passwordLoadingId === s.id
-                            ? t("common.loading")
-                            : revealedPasswords[s.id]
-                              ? t("common.hide")
-                              : t("common.show")}
-                        </Button>
-                      </div>
-                    ) : (
-                      <span className="text-xs opacity-60">{t("users.passwordRestricted")}</span>
-                    )}
-                  </td> : null}
-                  {userColumnVisibility.isVisible("status") ? <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-                        getDisplayState(s) === "active" || getDisplayState(s) === "online"
-                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-                          : getDisplayState(s) === "disabled"
-                            ? "bg-red-500/15 text-red-700 dark:text-red-300"
-                            : getDisplayState(s) === "expired"
-                              ? "bg-amber-500/20 text-amber-800 dark:text-amber-300"
-                              : "bg-zinc-500/15 opacity-80"
-                      )}
-                    >
-                      {getDisplayStatusLabel(s, t)}
-                    </span>
-                  </td> : null}
-                  {userColumnVisibility.isVisible("package") ? <td className="px-4 py-3 opacity-90">{String(s.package_name ?? "—")}</td> : null}
-                  {userColumnVisibility.isVisible("remaining_quota") ? <td className="px-4 py-3 font-mono text-xs opacity-90">
-                    {formatRemainingQuota(s, t("packages.unlimited"))}
-                  </td> : null}
-                  {userColumnVisibility.isVisible("nas_network") ? <td className="px-4 py-3 opacity-90">{formatNasLabel(s)}</td> : null}
-                  {userColumnVisibility.isVisible("region") ? <td className="px-4 py-3 opacity-90">{String(s.region_name ?? "—")}</td> : null}
-                  {userColumnVisibility.isVisible("created_by") ? <td className="px-4 py-3 opacity-90">{String(s.creator_name ?? s.creator_email ?? "—")}</td> : null}
-                  {userColumnVisibility.isVisible("created_at") ? <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.created_at)}</td> : null}
-                  {userColumnVisibility.isVisible("start_date") ? <td className="px-4 py-3 font-mono text-xs opacity-80">{formatDate(s.start_date)}</td> : null}
-                  {userColumnVisibility.isVisible("expiration_date") ? <td className="px-4 py-3 font-mono text-xs opacity-80">
-                    {formatDate(s.expiration_date)}
-                  </td> : null}
-                  <td className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>
-                    <div className="flex flex-wrap justify-end gap-2">
-                      <Link
-                        className="font-medium text-[hsl(var(--primary))] hover:underline"
-                        to={`/users/${s.id}`}
-                      >
-                        {t("users.profile")}
-                      </Link>
-                      {canFinance ? (
-                        <>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="px-2 py-1 text-xs"
-                            onClick={() => setPaymentModal({ id: s.id, username: s.username })}
+              {visibleItems.map((s) => {
+                const uiKind = resolveSubscriberUiKind(s);
+                const pres = subscriberStatusPresentation(uiKind, t);
+                const td = "px-2 py-1.5 align-middle";
+                return (
+                  <tr
+                    key={String(s.id)}
+                    className={cn("border-b border-[hsl(var(--border))]/50 transition-colors", pres.rowClass)}
+                  >
+                    <td className={cn(td, "w-8")}>
+                      <input
+                        type="checkbox"
+                        checked={selectedSet.has(s.id)}
+                        onChange={() => toggleOne(s.id)}
+                        aria-label={s.username}
+                      />
+                    </td>
+                    {userColumnVisibility.isVisible("username") ? (
+                      <td className={td}>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span
+                            className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", pres.dotClass)}
+                            title={pres.label}
+                            aria-hidden
+                          />
+                          <Link
+                            className="min-w-0 truncate font-medium text-[hsl(var(--primary))] hover:underline"
+                            to={`/users/${s.id}`}
                           >
-                            <Wallet className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
-                            {t("users.paymentInvoice")}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="px-2 py-1 text-xs"
-                            onClick={() => {
-                              const preview = window.open("", "_blank", "noopener,noreferrer");
-                              if (!preview) {
-                                setMsg({ type: "err", text: t("users.financialReportPopupBlocked") });
-                                return;
-                              }
-                              void runFinancialReport(s, preview);
-                            }}
-                            disabled={reportLoadingId === s.id}
-                          >
-                            <FileText className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
-                            {reportLoadingId === s.id ? t("common.loading") : t("users.financialReport")}
-                          </Button>
-                        </>
-                      ) : null}
-                      {canManage ? (
-                        <Button
-                          type="button"
-                          variant="outline"
+                            {String(s.username)}
+                          </Link>
+                        </div>
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("full_name") ? (
+                      <td className={cn(td, "max-w-[10rem] truncate opacity-90")}>
+                        {[s.first_name, s.last_name].filter(Boolean).join(" ").trim() || String(s.nickname ?? "—")}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("phone") ? (
+                      <td className={cn(td, "max-w-[7rem] truncate opacity-90")}>{String(s.phone ?? "—")}</td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("password") ? (
+                      <td className={td}>
+                        {canRevealPassword ? (
+                          <div className="flex max-w-[11rem] items-center gap-1">
+                            <code className="truncate rounded bg-[hsl(var(--muted))] px-1 py-0.5 font-mono text-[10px]">
+                              {revealedPasswords[s.id] || t("users.passwordHidden")}
+                            </code>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="h-7 shrink-0 px-1.5 py-0 text-[10px]"
+                              onClick={() => (revealedPasswords[s.id] ? hidePassword(s.id) : void revealPassword(s.id))}
+                              disabled={passwordLoadingId === s.id}
+                            >
+                              {passwordLoadingId === s.id ? "…" : revealedPasswords[s.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] opacity-60">{t("users.passwordRestricted")}</span>
+                        )}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("status") ? (
+                      <td className={td}>
+                        <span
                           className={cn(
-                            "px-2 py-1 text-xs",
-                            isExplicitlyDisabled(s)
-                              ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
-                              : "border-amber-500/40 text-amber-700 dark:text-amber-300"
+                            "inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-[10px] font-semibold leading-tight",
+                            pres.badgeClass
                           )}
-                          onClick={() => void toggleSubscriberStatus(s)}
-                          disabled={toggleStatusLoadingId === s.id}
                         >
-                          <Power className={cn("h-3.5 w-3.5", isRtl ? "ms-1" : "me-1")} />
-                          {toggleStatusLoadingId === s.id
-                            ? t("common.loading")
-                            : isExplicitlyDisabled(s)
-                              ? t("users.enable")
-                              : t("users.disable")}
-                        </Button>
-                      ) : null}
-                      {canManage ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="px-2 py-1 text-red-600"
-                          onClick={() => void deleteOne(s.id, s.username)}
-                        >
-                          <Trash2 className={cn("h-4 w-4", isRtl ? "ms-1" : "me-1")} />
-                          {t("common.delete")}
-                        </Button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                          {pres.label}
+                        </span>
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("package") ? (
+                      <td className={cn(td, "max-w-[9rem] truncate opacity-90")}>{String(s.package_name ?? "—")}</td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("remaining_quota") ? (
+                      <td className={cn(td, "font-mono text-[10px] opacity-90")}>
+                        {formatRemainingQuota(s, t("packages.unlimited"))}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("nas_network") ? (
+                      <td className={cn(td, "max-w-[10rem]")}>
+                        <div className="truncate opacity-90">{formatNasLabel(s)}</div>
+                        {uiKind === "online" ? (
+                          <div className="truncate font-mono text-[10px] leading-tight text-blue-700/90 dark:text-blue-300/90">
+                            {s.session_framed_ip
+                              ? `${t("users.ip")}: ${s.session_framed_ip}`
+                              : formatSessionNetwork(s) !== "—"
+                                ? formatSessionNetwork(s)
+                                : "—"}
+                          </div>
+                        ) : null}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("region") ? (
+                      <td className={cn(td, "max-w-[8rem] truncate opacity-90")}>{String(s.region_name ?? "—")}</td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("created_by") ? (
+                      <td className={cn(td, "max-w-[8rem] truncate opacity-90")}>
+                        {String(s.creator_name ?? s.creator_email ?? "—")}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("created_at") ? (
+                      <td className={cn(td, "whitespace-nowrap font-mono text-[10px] opacity-80")}>
+                        {formatDate(s.created_at)}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("start_date") ? (
+                      <td className={cn(td, "whitespace-nowrap font-mono text-[10px] opacity-80")}>
+                        {formatDate(s.start_date)}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("expiration_date") ? (
+                      <td className={cn(td, "whitespace-nowrap font-mono text-[10px] opacity-80")}>
+                        {formatDate(s.expiration_date)}
+                      </td>
+                    ) : null}
+                    {userColumnVisibility.isVisible("last_seen") ? (
+                      <td className={cn(td, "whitespace-nowrap font-mono text-[10px] opacity-80")}>
+                        {formatLastSeen(s.last_seen_at)}
+                      </td>
+                    ) : null}
+                    <td className={cn(td, isRtl ? "text-left" : "text-right")}>
+                      <SubscriberRowActions
+                        subscriberId={s.id}
+                        username={s.username}
+                        isRtl={isRtl}
+                        canManage={canManage}
+                        canFinance={canFinance}
+                        accountDisabled={isExplicitlyDisabled(s)}
+                        toggleLoading={toggleStatusLoadingId === s.id}
+                        reportLoading={reportLoadingId === s.id}
+                        labels={{
+                          menu: t("users.actions.menu"),
+                          viewProfile: t("users.actions.viewProfile"),
+                          edit: t("users.actions.edit"),
+                          payment: t("users.paymentInvoice"),
+                          financialReport: t("users.financialReport"),
+                          enable: t("users.enable"),
+                          disable: t("users.disable"),
+                          delete: t("common.delete"),
+                        }}
+                        onPayment={() => setPaymentModal({ id: s.id, username: s.username })}
+                        onFinancialReport={() => {
+                          const preview = window.open("", "_blank", "noopener,noreferrer");
+                          if (!preview) {
+                            setMsg({ type: "err", text: t("users.financialReportPopupBlocked") });
+                            return;
+                          }
+                          void runFinancialReport(s, preview);
+                        }}
+                        onToggleStatus={() => void toggleSubscriberStatus(s)}
+                        onDelete={() => void deleteOne(s.id, s.username)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1179,6 +1260,7 @@ export function UsersPage() {
               {modalMsg.text}
             </div>
           ) : null}
+          <p className="text-xs leading-relaxed opacity-75">{t("users.createExpiryHint")}</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label={t("users.username")} value={username} onChange={(e) => setUsername(e.target.value)} required />
             <TextField

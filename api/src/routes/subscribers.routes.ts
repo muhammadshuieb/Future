@@ -146,18 +146,24 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   }
   const id = randomUUID();
   const body = parsed.data;
+  const exp = body.expiration_date;
+  const expFragment =
+    exp === null ? "NULL" : exp === undefined ? "CURDATE()" : "?";
+  const insertArgs: (string | null)[] = [
+    id,
+    req.auth!.tenantId,
+    body.customer_id ?? null,
+    body.package_id ?? null,
+    body.username,
+    body.status ?? "active",
+  ];
+  if (exp !== null && exp !== undefined) {
+    insertArgs.push(exp);
+  }
   await pool.execute(
     `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, username, status, expiration_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      req.auth!.tenantId,
-      body.customer_id ?? null,
-      body.package_id ?? null,
-      body.username,
-      body.status ?? "active",
-      body.expiration_date ?? null,
-    ]
+     VALUES (?, ?, ?, ?, ?, ?, ${expFragment})`,
+    insertArgs
   );
   await pool.execute(
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,

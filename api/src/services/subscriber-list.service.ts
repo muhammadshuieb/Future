@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import { AccountingService } from "./accounting.service.js";
 
 export type SubscriberListFilters = {
   q?: string;
@@ -34,6 +35,7 @@ const SORT_COLS: Record<string, string> = {
   created_at: "s.created_at",
   start_date: "s.created_at",
   expiration_date: "s.expiration_date",
+  last_seen: "last_seen_at",
 };
 
 function clampPage(n: number): number {
@@ -64,25 +66,25 @@ export async function computeSubscriberStats(pool: Pool, tenantId: string): Prom
   };
   if (!(await hasTable(pool, "subscribers"))) return out;
 
+  const accounting = new AccountingService(pool);
   const hasRadacct = await hasTable(pool, "radacct");
-  const hasAcctUpd = hasRadacct && (await hasColumn(pool, "radacct", "acctupdatetime"));
-  const activeSess = hasRadacct
-    ? hasAcctUpd
-      ? `r.acctstoptime IS NULL AND COALESCE(r.acctupdatetime, r.acctstarttime) > DATE_SUB(NOW(), INTERVAL 15 MINUTE)`
-      : `r.acctstoptime IS NULL AND r.acctstarttime > DATE_SUB(NOW(), INTERVAL 15 MINUTE)`
-    : "0";
+  let radacctOnlineExists = "0";
+  if (hasRadacct) {
+    const p = await accounting.buildActiveRadacctPredicate("r");
+    radacctOnlineExists = `EXISTS (
+      SELECT 1 FROM radacct r
+      INNER JOIN subscribers sx ON sx.username = r.username AND sx.tenant_id = s.tenant_id AND sx.id = s.id
+      WHERE ${p}
+    )`;
+  }
 
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
-       SUM(CASE WHEN s.status = 'active' AND (s.expiration_date IS NULL OR s.expiration_date >= NOW()) THEN 1 ELSE 0 END) AS active,
-       SUM(CASE WHEN s.status = 'expired' OR (s.expiration_date IS NOT NULL AND s.expiration_date < NOW()) THEN 1 ELSE 0 END) AS expired,
+       SUM(CASE WHEN s.status = 'active' AND (s.expiration_date IS NULL OR DATE(s.expiration_date) > CURDATE()) THEN 1 ELSE 0 END) AS active,
+       SUM(CASE WHEN s.status = 'expired' OR (s.expiration_date IS NOT NULL AND DATE(s.expiration_date) <= CURDATE()) THEN 1 ELSE 0 END) AS expired,
        SUM(CASE WHEN COALESCE(p.quota_total_bytes,0) > 0 AND s.used_bytes >= p.quota_total_bytes THEN 1 ELSE 0 END) AS quota_finished,
-       SUM(CASE WHEN s.status IN ('suspended','disabled','inactive') THEN 1 ELSE 0 END) AS suspended,
-       SUM(CASE WHEN EXISTS (
-         SELECT 1 FROM radacct r
-         INNER JOIN subscribers sx ON sx.username = r.username AND sx.tenant_id = s.tenant_id AND sx.id = s.id
-         WHERE ${hasRadacct ? activeSess : "0"}
-       ) THEN 1 ELSE 0 END) AS online_now,
+       SUM(CASE WHEN s.status IN ('suspended','disabled','inactive','blocked') THEN 1 ELSE 0 END) AS suspended,
+       SUM(CASE WHEN ${radacctOnlineExists} THEN 1 ELSE 0 END) AS online_now,
        SUM(CASE WHEN EXISTS (
          SELECT 1 FROM invoices i
          WHERE i.tenant_id = s.tenant_id AND i.subscriber_id = s.id
@@ -117,6 +119,15 @@ export async function querySubscribersList(
   const hasPost = await hasTable(pool, "radpostauth");
   const hasInvoices = await hasTable(pool, "invoices");
 
+  const accounting = new AccountingService(pool);
+  const predOn = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_on") : "0=1";
+  const predPick = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_pick") : "0=1";
+  const predSn = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_sn") : "0=1";
+  const predCnt = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_cnt") : "0=1";
+  const predIp = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_ip") : "0=1";
+  const predNasip = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_nasip") : "0=1";
+  const predUi = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_ui") : "0=1";
+
   const nasJoin = withNas ? "LEFT JOIN nas_devices nd ON nd.id = s.nas_server_id AND nd.tenant_id = s.tenant_id" : "";
   const nasSelect = withNas ? ", nd.id AS nas_server_id, nd.name AS nas_name, nd.ip AS nas_ip" : "";
   const regJoin = hasRegions
@@ -124,20 +135,66 @@ export async function querySubscribersList(
     : "";
   const regSelect = hasRegions ? ", reg.name AS region_name" : ", NULL AS region_name";
 
-  const activeSessWhere =
-    hasRadacct && (await hasColumn(pool, "radacct", "acctupdatetime"))
-      ? `r2.acctstoptime IS NULL AND COALESCE(r2.acctupdatetime, r2.acctstarttime) > DATE_SUB(NOW(), INTERVAL 15 MINUTE)`
-      : hasRadacct
-        ? `r2.acctstoptime IS NULL AND r2.acctstarttime > DATE_SUB(NOW(), INTERVAL 15 MINUTE)`
-        : "0";
-
-  const onlineExpr = hasRadacct
-    ? `(SELECT COUNT(*) FROM radacct r2 WHERE r2.username = s.username AND ${activeSessWhere})`
+  const isOnlineExpr = hasRadacct
+    ? `CASE WHEN EXISTS (SELECT 1 FROM radacct r_on WHERE r_on.username = s.username AND (${predOn})) THEN 1 ELSE 0 END`
     : "0";
 
-  const lastLoginExpr = hasPost
-    ? `(SELECT MAX(authdate) FROM radpostauth ra WHERE ra.username = s.username)`
+  const activeSessionsExpr = hasRadacct
+    ? `(SELECT COUNT(*) FROM radacct r_cnt WHERE r_cnt.username = s.username AND (${predCnt}))`
+    : "0";
+
+  const activeSessionIdExpr = hasRadacct
+    ? `(SELECT CAST(r_pick.radacctid AS CHAR) FROM radacct r_pick WHERE r_pick.username = s.username AND (${predPick}) ORDER BY r_pick.acctstarttime DESC LIMIT 1)`
     : "NULL";
+
+  const sessionFramedIpExpr = hasRadacct
+    ? `(SELECT r_ip.framedipaddress FROM radacct r_ip WHERE r_ip.username = s.username AND (${predIp}) ORDER BY r_ip.acctstarttime DESC LIMIT 1)`
+    : "NULL";
+
+  const sessionNasIpExpr = hasRadacct
+    ? `(SELECT r_nasip.nasipaddress FROM radacct r_nasip WHERE r_nasip.username = s.username AND (${predNasip}) ORDER BY r_nasip.acctstarttime DESC LIMIT 1)`
+    : "NULL";
+
+  const sessionNasNameExpr =
+    hasRadacct && withNas
+      ? `(SELECT nds.name FROM radacct r_sn
+          LEFT JOIN nas_devices nds ON nds.ip = r_sn.nasipaddress AND nds.tenant_id = s.tenant_id
+          WHERE r_sn.username = s.username AND (${predSn})
+          ORDER BY r_sn.acctstarttime DESC LIMIT 1)`
+      : "NULL";
+
+  const lastLoginExpr = hasPost
+    ? `(SELECT MAX(ra.authdate) FROM radpostauth ra WHERE ra.username = s.username)`
+    : "NULL";
+
+  const lastRadacctActivityExpr = hasRadacct
+    ? `(SELECT MAX(COALESCE(rx.acctupdatetime, rx.acctstarttime)) FROM radacct rx WHERE rx.username = s.username)`
+    : "NULL";
+
+  const lastSeenAtExpr =
+    hasPost && hasRadacct
+      ? `NULLIF(GREATEST(
+           COALESCE(${lastLoginExpr}, '1000-01-01'),
+           COALESCE(${lastRadacctActivityExpr}, '1000-01-01')
+         ), '1000-01-01')`
+      : hasPost
+        ? lastLoginExpr
+        : hasRadacct
+          ? lastRadacctActivityExpr
+          : "NULL";
+
+  const subscriberUiStatusExpr = hasRadacct
+    ? `CASE
+         WHEN s.status IN ('disabled','suspended','inactive','blocked') THEN 'disabled'
+         WHEN s.status = 'expired' OR (s.expiration_date IS NOT NULL AND DATE(s.expiration_date) <= CURDATE()) THEN 'expired'
+         WHEN EXISTS (SELECT 1 FROM radacct r_ui WHERE r_ui.username = s.username AND (${predUi})) THEN 'online'
+         ELSE 'active'
+       END`
+    : `CASE
+         WHEN s.status IN ('disabled','suspended','inactive','blocked') THEN 'disabled'
+         WHEN s.status = 'expired' OR (s.expiration_date IS NOT NULL AND DATE(s.expiration_date) <= CURDATE()) THEN 'expired'
+         ELSE 'active'
+       END`;
 
   const debtExpr = hasInvoices
     ? `(SELECT COALESCE(SUM(
@@ -170,9 +227,9 @@ export async function querySubscribersList(
 
   const sf = filters.status_filter ?? "all";
   if (sf === "active") {
-    where.push(`s.status = 'active' AND (s.expiration_date IS NULL OR s.expiration_date >= NOW())`);
+    where.push(`s.status = 'active' AND (s.expiration_date IS NULL OR DATE(s.expiration_date) > CURDATE())`);
   } else if (sf === "expired") {
-    where.push(`(s.status = 'expired' OR (s.expiration_date IS NOT NULL AND s.expiration_date < NOW()))`);
+    where.push(`(s.status = 'expired' OR (s.expiration_date IS NOT NULL AND DATE(s.expiration_date) <= CURDATE()))`);
   } else if (sf === "disabled") {
     where.push(`s.status IN ('disabled','suspended','inactive','blocked')`);
   }
@@ -240,7 +297,14 @@ export async function querySubscribersList(
             p.name AS package_name,
             p.quota_total_bytes,
             c.display_name AS customer_name,
-            ${onlineExpr} AS active_sessions,
+            ${activeSessionsExpr} AS active_sessions,
+            ${isOnlineExpr} AS is_online,
+            ${activeSessionIdExpr} AS active_session_id,
+            ${sessionFramedIpExpr} AS session_framed_ip,
+            ${sessionNasIpExpr} AS session_nas_ip,
+            ${sessionNasNameExpr} AS session_nas_name,
+            ${lastSeenAtExpr} AS last_seen_at,
+            ${subscriberUiStatusExpr} AS subscriber_ui_status,
             ${lastLoginExpr} AS last_login,
             ${debtExpr} AS debt_total,
             ${overdueExpr} AS overdue_invoice_count

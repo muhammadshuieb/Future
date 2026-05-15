@@ -1,7 +1,6 @@
 ﻿import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { hasColumn, hasTable } from "../db/schemaGuards.js";
-import { config } from "../config.js";
 
 /**
  * Aggregates radacct into user_usage_live / user_usage_daily.
@@ -48,6 +47,14 @@ export class AccountingService {
         (${p}acctupdatetime IS NOT NULL AND ${p}acctupdatetime >= DATE_SUB(NOW(), INTERVAL ${freshMinutes} MINUTE))
         OR ${p}acctstarttime >= DATE_SUB(NOW(), INTERVAL ${freshMinutes} MINUTE)
       )`;
+  }
+
+  /**
+   * SQL predicate for an open radacct row considered "online" for dashboards
+   * (matches `/api/online-users` freshness rules). Alias must match the radacct table alias in your query.
+   */
+  async buildActiveRadacctPredicate(alias: string): Promise<string> {
+    return this.activeSessionWhere(alias);
   }
 
   async countActiveUsernames(tenantId: string): Promise<number> {

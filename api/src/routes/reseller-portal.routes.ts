@@ -111,7 +111,8 @@ router.post("/subscribers", requireResellerPortalAuth, async (req, res, next) =>
     const id = randomUUID();
     const tempPass = randomUUID().replace(/-/g, "").slice(0, 12);
     await pool.execute(
-      `INSERT INTO subscribers (id, tenant_id, username, package_id, status) VALUES (?, ?, ?, ?, 'active')`,
+      `INSERT INTO subscribers (id, tenant_id, username, package_id, status, expiration_date)
+       VALUES (?, ?, ?, ?, 'active', CURDATE())`,
       [id, r.tenantId, parsed.data.username, parsed.data.package_id]
     );
     await pool.execute(
