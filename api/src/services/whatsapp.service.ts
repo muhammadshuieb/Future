@@ -6,10 +6,10 @@ import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.j
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import {
-  loadEmojiFileForWahaSend,
+  buildWahaMediaFileVariants,
   resolveEmojiPreviewUrl,
-  resolveWahaEmojiFetchUrl,
   saveWhatsAppEmojiImage,
+  type WahaMediaFilePayload,
 } from "../lib/whatsapp-assets.js";
 
 type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
@@ -485,46 +485,41 @@ async function sendWahaMessage(
   return { providerId: providerId || null };
 }
 
-async function sendWahaImage(
+function wahaMediaFileBody(file: WahaMediaFilePayload): Record<string, string> {
+  if (file.data) {
+    return { mimetype: file.mimetype, filename: file.filename, data: file.data };
+  }
+  if (file.url) {
+    return { mimetype: file.mimetype, filename: file.filename, url: file.url };
+  }
+  throw new Error("waha_media_file_empty");
+}
+
+async function postWahaMediaEndpoint(
   settings: WhatsAppSettingsRow,
-  phone: string,
-  storedImage: string
+  chatId: string,
+  endpoint: "sendImage" | "sendFile",
+  file: WahaMediaFilePayload
 ): Promise<{ providerId: string | null }> {
   const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
   const session = String(settings.session_name ?? "").trim();
-  if (!baseUrl || !session) throw new Error("waha_not_configured");
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (settings.api_key) {
     headers.Authorization = `Bearer ${settings.api_key}`;
     headers["X-Api-Key"] = settings.api_key;
   }
-  const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
-
-  const filePayload = await loadEmojiFileForWahaSend(storedImage);
-  const fetchUrl = resolveWahaEmojiFetchUrl(storedImage);
-  const fileBody = filePayload
-    ? { mimetype: filePayload.mimetype, filename: filePayload.filename, data: filePayload.data }
-    : fetchUrl
-      ? { url: fetchUrl }
-      : null;
-  if (!fileBody) {
-    throw new Error("emoji_file_unavailable");
-  }
-
-  const response = await wahaFetch(`${baseUrl}/api/sendImage`, {
+  const response = await wahaFetch(`${baseUrl}/api/${endpoint}`, {
     method: "POST",
     headers,
     body: JSON.stringify({
       session,
       chatId,
-      file: fileBody,
+      file: wahaMediaFileBody(file),
     }),
   });
   const textBody = await response.text();
   if (!response.ok) {
-    throw new Error(`waha_image_send_failed: ${response.status} ${textBody.slice(0, 300)}`);
+    throw new Error(`waha_${endpoint}_failed: ${response.status} ${textBody.slice(0, 300)}`);
   }
   let parsed: unknown = null;
   try {
@@ -537,6 +532,48 @@ async function sendWahaImage(
       ? String((parsed as { id?: unknown }).id ?? "")
       : null;
   return { providerId: providerId || null };
+}
+
+/** Send branding image via WAHA sendImage (preferred) or sendFile (fallback). */
+async function sendWahaImage(
+  settings: WhatsAppSettingsRow,
+  phone: string,
+  storedImage: string
+): Promise<{ providerId: string | null }> {
+  const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
+  const session = String(settings.session_name ?? "").trim();
+  if (!baseUrl || !session) throw new Error("waha_not_configured");
+
+  const runtime = await getSessionRuntimeStatus(settings);
+  if (!runtime.connected) {
+    throw new Error(`waha_session_not_ready:${runtime.status ?? "unknown"}`);
+  }
+
+  const headers: Record<string, string> = {};
+  if (settings.api_key) {
+    headers.Authorization = `Bearer ${settings.api_key}`;
+    headers["X-Api-Key"] = settings.api_key;
+  }
+  const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
+
+  const variants = await buildWahaMediaFileVariants(storedImage);
+  if (variants.length === 0) {
+    throw new Error("emoji_file_unavailable");
+  }
+
+  const errors: string[] = [];
+  for (const file of variants) {
+    const mode = file.data ? "base64" : "url";
+    for (const endpoint of ["sendImage", "sendFile"] as const) {
+      try {
+        return await postWahaMediaEndpoint(settings, chatId, endpoint, file);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`${endpoint}/${mode}: ${msg}`);
+      }
+    }
+  }
+  throw new Error(`waha_media_send_failed: ${errors.join(" | ").slice(0, 900)}`);
 }
 
 /** Sends optional branding emoji/sticker image then the text body. */
@@ -559,6 +596,7 @@ async function deliverWhatsAppMessage(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[whatsapp] emoji image send failed", msg, { tenantId, storedImage });
+      await setLastCheck(tenantId, false, `image_attach_failed: ${msg.slice(0, 500)}`);
     }
   }
   const textResult = await sendWahaMessage(settings, phone, finalText);
@@ -949,6 +987,32 @@ export async function updateWhatsAppSettings(
     ]
   );
   return getWhatsAppSettings(tenantId);
+}
+
+/** Send a test image to verify WAHA sendImage + stored emoji file (uses connected session owner phone). */
+export async function testWhatsAppImageSend(
+  tenantId: string,
+  phoneInput?: string | null
+): Promise<{ sent: boolean; phone: string | null; error?: string }> {
+  const settings = await getSettingsRow(tenantId);
+  if (!settings.enabled) return { sent: false, phone: null, error: "whatsapp_disabled" };
+  const storedImage = String(settings.emoji_image_url ?? "").trim();
+  if (!storedImage) return { sent: false, phone: null, error: "emoji_not_uploaded" };
+  if (!Boolean(Number(settings.attach_emoji_image ?? 0))) {
+    return { sent: false, phone: null, error: "attach_emoji_disabled" };
+  }
+  const phone = normalizePhone(phoneInput ?? "") ?? (await getSessionOwnerPhoneFromRuntime(settings));
+  if (!phone) return { sent: false, phone: null, error: "missing_test_phone" };
+  try {
+    await ensureSessionReady(settings);
+    const result = await sendWahaImage(settings, phone, storedImage);
+    await setLastCheck(tenantId, true, result.providerId ? null : "image_sent_no_provider_id");
+    return { sent: true, phone };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await setLastCheck(tenantId, false, `image_test_failed: ${msg.slice(0, 500)}`);
+    return { sent: false, phone, error: msg.slice(0, 300) };
+  }
 }
 
 export async function testWhatsAppConnection(tenantId: string): Promise<WhatsAppStatus> {

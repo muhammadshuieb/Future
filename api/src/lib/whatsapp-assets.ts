@@ -143,39 +143,85 @@ export async function readEmojiAssetFromStored(
   }
 }
 
-/**
- * Load emoji for WAHA sendImage: local disk (API container) or HTTP fetch from API (worker container).
- */
-export async function loadEmojiFileForWahaSend(
-  stored: string | null | undefined
-): Promise<{ mimetype: string; filename: string; data: string } | null> {
-  const t = String(stored ?? "").trim();
-  if (!t) return null;
+/** WAHA media payload — always requires mimetype + filename (see WAHA sendImage docs). */
+export type WahaMediaFilePayload = {
+  mimetype: string;
+  filename: string;
+  data?: string;
+  url?: string;
+};
 
-  let file = await readEmojiAssetFromStored(t);
-  if (!file) {
-    const url = resolveWahaEmojiFetchUrl(t);
-    if (!url) return null;
+function emojiFilenameFromStored(stored: string): string {
+  const parsed = parseEmojiAssetPath(stored);
+  const ext = parsed?.ext === "jpeg" ? "jpg" : parsed?.ext ?? "png";
+  return `emoji.${ext}`;
+}
+
+/**
+ * Build file payloads for WAHA sendImage/sendFile.
+ * Tries base64 from disk first, then base64 from internal HTTP fetch, then public URL for WAHA.
+ */
+export async function buildWahaMediaFileVariants(
+  stored: string | null | undefined
+): Promise<WahaMediaFilePayload[]> {
+  const t = String(stored ?? "").trim();
+  if (!t) return [];
+
+  const variants: WahaMediaFilePayload[] = [];
+  const filename = emojiFilenameFromStored(t);
+  const parsed = parseEmojiAssetPath(t);
+  const ext = parsed?.ext === "jpeg" ? "jpg" : parsed?.ext ?? "png";
+  const mimetype = emojiMimetypeFromExt(ext);
+
+  const disk = await readEmojiAssetFromStored(t);
+  if (disk) {
+    variants.push({
+      mimetype: disk.mimetype,
+      filename: disk.filename,
+      data: disk.buffer.toString("base64"),
+    });
+  }
+
+  const internalUrl = resolveWahaEmojiFetchUrl(t);
+  if (internalUrl && !disk) {
     try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) return null;
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      if (buffer.length === 0) return null;
-      const parsed = parseEmojiAssetPath(t);
-      const ext = parsed?.ext === "jpeg" ? "jpg" : parsed?.ext ?? "png";
-      file = {
-        buffer,
-        mimetype: emojiMimetypeFromExt(ext),
-        filename: `emoji.${ext}`,
-      };
+      const resp = await fetch(internalUrl, { signal: AbortSignal.timeout(8000) });
+      if (resp.ok) {
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        if (buffer.length > 0) {
+          variants.push({
+            mimetype,
+            filename,
+            data: buffer.toString("base64"),
+          });
+        }
+      }
     } catch {
-      return null;
+      // fall through to URL variant
     }
   }
 
+  if (internalUrl) {
+    variants.push({
+      mimetype,
+      filename,
+      url: internalUrl,
+    });
+  }
+
+  return variants;
+}
+
+/** @deprecated Use buildWahaMediaFileVariants */
+export async function loadEmojiFileForWahaSend(
+  stored: string | null | undefined
+): Promise<{ mimetype: string; filename: string; data: string } | null> {
+  const variants = await buildWahaMediaFileVariants(stored);
+  const withData = variants.find((v) => v.data);
+  if (!withData?.data) return null;
   return {
-    mimetype: file.mimetype,
-    filename: file.filename,
-    data: file.buffer.toString("base64"),
+    mimetype: withData.mimetype,
+    filename: withData.filename,
+    data: withData.data,
   };
 }

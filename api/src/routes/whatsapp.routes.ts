@@ -19,6 +19,7 @@ import {
   sendExpiryReminders,
   sendUsageThresholdAlerts,
   testWhatsAppConnection,
+  testWhatsAppImageSend,
   updateWhatsAppSettings,
   updateWhatsAppTemplate,
   uploadWhatsAppEmojiImage,
@@ -154,6 +155,29 @@ router.post("/test", async (req, res) => {
   } catch (e) {
     console.error("whatsapp test", e);
     res.status(500).json({ error: "whatsapp_test_failed", ...whatsappErrorDetail(e) });
+  }
+});
+
+const testImageBody = z.object({
+  phone: z.string().max(32).optional(),
+});
+
+router.post("/test-image", async (req, res) => {
+  const parsed = testImageBody.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const result = await testWhatsAppImageSend(req.auth!.tenantId, parsed.data.phone ?? null);
+    if (!result.sent) {
+      res.status(400).json({ error: result.error ?? "image_test_failed", phone: result.phone });
+      return;
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("whatsapp test image", e);
+    res.status(500).json({ error: "whatsapp_test_image_failed", ...whatsappErrorDetail(e) });
   }
 });
 

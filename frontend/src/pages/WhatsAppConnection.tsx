@@ -60,6 +60,7 @@ export function WhatsAppConnectionPage() {
   const [saving, setSaving] = useState(false);
   const [uploadingEmoji, setUploadingEmoji] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingImage, setTestingImage] = useState(false);
   const [autoConfiguring, setAutoConfiguring] = useState(false);
 
   const requiresAutoConfig = useCallback((cfg: Settings) => !cfg.enabled, []);
@@ -215,6 +216,25 @@ export function WhatsAppConnectionPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function testImageSend() {
+    setTestingImage(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const r = await apiFetch("/api/whatsapp/test-image", { method: "POST", body: "{}" });
+      const data = (await r.json().catch(() => ({}))) as { sent?: boolean; phone?: string; error?: string };
+      if (!r.ok) {
+        throw new Error(data.error ?? (await readApiError(r)));
+      }
+      setInfo(t("whatsapp.imageTestOk").replace("{phone}", data.phone ?? ""));
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTestingImage(false);
     }
   }
 
@@ -383,6 +403,14 @@ export function WhatsAppConnectionPage() {
             {t("whatsapp.attachEmojiImage")}
           </label>
           <p className="text-xs opacity-60">{t("whatsapp.emojiImageHint")}</p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void testImageSend()}
+            disabled={testingImage || !settings.attach_emoji_image || !settings.emoji_image_url}
+          >
+            {testingImage ? t("common.loading") : t("whatsapp.testImage")}
+          </Button>
         </div>
       </Card>
 
