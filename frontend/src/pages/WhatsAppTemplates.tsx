@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, Save, Sparkles } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
+import { whatsAppEmojiPreviewSrc } from "../lib/whatsappEmoji";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { TextAreaField, TextField } from "../components/ui/TextField";
@@ -197,7 +198,19 @@ export function WhatsAppTemplatesPage() {
       if (!e.ok) throw new Error(await readApiError(e));
       const settingsRes = await apiFetch("/api/whatsapp/settings", {
         method: "PUT",
-        body: JSON.stringify(waSettings),
+        body: JSON.stringify({
+          enabled: waSettings.enabled,
+          waha_url: waSettings.waha_url || "",
+          session_name: waSettings.session_name || "default",
+          api_key: waSettings.api_key || "",
+          reminder_days: waSettings.reminder_days,
+          message_interval_seconds: waSettings.message_interval_seconds,
+          auto_send_new: waSettings.auto_send_new,
+          usage_alert_thresholds: waSettings.usage_alert_thresholds,
+          company_name: waSettings.company_name,
+          emoji_image_url: waSettings.emoji_image_url,
+          attach_emoji_image: waSettings.attach_emoji_image,
+        }),
       });
       if (!settingsRes.ok) throw new Error(await readApiError(settingsRes));
       setInfo(t("whatsapp.saved"));
@@ -273,9 +286,10 @@ export function WhatsAppTemplatesPage() {
             }}
           />
           {uploadingEmoji ? <p className="text-xs opacity-60">{t("common.loading")}</p> : null}
-          {(waSettings.emoji_image_preview_url || waSettings.emoji_image_url) ? (
+          {whatsAppEmojiPreviewSrc(waSettings.emoji_image_preview_url, waSettings.emoji_image_url) ? (
             <img
-              src={waSettings.emoji_image_preview_url || waSettings.emoji_image_url}
+              key={waSettings.emoji_image_url}
+              src={whatsAppEmojiPreviewSrc(waSettings.emoji_image_preview_url, waSettings.emoji_image_url)}
               alt=""
               className="h-20 w-20 rounded-lg border border-[hsl(var(--border))] object-contain bg-white/5 p-1"
             />

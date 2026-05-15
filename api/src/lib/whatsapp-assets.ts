@@ -2,6 +2,8 @@ import fs from "fs/promises";
 import path from "path";
 import { config } from "../config.js";
 
+const ASSET_PATH_RE = /\/api\/whatsapp\/assets\/([0-9a-f-]{36})\/emoji\.(\w+)/i;
+
 const ASSETS_ROOT =
   process.env.WHATSAPP_ASSETS_DIR?.trim() || path.join(process.cwd(), "data", "whatsapp-assets");
 
@@ -20,14 +22,37 @@ export function whatsAppEmojiRelPath(tenantId: string, ext: string): string {
   return `/api/whatsapp/assets/${tenantId}/emoji.${ext}`;
 }
 
-/** URL the admin UI can use to preview the stored emoji (browser-facing). */
-export function resolveEmojiPublicUrl(stored: string | null | undefined): string {
+/** Parse stored path or URL into tenant + extension when it is our asset route. */
+export function parseEmojiAssetPath(stored: string | null | undefined): { tenantId: string; ext: string } | null {
+  const t = String(stored ?? "").trim();
+  if (!t) return null;
+  const m = t.match(ASSET_PATH_RE);
+  if (!m) return null;
+  return { tenantId: m[1], ext: m[2] };
+}
+
+/**
+ * Browser preview URL. Prefer same-origin relative path so it works behind any public IP/domain
+ * without relying on PUBLIC_APP_URL.
+ */
+export function resolveEmojiPreviewUrl(stored: string | null | undefined): string {
   const t = String(stored ?? "").trim();
   if (!t) return "";
-  if (t.startsWith("http://") || t.startsWith("https://")) return t;
-  const base = config.publicAppUrl.replace(/\/+$/, "");
+  if (t.startsWith("/api/whatsapp/assets/")) return t;
+  if (t.startsWith("http://") || t.startsWith("https://")) {
+    const parsed = parseEmojiAssetPath(t);
+    if (parsed) return whatsAppEmojiRelPath(parsed.tenantId, parsed.ext);
+    return t;
+  }
   const p = t.startsWith("/") ? t : `/${t}`;
+  if (p.startsWith("/api/whatsapp/assets/")) return p;
+  const base = config.publicAppUrl.replace(/\/+$/, "");
   return `${base}${p}`;
+}
+
+/** URL the admin UI can use to preview the stored emoji (browser-facing). */
+export function resolveEmojiPublicUrl(stored: string | null | undefined): string {
+  return resolveEmojiPreviewUrl(stored);
 }
 
 /** URL WAHA uses to download the image (must be reachable from the WAHA container). */
@@ -86,4 +111,34 @@ export function resolveEmojiAssetFile(tenantId: string, ext: string): string | n
   if (!allowed.has(safeExt)) return null;
   const normalized = safeExt === "jpeg" ? "jpg" : safeExt;
   return path.join(whatsAppAssetDir(tenantId), `emoji.${normalized}`);
+}
+
+export function emojiMimetypeFromExt(ext: string): string {
+  const e = ext.toLowerCase();
+  if (e === "webp") return "image/webp";
+  if (e === "gif") return "image/gif";
+  if (e === "jpg" || e === "jpeg") return "image/jpeg";
+  return "image/png";
+}
+
+/** Load emoji bytes from disk when stored value points at our asset route. */
+export async function readEmojiAssetFromStored(
+  stored: string | null | undefined
+): Promise<{ buffer: Buffer; mimetype: string; filename: string } | null> {
+  const parsed = parseEmojiAssetPath(stored);
+  if (!parsed) return null;
+  const filePath = resolveEmojiAssetFile(parsed.tenantId, parsed.ext);
+  if (!filePath) return null;
+  try {
+    const buffer = await fs.readFile(filePath);
+    if (buffer.length === 0) return null;
+    const ext = parsed.ext === "jpeg" ? "jpg" : parsed.ext;
+    return {
+      buffer,
+      mimetype: emojiMimetypeFromExt(ext),
+      filename: `emoji.${ext}`,
+    };
+  } catch {
+    return null;
+  }
 }

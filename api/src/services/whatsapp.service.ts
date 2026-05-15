@@ -6,7 +6,8 @@ import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.j
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import {
-  resolveEmojiPublicUrl,
+  readEmojiAssetFromStored,
+  resolveEmojiPreviewUrl,
   resolveWahaEmojiFetchUrl,
   saveWhatsAppEmojiImage,
 } from "../lib/whatsapp-assets.js";
@@ -457,7 +458,7 @@ async function sendWahaMessage(
 async function sendWahaImage(
   settings: WhatsAppSettingsRow,
   phone: string,
-  imageUrl: string
+  storedImage: string
 ): Promise<{ providerId: string | null }> {
   const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
   const session = String(settings.session_name ?? "").trim();
@@ -470,16 +471,26 @@ async function sendWahaImage(
     headers["X-Api-Key"] = settings.api_key;
   }
   const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
+
+  const onDisk = await readEmojiAssetFromStored(storedImage);
+  const fileBody = onDisk
+    ? {
+        mimetype: onDisk.mimetype,
+        filename: onDisk.filename,
+        data: onDisk.buffer.toString("base64"),
+      }
+    : {
+        mimetype: imageMimetypeFromUrl(storedImage),
+        url: resolveWahaEmojiFetchUrl(storedImage),
+      };
+
   const response = await fetch(`${baseUrl}/api/sendImage`, {
     method: "POST",
     headers,
     body: JSON.stringify({
       session,
       chatId,
-      file: {
-        mimetype: imageMimetypeFromUrl(imageUrl),
-        url: imageUrl,
-      },
+      file: fileBody,
     }),
   });
   const textBody = await response.text();
@@ -505,16 +516,17 @@ async function deliverWhatsAppMessage(
   phone: string,
   text: string
 ): Promise<{ providerId: string | null }> {
-  const imageUrl = resolveWahaEmojiFetchUrl(settings.emoji_image_url);
-  const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && imageUrl.length > 0;
+  const storedImage = String(settings.emoji_image_url ?? "").trim();
+  const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && storedImage.length > 0;
   let lastId: string | null = null;
   if (attachEmoji) {
     try {
-      const img = await sendWahaImage(settings, phone, imageUrl);
+      const img = await sendWahaImage(settings, phone, storedImage);
       lastId = img.providerId;
       await sleepMs(800);
     } catch (e) {
-      console.warn("[whatsapp] emoji image skipped", e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[whatsapp] emoji image send failed", msg);
     }
   }
   const textResult = await sendWahaMessage(settings, phone, text);
@@ -835,7 +847,7 @@ export async function getWhatsAppSettings(tenantId: string): Promise<WhatsAppSet
     usage_alert_thresholds: parseUsageThresholds(settings.usage_alert_thresholds),
     company_name: String(settings.company_name ?? ""),
     emoji_image_url: String(settings.emoji_image_url ?? ""),
-    emoji_image_preview_url: resolveEmojiPublicUrl(settings.emoji_image_url),
+    emoji_image_preview_url: resolveEmojiPreviewUrl(settings.emoji_image_url),
     attach_emoji_image: Boolean(Number(settings.attach_emoji_image ?? 0)),
   };
 }
@@ -873,6 +885,11 @@ export async function updateWhatsAppSettings(
 ): Promise<WhatsAppSettingsView> {
   await ensureSchema();
   await ensureTenantDefaults(tenantId);
+  const existing = await getSettingsRow(tenantId);
+  let emojiUrl = (input.emoji_image_url ?? "").trim().slice(0, 512) || null;
+  if (!emojiUrl && input.attach_emoji_image && existing.emoji_image_url) {
+    emojiUrl = String(existing.emoji_image_url).trim().slice(0, 512) || null;
+  }
   await pool.execute(
     `UPDATE whatsapp_settings
      SET enabled = ?, waha_url = ?, session_name = ?, api_key = ?, reminder_days = ?, message_interval_seconds = ?, auto_send_new = ?,
@@ -889,7 +906,7 @@ export async function updateWhatsAppSettings(
       input.auto_send_new ? 1 : 0,
       parseUsageThresholds(input.usage_alert_thresholds.join(",")).join(","),
       (input.company_name ?? "").trim().slice(0, 128),
-      (input.emoji_image_url ?? "").trim().slice(0, 512) || null,
+      emojiUrl,
       input.attach_emoji_image ? 1 : 0,
       tenantId,
     ]

@@ -4,7 +4,7 @@ import fs from "fs";
 import { z } from "zod";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { resolveEmojiAssetFile } from "../lib/whatsapp-assets.js";
+import { emojiMimetypeFromExt, resolveEmojiAssetFile } from "../lib/whatsapp-assets.js";
 import {
   applyProfessionalArabicTemplates,
   deleteWhatsAppLogs,
@@ -45,6 +45,8 @@ whatsappAssetRoutes.get("/assets/:tenantId/emoji.:ext", (req, res) => {
     res.status(404).json({ error: "not_found" });
     return;
   }
+  res.setHeader("Content-Type", emojiMimetypeFromExt(ext));
+  res.setHeader("Cache-Control", "private, max-age=3600");
   res.sendFile(filePath, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: "not_found" });
   });

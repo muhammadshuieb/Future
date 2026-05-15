@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { QrCode, RefreshCw, Save, Wifi } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
+import { whatsAppEmojiPreviewSrc } from "../lib/whatsappEmoji";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { TextField } from "../components/ui/TextField";
@@ -364,9 +365,10 @@ export function WhatsAppConnectionPage() {
               }}
             />
             {uploadingEmoji ? <p className="text-xs opacity-60">{t("common.loading")}</p> : null}
-            {(settings.emoji_image_preview_url || settings.emoji_image_url) ? (
+            {whatsAppEmojiPreviewSrc(settings.emoji_image_preview_url, settings.emoji_image_url) ? (
               <img
-                src={settings.emoji_image_preview_url || settings.emoji_image_url}
+                key={settings.emoji_image_url}
+                src={whatsAppEmojiPreviewSrc(settings.emoji_image_preview_url, settings.emoji_image_url)}
                 alt=""
                 className="h-20 w-20 rounded-lg border border-[hsl(var(--border))] object-contain bg-white/5 p-1"
               />
