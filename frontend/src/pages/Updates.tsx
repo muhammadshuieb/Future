@@ -28,8 +28,17 @@ type UpdateStatus = {
   remoteCommitDate?: string | null;
   repoDir: string;
   updateInProgress?: boolean;
+  composeUpServices?: string[] | null;
   lastError?: { timestamp: string; message: string } | null;
 };
+
+function formatComposeTargets(
+  services: string[] | null | undefined,
+  t: (key: string) => string
+): string {
+  if (!services || services.length === 0) return t("updates.composeTargetsAll");
+  return services.join(", ");
+}
 
 type CheckResult = {
   updateAvailable: boolean;
@@ -261,6 +270,9 @@ export function UpdatesPage() {
           <p>{t("updates.commit")}: <code>{status?.currentCommit?.slice(0, 12) ?? "-"}</code></p>
           <p>{t("updates.remote")}: {status?.configuredRemote ?? "-"}</p>
           <p>{t("updates.trackBranch")}: {status?.configuredBranch ?? "-"}</p>
+          <p className="text-xs opacity-70">
+            {t("updates.composeTargets")}: {formatComposeTargets(status?.composeUpServices, t)}
+          </p>
         </div>
       </Card>
 

@@ -133,6 +133,9 @@ services:
       APP_UPDATE_COMPOSE_PROJECT_NAME: ${APP_UPDATE_COMPOSE_PROJECT_NAME:-}
       APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES: ${APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES:-2}
       APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE: ${APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE:-false}
+      # Routine updates rebuild only app containers (avoids mysql image rebuild failures). Use * for full stack.
+      APP_UPDATE_COMPOSE_UP_SERVICES: ${APP_UPDATE_COMPOSE_UP_SERVICES:-api,worker,web}
+      APP_UPDATE_COMPOSE_BUILD_TIMEOUT_MS: ${APP_UPDATE_COMPOSE_BUILD_TIMEOUT_MS:-900000}
       # System Health page reads from these. They are docker-network names; safe to leave as defaults
       # because the prometheus/alertmanager services are in the same compose project.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}

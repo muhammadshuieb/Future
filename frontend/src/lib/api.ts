@@ -99,7 +99,12 @@ export function formatMaintenanceUpdateSseError(data: unknown): string {
   if (typeof data === "string") return data;
   if (data && typeof data === "object") {
     const o = data as Record<string, unknown>;
-    if (typeof o.detail === "string" && o.detail.trim()) return o.detail;
+    const parts: string[] = [];
+    if (typeof o.detail === "string" && o.detail.trim()) parts.push(o.detail);
+    if (o.error === "update_port_conflict" && Array.isArray(o.hints)) {
+      parts.push(...o.hints.filter((h): h is string => typeof h === "string"));
+    }
+    if (parts.length) return parts.join("\n");
     if (typeof o.error === "string" && o.error.trim()) return o.error;
   }
   return data == null ? "" : String(data);

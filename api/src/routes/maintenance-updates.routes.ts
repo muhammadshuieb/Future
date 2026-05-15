@@ -97,6 +97,19 @@ function getUpdateConfig() {
   );
   const composeKillBeforeRecycle =
     String(process.env.APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE ?? "false").toLowerCase() === "true";
+  const composeUpServicesRaw = process.env.APP_UPDATE_COMPOSE_UP_SERVICES?.trim();
+  /** Empty = rebuild entire stack; "*" = same; default limits rebuild to app containers (skips mysql/freeradius). */
+  const composeUpServices =
+    composeUpServicesRaw === "*" || composeUpServicesRaw === ""
+      ? []
+      : (composeUpServicesRaw ?? "api,worker,web")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => /^[a-zA-Z0-9_-]+$/.test(s));
+  const composeBuildTimeoutMs = Math.min(
+    30 * 60_000,
+    Math.max(60_000, Number.parseInt(process.env.APP_UPDATE_COMPOSE_BUILD_TIMEOUT_MS ?? "900000", 10) || 900_000)
+  );
   return {
     branch,
     remote,
@@ -118,6 +131,8 @@ function getUpdateConfig() {
     composeProjectName,
     composeRecycleMaxPasses,
     composeKillBeforeRecycle,
+    composeUpServices,
+    composeBuildTimeoutMs,
   };
 }
 
@@ -161,9 +176,11 @@ async function runCommand(cmd: string, args: string[], cwd: string, emitOutput: 
     }
     return { stdout: out, stderr: errOut };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const err = e as Error & { stdout?: string; stderr?: string };
+    const parts = [err.message, err.stderr, err.stdout].filter((x) => typeof x === "string" && x.trim());
+    const msg = parts.join("\n").trim() || String(e);
     if (emitOutput) emitProgress("error", msg);
-    throw e;
+    throw new Error(msg);
   }
 }
 
@@ -255,6 +272,22 @@ function isDockerPortBindConflict(message: string): boolean {
   );
 }
 
+function summarizeUpdateError(message: string): string {
+  if (isDockerPortBindConflict(message)) {
+    const ports = extractDockerBindPorts(message);
+    const list = ports.length ? ports.join(", ") : "3306, 3001";
+    return [
+      `Host port conflict (${list}): another container is already using mysql (3306) and/or waha (3001).`,
+      `The updater stops conflicting containers and retries; routine updates only rebuild api, worker, web.`,
+      `On the host: docker ps --format "table {{.Names}}\\t{{.Ports}}"`,
+    ].join("\n");
+  }
+  if (message.length > 1200) {
+    return `${message.slice(0, 400)}\n…\n${message.slice(-700)}`;
+  }
+  return message;
+}
+
 function portConflictHints(ports: string[]): string[] {
   const list = ports.length ? ports.join(", ") : "3306, 3001, …";
   return [
@@ -285,23 +318,65 @@ function composeLeadArgs(
   return [...compose.baseArgs, ...composeProjectArgs(cfg), ...composeFileArgs(cfg)];
 }
 
+function formatComposeShellLine(
+  compose: { cmd: string; baseArgs: string[] },
+  cfg: ReturnType<typeof getUpdateConfig>,
+  tail: string[]
+): string {
+  return [compose.cmd, ...composeLeadArgs(compose, cfg), ...tail].filter(Boolean).join(" ");
+}
+
+/** Stop containers on the host that publish given TCP ports (frees 3306 / 3001 bind conflicts). */
+async function stopContainersPublishingPorts(
+  ports: string[],
+  cwd: string
+): Promise<void> {
+  const unique = [...new Set(ports.filter((p) => /^\d+$/.test(p)))];
+  for (const port of unique) {
+    try {
+      const { stdout } = await execFileAsync(
+        "docker",
+        ["ps", "-q", "--filter", `publish=${port}`],
+        { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 }
+      );
+      const ids = String(stdout || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const id of ids) {
+        emitProgress("output", `Stopping container ${id.slice(0, 12)} using host port ${port}...`);
+        await runCommand("docker", ["stop", "-t", "15", id], cwd).catch(() => {});
+        await runCommand("docker", ["rm", "-f", id], cwd).catch(() => {});
+      }
+    } catch {
+      // ignore — best effort
+    }
+  }
+}
+
 /** Stop and remove named compose services (containers only; named volumes unchanged). */
 async function runComposeRecycle(
   compose: { cmd: string; baseArgs: string[] },
   cfg: ReturnType<typeof getUpdateConfig>,
   services: string[],
-  opts: { aggressive?: boolean }
+  opts: { aggressive?: boolean; ports?: string[] }
 ): Promise<void> {
-  if (services.length === 0) return;
   const base = composeLeadArgs(compose, cfg);
   const aggressive = Boolean(opts.aggressive) || cfg.composeKillBeforeRecycle;
-  if (aggressive) {
-    await runCommand(compose.cmd, [...base, "kill", ...services], cfg.composeDir).catch(() => {});
+
+  if (services.length > 0) {
+    await runCommand(compose.cmd, [...base, "stop", "-t", "15", ...services], cfg.composeDir).catch(() => {});
+    if (aggressive) {
+      await runCommand(compose.cmd, [...base, "kill", ...services], cfg.composeDir).catch(() => {});
+    }
+    await runCommand(compose.cmd, [...base, "rm", "-sf", ...services], cfg.composeDir).catch(async () => {
+      await runCommand(compose.cmd, [...base, "stop", "-t", "5", ...services], cfg.composeDir).catch(() => {});
+      await runCommand(compose.cmd, [...base, "rm", "-f", ...services], cfg.composeDir).catch(() => {});
+    });
   }
-  await runCommand(compose.cmd, [...base, "rm", "-sf", ...services], cfg.composeDir).catch(async () => {
-    await runCommand(compose.cmd, [...base, "stop", "-t", "5", ...services], cfg.composeDir).catch(() => {});
-    await runCommand(compose.cmd, [...base, "rm", "-f", ...services], cfg.composeDir).catch(() => {});
-  });
+
+  const ports = opts.ports?.length ? opts.ports : ["3306", "3001"];
+  await stopContainersPublishingPorts(ports, cfg.composeDir);
 }
 
 async function resolveCommitDate(gitBin: string, cwd: string, commit: string): Promise<string | null> {
@@ -472,10 +547,23 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
         10_000,
         "resolve-compose"
       );
-      const upTail = ["up", "-d", "--build", ...(cfg.composeRemoveOrphans ? (["--remove-orphans"] as const) : [])];
+      const targeted = cfg.composeUpServices.length > 0;
+      const upTail: string[] = ["up", "-d", "--build"];
+      if (targeted) {
+        upTail.push("--force-recreate", ...cfg.composeUpServices);
+      } else if (cfg.composeRemoveOrphans) {
+        upTail.push("--remove-orphans");
+      }
       const composeUpArgs = [...composeLeadArgs(compose, cfg), ...upTail];
+      const serviceHint = targeted ? cfg.composeUpServices.join(", ") : "all services";
 
-      emitProgress("step", { msg: `$ ${compose.cmd} compose ${upTail.join(" ")}`, step: 4 });
+      emitProgress("step", { msg: `$ ${formatComposeShellLine(compose, cfg, upTail)}`, step: 4 });
+      emitProgress(
+        "output",
+        targeted
+          ? `Compose targets (mysql/waha left running): ${serviceHint}`
+          : `Compose targets: ${serviceHint}`
+      );
       steps.push(`docker compose ${upTail.join(" ")}`);
 
       let composeSuccess = false;
@@ -483,7 +571,7 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
         try {
           await withTimeout(
             runCommand(compose.cmd, composeUpArgs, cfg.composeDir, true),
-            5 * 60_000, // 5min for compose build
+            cfg.composeBuildTimeoutMs,
             `docker-compose-up-pass-${pass}`
           );
           composeSuccess = true;
@@ -497,15 +585,20 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
             pass < cfg.composeRecycleMaxPasses;
           if (!canRecycle) throw upErr;
 
-          emitProgress("output", `Port conflict detected. Recycling services ${cfg.composeRecycleServices.join(",")} (pass ${pass + 1}/${cfg.composeRecycleMaxPasses})...`);
+          const conflictPorts = extractDockerBindPorts(msg);
+          emitProgress(
+            "output",
+            `Port conflict (${conflictPorts.join(", ") || "3306, 3001"}). Recycling ${cfg.composeRecycleServices.join(",")} (pass ${pass + 1}/${cfg.composeRecycleMaxPasses})...`
+          );
           steps.push(`compose recycle ${cfg.composeRecycleServices.join(",")} (pass ${pass + 1}/${cfg.composeRecycleMaxPasses})`);
-          
+
           try {
             await withTimeout(
               runComposeRecycle(compose, cfg, cfg.composeRecycleServices, {
                 aggressive: pass > 0 || cfg.composeKillBeforeRecycle,
+                ports: conflictPorts.length ? conflictPorts : ["3306", "3001"],
               }),
-              60_000,
+              90_000,
               `docker-compose-recycle-pass-${pass}`
             );
           } catch (recycleErr) {
@@ -597,13 +690,13 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
       emitProgress("error", `Manual intervention required: git reset --hard ${originalCommit}`);
     }
 
-    const errorMsg = e instanceof Error ? e.message : String(e);
+    const errorMsg = summarizeUpdateError(e instanceof Error ? e.message : String(e));
     lastUpdateError = {
       timestamp: new Date().toISOString(),
       message: errorMsg,
     };
 
-    throw e;
+    throw new Error(errorMsg);
   } finally {
     // Final safety check
     if (!updateSucceeded) {
@@ -635,6 +728,11 @@ router.get("/updates/status", async (_req, res) => {
       resolveCommitDate(cfg.gitBin, cfg.repoDir, currentCommit),
       readUpdateState(cfg.updateStateFile),
     ]);
+    const persistedErr =
+      typeof state.lastError === "string" && state.lastError.trim()
+        ? { timestamp: state.lastRunAt ?? "", message: state.lastError }
+        : null;
+    const err = lastUpdateError ?? persistedErr;
     res.json({
       ok: true,
       updateEnabled: effectiveEnabled,
@@ -652,7 +750,10 @@ router.get("/updates/status", async (_req, res) => {
       remoteCommit: state.remoteCommit ?? null,
       remoteCommitDate: state.remoteCommitDate ?? null,
       updateInProgress,
-      lastError: lastUpdateError ? { timestamp: lastUpdateError.timestamp, message: lastUpdateError.message.slice(0, 200) } : null,
+      composeUpServices: cfg.composeUpServices.length > 0 ? cfg.composeUpServices : null,
+      lastError: err
+        ? { timestamp: err.timestamp || state.lastRunAt || "", message: err.message.slice(0, 4000) }
+        : null,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "status_failed";
@@ -819,7 +920,8 @@ router.post("/updates/run", async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: "final", data: result })}\n\n`);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "run_failed";
+    const raw = error instanceof Error ? error.message : "run_failed";
+    const message = summarizeUpdateError(raw);
     try {
       if (/spawn .* ENOENT/i.test(message) || message.includes("compose_binary_not_found")) {
         if (!closed) {
@@ -827,8 +929,8 @@ router.post("/updates/run", async (req, res) => {
             `data: ${JSON.stringify({ type: "error", data: { error: "update_runtime_binary_missing", detail: "Missing runtime binary. Set APP_UPDATE_GIT_BIN and/or APP_UPDATE_COMPOSE_BIN to valid commands/paths in API environment." } })}\n\n`
           );
         }
-      } else if (isDockerPortBindConflict(message)) {
-        const ports = extractDockerBindPorts(message);
+      } else if (isDockerPortBindConflict(raw)) {
+        const ports = extractDockerBindPorts(raw);
         if (!closed) {
           res.write(
             `data: ${JSON.stringify({ type: "error", data: { error: "update_port_conflict", detail: message, ports: ports.length ? ports : null, hints: portConflictHints(ports) } })}\n\n`
