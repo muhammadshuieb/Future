@@ -47,7 +47,12 @@ export class RadiusSyncService {
     if (!access) return;
     const username = access.username.trim();
     if (!username) return;
-    const denyReason = resolveRadiusSyncDenyReason(access);
+    const [tenantNasRows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT id FROM nas_devices WHERE tenant_id = ?`,
+      [tenantId]
+    );
+    const tenantNasIds = tenantNasRows.map((r) => String(r.id));
+    const denyReason = resolveRadiusSyncDenyReason(access, tenantNasIds);
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();

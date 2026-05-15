@@ -11,6 +11,7 @@ import { getSystemSettings } from "../services/system-settings.service.js";
 import { RadiusSyncService } from "../services/radius-sync.service.js";
 import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
 import { resolveRadiusSyncDenyReason } from "../lib/radius-sync-deny.js";
+import { tenantNasDeviceIds } from "../lib/package-subscriber-validation.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
 import {
   chargeManagerWalletWithConnection,
@@ -238,8 +239,9 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
     let radiusReason: string | null = null;
     try {
       await radiusSync.syncSubscriber(tx.subscriberId, t);
+      const tenantNasIds = await tenantNasDeviceIds(pool, t);
       const access = await loadSubscriberAccessRow(pool, { tenantId: t, subscriberId: tx.subscriberId });
-      radiusReason = access ? resolveRadiusSyncDenyReason(access) : "not_found";
+      radiusReason = access ? resolveRadiusSyncDenyReason(access, tenantNasIds) : "not_found";
       if (radiusReason) {
         radiusSyncStatus = "failed";
       } else {

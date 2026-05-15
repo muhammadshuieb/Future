@@ -19,7 +19,11 @@ import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
 import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
-import { assertStaffCanAssignPackage, assertSubscriberFitsPackageNas } from "../lib/package-subscriber-validation.js";
+import {
+  assertStaffCanAssignPackage,
+  assertSubscriberFitsPackageNas,
+  tenantNasDeviceIds,
+} from "../lib/package-subscriber-validation.js";
 import { hasColumn } from "../db/schemaGuards.js";
 import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
 import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
@@ -122,6 +126,7 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
 
 router.post("/sync-radius-all", requireRole("admin"), denyViewerWrites, async (req, res) => {
   const tenantId = req.auth!.tenantId;
+  const tenantNasIds = await tenantNasDeviceIds(pool, tenantId);
   const [rows] = await pool.query<RowDataPacket[]>(`SELECT id FROM subscribers WHERE tenant_id = ?`, [tenantId]);
   let synced = 0;
   let allowed = 0;
@@ -131,7 +136,7 @@ router.post("/sync-radius-all", requireRole("admin"), denyViewerWrites, async (r
     await radiusSync.syncSubscriber(id, tenantId);
     synced += 1;
     const access = await loadSubscriberAccessRow(pool, { tenantId, subscriberId: id });
-    if (access && resolveRadiusSyncDenyReason(access) == null) {
+    if (access && resolveRadiusSyncDenyReason(access, tenantNasIds) == null) {
       allowed += 1;
     } else {
       rejected += 1;
@@ -378,12 +383,14 @@ router.post(
     let radius_allowed = true;
     let radius_reason: string | null = null;
     try {
-      await radiusSync.syncSubscriber(req.params.id, req.auth!.tenantId);
+      const tenantId = req.auth!.tenantId;
+      const tenantNasIds = await tenantNasDeviceIds(pool, tenantId);
+      await radiusSync.syncSubscriber(req.params.id, tenantId);
       const access = await loadSubscriberAccessRow(pool, {
-        tenantId: req.auth!.tenantId,
+        tenantId,
         subscriberId: req.params.id,
       });
-      radius_reason = access ? resolveRadiusSyncDenyReason(access) : "not_found";
+      radius_reason = access ? resolveRadiusSyncDenyReason(access, tenantNasIds) : "not_found";
       radius_allowed = radius_reason == null;
     } catch (error) {
       radius_allowed = false;
@@ -413,8 +420,9 @@ router.post(
       res.status(500).json({ error: "radius_sync_failed" });
       return;
     }
+    const tenantNasIds = await tenantNasDeviceIds(pool, tenantId);
     const refreshed = await loadSubscriberAccessRow(pool, { tenantId, subscriberId: req.params.id });
-    const radius_reason = refreshed ? resolveRadiusSyncDenyReason(refreshed) : "not_found";
+    const radius_reason = refreshed ? resolveRadiusSyncDenyReason(refreshed, tenantNasIds) : "not_found";
     res.json({
       ok: true,
       username: access.username,

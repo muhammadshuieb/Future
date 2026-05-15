@@ -3,8 +3,17 @@ import type { RowDataPacket } from "mysql2";
 import { hasColumn } from "../db/schemaGuards.js";
 import {
   managerAllowedForPackage,
+  packageNasWhitelistIsUnrestricted,
   subscriberNasAllowedForPackage,
 } from "./package-access-scope.js";
+
+export async function tenantNasDeviceIds(pool: Pool, tenantId: string): Promise<string[]> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM nas_devices WHERE tenant_id = ?`,
+    [tenantId]
+  );
+  return rows.map((r) => String(r.id));
+}
 
 export async function assertSubscriberFitsPackageNas(
   pool: Pool,
@@ -19,7 +28,12 @@ export async function assertSubscriberFitsPackageNas(
     [packageId, tenantId]
   );
   if (!rows[0]) return { ok: false, error: "package_not_found" };
-  if (!subscriberNasAllowedForPackage(nasServerId, rows[0].allowed_nas_ids)) {
+  const allowedNas = rows[0].allowed_nas_ids;
+  const tenantNasIds = await tenantNasDeviceIds(pool, tenantId);
+  if (packageNasWhitelistIsUnrestricted(allowedNas, tenantNasIds)) {
+    return { ok: true };
+  }
+  if (!subscriberNasAllowedForPackage(nasServerId, allowedNas, tenantNasIds)) {
     return { ok: false, error: "subscriber_nas_not_in_package_allowed_list" };
   }
   return { ok: true };

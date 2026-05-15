@@ -41,9 +41,17 @@ describe("resolveRadiusSyncDenyReason", () => {
   it("reports NAS whitelist mismatch", () => {
     assert.equal(
       resolveRadiusSyncDenyReason(
-        baseRow({ nas_server_id: null, package_allowed_nas_ids: ["nas-1"] })
+        baseRow({ nas_server_id: null, package_allowed_nas_ids: ["nas-1"] }),
+        ["nas-1", "nas-2"]
       ),
       "nas_not_allowed_for_package"
+    );
+    assert.equal(
+      resolveRadiusSyncDenyReason(
+        baseRow({ nas_server_id: null, package_allowed_nas_ids: ["nas-1", "nas-2"] }),
+        ["nas-1", "nas-2"]
+      ),
+      null
     );
   });
 

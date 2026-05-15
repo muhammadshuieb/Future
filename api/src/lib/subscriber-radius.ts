@@ -54,8 +54,17 @@ export async function pushRadiusForSubscriber(
   const gate = evaluateSubscriberAccessFromRow(access);
   if (!gate.ok) return gate;
   if (!access.package_id) return { ok: false, reason: "no_package" };
+  const [tenantNasRows] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM nas_devices WHERE tenant_id = ?`,
+    [tenantId]
+  );
+  const tenantNasIds = tenantNasRows.map((r) => String(r.id));
   if (
-    !subscriberNasAllowedForPackage(access.nas_server_id, access.package_allowed_nas_ids)
+    !subscriberNasAllowedForPackage(
+      access.nas_server_id,
+      access.package_allowed_nas_ids,
+      tenantNasIds
+    )
   ) {
     return { ok: false, reason: "nas_not_allowed_for_package" };
   }

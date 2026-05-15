@@ -59,6 +59,21 @@ function formatMbpsFromBits(bits: unknown): string {
   return String(Math.round(mbps * 100) / 100);
 }
 
+/** Empty list or every NAS id = unrestricted (all networks). */
+function normalizeScopeIdsForForm(
+  stored: string[],
+  options: Array<{ id: string }>
+): string[] {
+  if (!stored.length || !options.length) return [];
+  const optionIds = new Set(options.map((o) => o.id));
+  if (stored.length >= optionIds.size && stored.every((id) => optionIds.has(id))) return [];
+  return stored;
+}
+
+function scopeIdsAreUnrestricted(stored: string[], options: Array<{ id: string }>): boolean {
+  return normalizeScopeIdsForForm(stored, options).length === 0;
+}
+
 export function PackagesPage() {
   const { t, isRtl, locale } = useI18n();
   const { user } = useAuth();
@@ -171,10 +186,18 @@ export function PackagesPage() {
     setAccountType(String(p.account_type ?? "subscriptions") === "cards" ? "cards" : "subscriptions");
     setFramedPool(String(p.default_framed_pool ?? ""));
     setAllowedNasIds(
-      Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.map((v) => String(v)) : []
+      normalizeScopeIdsForForm(
+        Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.map((v) => String(v)) : [],
+        nasOptions
+      )
     );
     setAllowedStaffNames(
-      Array.isArray(p.available_manager_names) ? p.available_manager_names.map((v) => String(v)) : []
+      normalizeScopeIdsForForm(
+        Array.isArray(p.available_manager_names)
+          ? p.available_manager_names.map((v) => String(v))
+          : [],
+        managerOptions
+      )
     );
     resetScheduleDraft();
     setFormError(null);
@@ -273,15 +296,20 @@ export function PackagesPage() {
     }
   }
 
+  const nasUnrestricted = allowedNasIds.length === 0;
+  const managersUnrestricted = allowedStaffNames.length === 0;
+
   function toggleNas(id: string) {
-    setAllowedNasIds((current) =>
-      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
-    );
+    setAllowedNasIds((current) => {
+      if (current.length === 0) return [id];
+      return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    });
   }
   function toggleManager(id: string) {
-    setAllowedStaffNames((current) =>
-      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
-    );
+    setAllowedStaffNames((current) => {
+      if (current.length === 0) return [id];
+      return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    });
   }
 
   function toggleScheduleDay(day: number) {
@@ -451,12 +479,30 @@ export function PackagesPage() {
               </div>
               <div className="flex justify-between gap-2">
                 <dt className="opacity-60">{t("packages.allowedNas")}</dt>
-                <dd className="text-end font-medium">{Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.length : 0}</dd>
+                <dd className="text-end font-medium">
+                  {scopeIdsAreUnrestricted(
+                    Array.isArray(p.allowed_nas_ids) ? p.allowed_nas_ids.map((v) => String(v)) : [],
+                    nasOptions
+                  )
+                    ? t("packages.unlimited")
+                    : Array.isArray(p.allowed_nas_ids)
+                      ? p.allowed_nas_ids.length
+                      : 0}
+                </dd>
               </div>
               <div className="flex justify-between gap-2">
                 <dt className="opacity-60">{t("packages.availableManagers")}</dt>
                 <dd className="text-end font-medium">
-                  {Array.isArray(p.available_manager_names) ? p.available_manager_names.length : 0}
+                  {scopeIdsAreUnrestricted(
+                    Array.isArray(p.available_manager_names)
+                      ? p.available_manager_names.map((v) => String(v))
+                      : [],
+                    managerOptions
+                  )
+                    ? t("packages.unlimited")
+                    : Array.isArray(p.available_manager_names)
+                      ? p.available_manager_names.length
+                      : 0}
                 </dd>
               </div>
             </dl>
@@ -522,9 +568,9 @@ export function PackagesPage() {
                   <span>{t("packages.selectAll")}</span>
                   <input
                     type="checkbox"
-                    checked={nasOptions.length > 0 && allowedNasIds.length === nasOptions.length}
+                    checked={nasUnrestricted}
                     onChange={(e) =>
-                      setAllowedNasIds(e.target.checked ? nasOptions.map((n) => n.id) : [])
+                      setAllowedNasIds(e.target.checked ? [] : nasOptions.map((n) => n.id))
                     }
                   />
                 </label>
@@ -537,7 +583,7 @@ export function PackagesPage() {
                       <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{n.name}</span>
                       <input
                         type="checkbox"
-                        checked={allowedNasIds.includes(n.id)}
+                        checked={nasUnrestricted || allowedNasIds.includes(n.id)}
                         onChange={() => toggleNas(n.id)}
                       />
                     </label>
@@ -552,12 +598,10 @@ export function PackagesPage() {
                   <span>{t("packages.selectAll")}</span>
                   <input
                     type="checkbox"
-                    checked={
-                      managerOptions.length > 0 && allowedStaffNames.length === managerOptions.length
-                    }
+                    checked={managersUnrestricted}
                     onChange={(e) =>
                       setAllowedStaffNames(
-                        e.target.checked ? managerOptions.map((m) => m.id) : []
+                        e.target.checked ? [] : managerOptions.map((m) => m.id)
                       )
                     }
                   />
@@ -571,7 +615,7 @@ export function PackagesPage() {
                       <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{m.name}</span>
                       <input
                         type="checkbox"
-                        checked={allowedStaffNames.includes(m.id)}
+                        checked={managersUnrestricted || allowedStaffNames.includes(m.id)}
                         onChange={() => toggleManager(m.id)}
                       />
                     </label>

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   managerAllowedForPackage,
+  packageNasWhitelistIsUnrestricted,
   parseJsonStringArray,
   subscriberNasAllowedForPackage,
   toJsonColumnValue,
@@ -20,6 +21,9 @@ describe("package-access-scope", () => {
     assert.equal(subscriberNasAllowedForPackage("n1", ["n1", "n2"]), true);
     assert.equal(subscriberNasAllowedForPackage(null, ["n1"]), false);
     assert.equal(subscriberNasAllowedForPackage("n3", ["n1"]), false);
+    assert.equal(packageNasWhitelistIsUnrestricted(["n1", "n2"], ["n1", "n2"]), true);
+    assert.equal(subscriberNasAllowedForPackage(null, ["n1", "n2"], ["n1", "n2"]), true);
+    assert.equal(packageNasWhitelistIsUnrestricted(["n1"], ["n1", "n2"]), false);
   });
 
   it("manager whitelist", () => {
