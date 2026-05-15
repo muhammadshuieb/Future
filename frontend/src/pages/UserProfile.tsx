@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -198,7 +198,9 @@ export function UserProfilePage() {
   const [trafficFrom, setTrafficFrom] = useState("");
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
+  const [trafficLoadError, setTrafficLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"details" | "traffic">("details");
+  const trafficAutoLoadedRef = useRef(false);
 
   const [revealedPw, setRevealedPw] = useState<string | null>(null);
   const [passwordRevealLoading, setPasswordRevealLoading] = useState(false);
@@ -284,6 +286,7 @@ export function UserProfilePage() {
       if (to) q.set("to", to);
       const suffix = q.toString() ? `?${q.toString()}` : "";
       setTrafficLoading(true);
+      setTrafficLoadError(null);
       try {
         const trRes = await apiFetch(`/api/subscribers/${id}/traffic-report${suffix}`);
         if (trRes.ok) {
@@ -291,12 +294,18 @@ export function UserProfilePage() {
           setTraffic(tr);
         } else {
           setTraffic(null);
+          const raw = await readApiError(trRes);
+          setTrafficLoadError(formatStaffApiError(trRes.status, raw, t));
         }
+      } catch (e) {
+        setTraffic(null);
+        const message = e instanceof Error ? e.message : String(e);
+        setTrafficLoadError(message.trim() || t("profile.trafficLoadFailed"));
       } finally {
         setTrafficLoading(false);
       }
     },
-    [id, trafficFrom, trafficTo]
+    [id, trafficFrom, trafficTo, t]
   );
 
   const load = useCallback(async () => {
@@ -540,10 +549,20 @@ export function UserProfilePage() {
   }
 
   useEffect(() => {
-    if (activeTab === "traffic" && !traffic && !trafficLoading) {
-      void loadTraffic({ from: trafficFrom, to: trafficTo });
+    setTraffic(null);
+    setTrafficLoadError(null);
+    trafficAutoLoadedRef.current = false;
+  }, [id]);
+
+  useEffect(() => {
+    if (activeTab !== "traffic") {
+      trafficAutoLoadedRef.current = false;
+      return;
     }
-  }, [activeTab, traffic, trafficLoading, loadTraffic, trafficFrom, trafficTo]);
+    if (!id || trafficAutoLoadedRef.current) return;
+    trafficAutoLoadedRef.current = true;
+    void loadTraffic();
+  }, [activeTab, id, loadTraffic]);
 
   const usageChartData = useMemo(() => {
     if (!traffic) return [];
@@ -1202,9 +1221,19 @@ export function UserProfilePage() {
           {!traffic ? (
             <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 px-6 py-14 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[hsl(var(--muted))]/50 text-[hsl(var(--primary))]/50">
-                <Activity className="h-7 w-7" />
+                {trafficLoading ? (
+                  <Loader2 className="h-7 w-7 animate-spin" />
+                ) : (
+                  <Activity className="h-7 w-7" />
+                )}
               </div>
-              <p className="max-w-sm text-sm opacity-75">{t("profile.trafficEmpty")}</p>
+              {trafficLoading ? (
+                <p className="max-w-sm text-sm opacity-75">{t("common.loading")}</p>
+              ) : trafficLoadError ? (
+                <p className="max-w-md whitespace-pre-wrap text-sm text-red-600 dark:text-red-400">{trafficLoadError}</p>
+              ) : (
+                <p className="max-w-sm text-sm opacity-75">{t("profile.trafficEmpty")}</p>
+              )}
             </div>
           ) : (
           <>

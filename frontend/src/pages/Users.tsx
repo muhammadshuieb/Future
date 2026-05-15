@@ -994,9 +994,9 @@ export function UsersPage() {
 
       <div className="glass overflow-hidden rounded-2xl p-0">
         <div className="max-h-[min(78vh,1200px)] max-w-full overflow-auto">
-          <table className="sticky-list-table users-table w-full text-xs">
+          <table className="sticky-list-table users-table w-full text-[0.8125rem] leading-snug">
             <thead>
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-[10px] font-semibold uppercase tracking-wide opacity-75">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-[11px] font-semibold uppercase tracking-wide opacity-75">
                 <th
                   className={cn(
                     "sticky top-0 z-20 w-8 bg-[hsl(var(--card))]/90 px-2 py-2 text-xs backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--card))]/80",
@@ -1081,7 +1081,7 @@ export function UsersPage() {
               {visibleItems.map((s) => {
                 const uiKind = resolveSubscriberUiKind(s);
                 const pres = subscriberStatusPresentation(uiKind, t);
-                const td = "px-2 py-1.5 align-middle";
+                const td = "px-2 py-2 align-middle";
                 return (
                   <tr
                     key={String(s.id)}

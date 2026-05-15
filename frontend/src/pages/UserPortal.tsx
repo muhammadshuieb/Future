@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { Fingerprint, LogIn, LogOut, Network, UserCircle, Wifi } from "lucide-react";
-import { userApiFetch, setUserToken } from "../lib/api";
+import { Fingerprint, Loader2, LogIn, LogOut, Network, UserCircle, Wifi } from "lucide-react";
+import { userApiFetch, setUserToken, readApiError, formatStaffApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
+import { cn } from "../lib/utils";
 import {
   Area,
   AreaChart,
@@ -218,6 +219,8 @@ export function UserPortalDashboard() {
   const [trafficFrom, setTrafficFrom] = useState("");
   const [trafficTo, setTrafficTo] = useState("");
   const [trafficLoading, setTrafficLoading] = useState(false);
+  const [trafficLoadError, setTrafficLoadError] = useState<string | null>(null);
+  const trafficAutoLoadedRef = useRef(false);
   const nav = useNavigate();
   function onLogout() {
     setUserToken(null);
@@ -256,25 +259,36 @@ export function UserPortalDashboard() {
       if (to) q.set("to", to);
       const suffix = q.toString() ? `?${q.toString()}` : "";
       setTrafficLoading(true);
+      setTrafficLoadError(null);
       try {
         const r = await userApiFetch(`/api/user/me/traffic-report${suffix}`);
         if (r.ok) {
           setTraffic((await r.json()) as TrafficReport);
         } else {
           setTraffic(null);
+          const raw = await readApiError(r);
+          setTrafficLoadError(formatStaffApiError(r.status, raw, t));
         }
+      } catch (e) {
+        setTraffic(null);
+        const message = e instanceof Error ? e.message : String(e);
+        setTrafficLoadError(message.trim() || t("profile.trafficLoadFailed"));
       } finally {
         setTrafficLoading(false);
       }
     },
-    [trafficFrom, trafficTo]
+    [trafficFrom, trafficTo, t]
   );
 
   useEffect(() => {
-    if (activeTab === "traffic" && !traffic && !trafficLoading) {
-      void loadTraffic({ from: trafficFrom, to: trafficTo });
+    if (activeTab !== "traffic") {
+      trafficAutoLoadedRef.current = false;
+      return;
     }
-  }, [activeTab, traffic, trafficLoading, loadTraffic, trafficFrom, trafficTo]);
+    if (trafficAutoLoadedRef.current) return;
+    trafficAutoLoadedRef.current = true;
+    void loadTraffic();
+  }, [activeTab, loadTraffic]);
 
   function fmtDuration(seconds: number): string {
     const s = Math.max(0, Math.floor(seconds || 0));
@@ -456,7 +470,23 @@ export function UserPortalDashboard() {
               </div>
             </div>
             {!traffic ? (
-              <p className="text-sm opacity-70">{t("profile.trafficEmpty")}</p>
+              <div className="flex flex-col items-center gap-3 py-8 text-center">
+                {trafficLoading ? (
+                  <Loader2 className="mx-auto h-8 w-8 animate-spin text-cyan-600 opacity-70 dark:text-cyan-400" />
+                ) : null}
+                <p
+                  className={cn(
+                    "max-w-md text-sm opacity-70",
+                    trafficLoadError && !trafficLoading ? "text-red-600 dark:text-red-400" : ""
+                  )}
+                >
+                  {trafficLoading
+                    ? t("common.loading")
+                    : trafficLoadError
+                      ? trafficLoadError
+                      : t("profile.trafficEmpty")}
+                </p>
+              </div>
             ) : (
               <>
                 <div className="grid gap-4 lg:grid-cols-2">

@@ -427,7 +427,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     "profile.invoicePaid": "تم دفع الفاتورة وإرسال إشعار للمشترك",
     "profile.noInvoices": "لا توجد فواتير لهذا المشترك",
     "profile.trafficTitle": "تقرير الجلسات والاستخدام",
+    "profile.trafficIntro":
+      "ملخص مدة الاتصال والاستهلاك من سجلات المحاسبة (RADIUS). يمكنك تحديد فترة زمنية وتطبيق الفلترة أو تصدير التقرير.",
     "profile.trafficEmpty": "لا توجد بيانات جلسات متاحة لهذا المشترك.",
+    "profile.trafficLoadFailed": "تعذر تحميل تقرير الجلسات. تحقق من الاتصال أو الصلاحيات ثم حاول التحديث.",
     "profile.dailyTotals": "إجماليات اليوم",
     "profile.monthlyTotals": "إجماليات الشهر",
     "profile.totalOnline": "إجمالي مدة الاتصال",
@@ -1624,7 +1627,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     "profile.invoicePaid": "Invoice paid and subscriber notified",
     "profile.noInvoices": "No invoices for this subscriber",
     "profile.trafficTitle": "Session and Usage Report",
+    "profile.trafficIntro":
+      "Online time and traffic totals from RADIUS accounting. Pick a date range, apply filters, or export the report.",
     "profile.trafficEmpty": "No session data available for this subscriber.",
+    "profile.trafficLoadFailed": "Could not load the traffic report. Check your connection or permissions, then try refresh.",
     "profile.dailyTotals": "Daily totals",
     "profile.monthlyTotals": "Monthly totals",
     "profile.totalOnline": "Total online time",
