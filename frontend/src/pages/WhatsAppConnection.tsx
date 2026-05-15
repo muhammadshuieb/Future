@@ -61,24 +61,7 @@ export function WhatsAppConnectionPage() {
   const [testing, setTesting] = useState(false);
   const [autoConfiguring, setAutoConfiguring] = useState(false);
 
-  const defaultConnection = useMemo(
-    () => ({
-      enabled: true,
-      waha_url: "http://waha:3000" as const,
-      session_name: "default" as const,
-      api_key: "future-radius-waha-key" as const,
-    }),
-    []
-  );
-
-  const requiresAutoConfig = useCallback(
-    (cfg: Settings) =>
-      !cfg.enabled ||
-      !defaultConnection.waha_url.trim() ||
-      !defaultConnection.session_name.trim() ||
-      !defaultConnection.api_key.trim(),
-    [defaultConnection]
-  );
+  const requiresAutoConfig = useCallback((cfg: Settings) => !cfg.enabled, []);
 
   const load = useCallback(async () => {
     if (!canManage) return;
@@ -90,11 +73,13 @@ export function WhatsAppConnectionPage() {
         apiFetch("/api/whatsapp/settings"),
       ]);
       let currentStatus: Status | null = null;
-      if (statusRes.ok) {
-        const s = (await statusRes.json()) as { status: Status };
-        setStatus(s.status);
-        currentStatus = s.status;
+      if (!statusRes.ok) {
+        throw new Error(await readApiError(statusRes));
       }
+      const s = (await statusRes.json()) as { status: Status };
+      setStatus(s.status);
+      currentStatus = s.status;
+
       if (settingsRes.ok) {
         const cfg = (await settingsRes.json()) as { settings: Settings };
         setSettings(cfg.settings);
@@ -113,17 +98,20 @@ export function WhatsAppConnectionPage() {
               method: "PUT",
               body: JSON.stringify({
                 ...payload,
-                ...defaultConnection,
+                enabled: true,
+                waha_url: "",
+                session_name: "default",
+                api_key: "",
               }),
             });
             if (saveRes.ok) {
-              setSettings(payload);
+              setSettings({ ...payload, enabled: true });
               await apiFetch("/api/whatsapp/test", { method: "POST", body: "{}" });
               const [statusAfter, qrAfter] = await Promise.all([apiFetch("/api/whatsapp/status"), apiFetch("/api/whatsapp/qr")]);
               if (statusAfter.ok) {
-                const s = (await statusAfter.json()) as { status: Status };
-                setStatus(s.status);
-                currentStatus = s.status;
+                const st = (await statusAfter.json()) as { status: Status };
+                setStatus(st.status);
+                currentStatus = st.status;
               }
               if (qrAfter.ok) {
                 const q = (await qrAfter.json()) as { qr: QrResponse };
@@ -139,17 +127,19 @@ export function WhatsAppConnectionPage() {
       if (currentStatus?.connected) {
         setQr({ qr_data_url: null, connected: true, message: null });
       } else {
-        void (async () => {
-          const qrRes = await apiFetch("/api/whatsapp/qr");
-          if (!qrRes.ok) return;
-          const q = (await qrRes.json()) as { qr: QrResponse };
-          setQr(q.qr);
-        })();
+        const qrRes = await apiFetch("/api/whatsapp/qr");
+        if (!qrRes.ok) {
+          throw new Error(await readApiError(qrRes));
+        }
+        const q = (await qrRes.json()) as { qr: QrResponse };
+        setQr(q.qr);
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [autoConfiguring, canManage, defaultConnection, requiresAutoConfig, t]);
+  }, [autoConfiguring, canManage, requiresAutoConfig, t]);
 
   useEffect(() => {
     void load();
@@ -211,7 +201,10 @@ export function WhatsAppConnectionPage() {
         method: "PUT",
         body: JSON.stringify({
           ...settings,
-          ...defaultConnection,
+          enabled: settings.enabled,
+          waha_url: "",
+          session_name: "default",
+          api_key: "",
         }),
       });
       if (!r.ok) throw new Error(await readApiError(r));
@@ -401,7 +394,12 @@ export function WhatsAppConnectionPage() {
         ) : qr?.qr_data_url ? (
           <img src={qr.qr_data_url} alt="WAHA QR" className="h-72 w-72 rounded-xl border border-[hsl(var(--border))] bg-white p-2" />
         ) : (
-          <div className="text-sm opacity-70">{t("whatsapp.qrWaiting")}</div>
+          <div className="space-y-2 text-sm opacity-70">
+            <p>{t("whatsapp.qrWaiting")}</p>
+            {qr?.message ? <p className="text-amber-300">{qr.message}</p> : null}
+            {status?.last_error ? <p className="text-red-300">{status.last_error}</p> : null}
+            {!settings.enabled ? <p className="text-amber-300">{t("whatsapp.enableForQr")}</p> : null}
+          </div>
         )}
       </Card>
     </div>

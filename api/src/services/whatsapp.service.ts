@@ -2,7 +2,7 @@
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
-import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import {
@@ -157,7 +157,34 @@ function parseUsageThresholds(raw: string | null | undefined): number[] {
   return unique.length ? unique : [10, 20, 30, 50];
 }
 
+let schemaEnsurePromise: Promise<void> | null = null;
+
+async function columnMysqlType(table: string, column: string): Promise<string> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COLUMN_TYPE AS t FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+    [table, column]
+  );
+  return String(rows[0]?.t ?? "").toLowerCase();
+}
+
+async function addColumnIfMissing(table: string, column: string, ddl: string): Promise<void> {
+  if (await hasColumn(pool, table, column)) return;
+  await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${ddl}`);
+  invalidateColumnCache();
+}
+
 async function ensureSchema(): Promise<void> {
+  if (!schemaEnsurePromise) {
+    schemaEnsurePromise = ensureSchemaInner().catch((err) => {
+      schemaEnsurePromise = null;
+      throw err;
+    });
+  }
+  await schemaEnsurePromise;
+}
+
+async function ensureSchemaInner(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_settings (
       tenant_id CHAR(36) NOT NULL PRIMARY KEY,
@@ -176,63 +203,19 @@ async function ensureSchema(): Promise<void> {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_settings'
-            AND COLUMN_NAME = 'message_interval_seconds'
-        ),
-        'SELECT 1',
-        'ALTER TABLE whatsapp_settings ADD COLUMN message_interval_seconds INT NOT NULL DEFAULT 30 AFTER reminder_days'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_settings'
-            AND COLUMN_NAME = 'usage_alert_thresholds'
-        ),
-        'SELECT 1',
-        'ALTER TABLE whatsapp_settings ADD COLUMN usage_alert_thresholds VARCHAR(64) NOT NULL DEFAULT ''10,20,30,50'' AFTER auto_send_new'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
-  for (const col of [
-    { name: "company_name", ddl: "VARCHAR(128) NOT NULL DEFAULT ''" },
-    { name: "emoji_image_url", ddl: "VARCHAR(512) NULL" },
-    { name: "attach_emoji_image", ddl: "TINYINT(1) NOT NULL DEFAULT 0" },
-  ]) {
-    await pool.query(`
-      SET @sql = (
-        SELECT IF(
-          EXISTS (
-            SELECT 1 FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'whatsapp_settings'
-              AND COLUMN_NAME = '${col.name}'
-          ),
-          'SELECT 1',
-          'ALTER TABLE whatsapp_settings ADD COLUMN ${col.name} ${col.ddl}'
-        )
-      );
-    `);
-    await pool.query(`PREPARE stmt FROM @sql`);
-    await pool.query(`EXECUTE stmt`);
-    await pool.query(`DEALLOCATE PREPARE stmt`);
-  }
+  await addColumnIfMissing(
+    "whatsapp_settings",
+    "message_interval_seconds",
+    "INT NOT NULL DEFAULT 30 AFTER reminder_days"
+  );
+  await addColumnIfMissing(
+    "whatsapp_settings",
+    "usage_alert_thresholds",
+    "VARCHAR(64) NOT NULL DEFAULT '10,20,30,50' AFTER auto_send_new"
+  );
+  await addColumnIfMissing("whatsapp_settings", "company_name", "VARCHAR(128) NOT NULL DEFAULT ''");
+  await addColumnIfMissing("whatsapp_settings", "emoji_image_url", "VARCHAR(512) NULL");
+  await addColumnIfMissing("whatsapp_settings", "attach_emoji_image", "TINYINT(1) NOT NULL DEFAULT 0");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_templates (
       tenant_id CHAR(36) NOT NULL,
@@ -261,79 +244,20 @@ async function ensureSchema(): Promise<void> {
       INDEX idx_whatsapp_log_tenant_status (tenant_id, status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_templates'
-            AND COLUMN_NAME = 'template_key'
-            AND LOCATE('usage_threshold', COLUMN_TYPE) > 0
-        ),
-        'SELECT 1',
-        'ALTER TABLE whatsapp_templates MODIFY COLUMN template_key ENUM(''new_account'',''expiry_soon'',''payment_due'',''usage_threshold'') NOT NULL'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_message_logs'
-            AND COLUMN_NAME = 'template_key'
-            AND LOCATE('usage_threshold', COLUMN_TYPE) > 0
-            AND LOCATE('invoice_paid', COLUMN_TYPE) > 0
-        ),
-        'SELECT 1',
-        'ALTER TABLE whatsapp_message_logs MODIFY COLUMN template_key ENUM(''new_account'',''expiry_soon'',''payment_due'',''usage_threshold'',''invoice_paid'') NULL'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_templates'
-            AND COLUMN_NAME = 'template_key'
-            AND LOCATE('invoice_paid', COLUMN_TYPE) > 0
-        ),
-        'SELECT 1',
-        'ALTER TABLE whatsapp_templates MODIFY COLUMN template_key ENUM(''new_account'',''expiry_soon'',''payment_due'',''usage_threshold'',''invoice_paid'') NOT NULL'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
-  await pool.query(`
-    SET @sql = (
-      SELECT IF(
-        EXISTS (
-          SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'whatsapp_message_logs'
-            AND COLUMN_NAME = 'template_key'
-            AND DATA_TYPE = 'enum'
-        ),
-        'ALTER TABLE whatsapp_message_logs MODIFY COLUMN template_key VARCHAR(64) NULL',
-        'SELECT 1'
-      )
-    );
-  `);
-  await pool.query(`PREPARE stmt FROM @sql`);
-  await pool.query(`EXECUTE stmt`);
-  await pool.query(`DEALLOCATE PREPARE stmt`);
+  const templatesKeyType = await columnMysqlType("whatsapp_templates", "template_key");
+  if (templatesKeyType.startsWith("enum") && !templatesKeyType.includes("invoice_paid")) {
+    await pool.query(`
+      ALTER TABLE whatsapp_templates
+      MODIFY COLUMN template_key
+        ENUM('new_account','expiry_soon','payment_due','usage_threshold','invoice_paid') NOT NULL
+    `);
+    invalidateColumnCache();
+  }
+  const logsKeyType = await columnMysqlType("whatsapp_message_logs", "template_key");
+  if (logsKeyType.startsWith("enum")) {
+    await pool.query(`ALTER TABLE whatsapp_message_logs MODIFY COLUMN template_key VARCHAR(64) NULL`);
+    invalidateColumnCache();
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_usage_alerts_sent (
       tenant_id CHAR(36) NOT NULL,
@@ -347,6 +271,7 @@ async function ensureSchema(): Promise<void> {
 }
 
 async function ensureTenantDefaults(tenantId: string): Promise<void> {
+  await ensureSchema();
   await pool.execute(
     `INSERT INTO whatsapp_settings (tenant_id, enabled, reminder_days, message_interval_seconds, auto_send_new, usage_alert_thresholds)
      VALUES (?, 0, 5, 30, 1, '10,20,30,50')
@@ -354,12 +279,16 @@ async function ensureTenantDefaults(tenantId: string): Promise<void> {
     [tenantId]
   );
   for (const [key, body] of Object.entries(DEFAULT_TEMPLATES)) {
-    await pool.execute(
-      `INSERT INTO whatsapp_templates (tenant_id, template_key, body)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE template_key = template_key`,
-      [tenantId, key, body]
-    );
+    try {
+      await pool.execute(
+        `INSERT INTO whatsapp_templates (tenant_id, template_key, body)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE template_key = template_key`,
+        [tenantId, key, body]
+      );
+    } catch (e) {
+      console.warn("[whatsapp] template default insert skipped", key, e instanceof Error ? e.message : e);
+    }
   }
 }
 
@@ -1269,7 +1198,9 @@ export async function listWhatsAppLogs(tenantId: string, limit = 100): Promise<W
   await ensureSchema();
   const safeLimit = Math.max(1, Math.min(300, limit));
   const [rows] = await pool.query<WhatsAppLogRow[]>(
-    `SELECT *
+    `SELECT id, tenant_id, subscriber_id, phone,
+            CAST(template_key AS CHAR) AS template_key,
+            message_body, status, provider_message_id, error_message, retry_of, created_at, sent_at
      FROM whatsapp_message_logs
      WHERE tenant_id = ?
      ORDER BY created_at DESC

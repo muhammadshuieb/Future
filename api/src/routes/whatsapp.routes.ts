@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import fs from "fs";
 import { z } from "zod";
+import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { resolveEmojiAssetFile } from "../lib/whatsapp-assets.js";
 import {
@@ -24,6 +25,11 @@ import {
 } from "../services/whatsapp.service.js";
 
 const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function whatsappErrorDetail(e: unknown): { detail?: string } {
+  if (config.nodeEnv === "production") return {};
+  return { detail: e instanceof Error ? e.message : String(e) };
+}
 
 /** Public asset route — WAHA fetches emoji images without auth. */
 export const whatsappAssetRoutes = Router();
@@ -74,7 +80,7 @@ router.get("/settings", async (req, res) => {
     res.json({ settings });
   } catch (e) {
     console.error("whatsapp settings", e);
-    res.status(500).json({ error: "whatsapp_settings_failed" });
+    res.status(500).json({ error: "whatsapp_settings_failed", ...whatsappErrorDetail(e) });
   }
 });
 
@@ -100,7 +106,7 @@ router.get("/qr", async (req, res) => {
     res.json({ qr });
   } catch (e) {
     console.error("whatsapp qr", e);
-    res.status(500).json({ error: "whatsapp_qr_failed" });
+    res.status(500).json({ error: "whatsapp_qr_failed", ...whatsappErrorDetail(e) });
   }
 });
 
@@ -145,7 +151,7 @@ router.post("/test", async (req, res) => {
     res.json({ status });
   } catch (e) {
     console.error("whatsapp test", e);
-    res.status(500).json({ error: "whatsapp_test_failed" });
+    res.status(500).json({ error: "whatsapp_test_failed", ...whatsappErrorDetail(e) });
   }
 });
 
@@ -155,7 +161,7 @@ router.get("/templates", async (req, res) => {
     res.json({ items });
   } catch (e) {
     console.error("whatsapp templates", e);
-    res.status(500).json({ error: "whatsapp_templates_failed" });
+    res.status(500).json({ error: "whatsapp_templates_failed", ...whatsappErrorDetail(e) });
   }
 });
 
@@ -195,7 +201,7 @@ router.get("/logs", async (req, res) => {
     res.json({ items });
   } catch (e) {
     console.error("whatsapp logs", e);
-    res.status(500).json({ error: "whatsapp_logs_failed" });
+    res.status(500).json({ error: "whatsapp_logs_failed", ...whatsappErrorDetail(e) });
   }
 });
 
