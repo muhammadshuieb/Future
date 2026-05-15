@@ -64,6 +64,23 @@ const listQuerySchema = z.object({
   debt_status: z.enum(["all", "overdue", "clean"]).optional().default("all"),
 });
 
+async function packageHasQuotaLimit(
+  tenantId: string,
+  packageId: string | null | undefined
+): Promise<boolean> {
+  if (!packageId) return false;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT quota_total_bytes FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [packageId, tenantId]
+  );
+  if (!rows[0]) return false;
+  try {
+    return BigInt(String(rows[0].quota_total_bytes ?? 0)) > 0n;
+  } catch {
+    return Number(rows[0].quota_total_bytes ?? 0) > 0;
+  }
+}
+
 async function subscriberIdentity(
   tenantId: string,
   id: string
@@ -203,8 +220,10 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   const id = randomUUID();
   const body = parsed.data;
   const exp = body.expiration_date;
+  const quotaLimited =
+    exp === undefined ? await packageHasQuotaLimit(tenantId, body.package_id ?? null) : false;
   const expFragment =
-    exp === null ? "NULL" : exp === undefined ? "CURDATE()" : "?";
+    exp === null ? "NULL" : exp === undefined ? (quotaLimited ? "NULL" : "CURDATE()") : "?";
   const insertArgs: (string | null)[] = [
     id,
     tenantId,

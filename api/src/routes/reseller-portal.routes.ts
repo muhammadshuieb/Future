@@ -110,9 +110,20 @@ router.post("/subscribers", requireResellerPortalAuth, async (req, res, next) =>
     }
     const id = randomUUID();
     const tempPass = randomUUID().replace(/-/g, "").slice(0, 12);
+    const [pkgQuotaRows] = await pool.query<RowDataPacket[]>(
+      `SELECT quota_total_bytes FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [parsed.data.package_id, r.tenantId]
+    );
+    let quotaLimited = false;
+    try {
+      quotaLimited = BigInt(String(pkgQuotaRows[0]?.quota_total_bytes ?? 0)) > 0n;
+    } catch {
+      quotaLimited = Number(pkgQuotaRows[0]?.quota_total_bytes ?? 0) > 0;
+    }
+    const expSql = quotaLimited ? "NULL" : "CURDATE()";
     await pool.execute(
       `INSERT INTO subscribers (id, tenant_id, username, package_id, status, expiration_date)
-       VALUES (?, ?, ?, ?, 'active', CURDATE())`,
+       VALUES (?, ?, ?, ?, 'active', ${expSql})`,
       [id, r.tenantId, parsed.data.username, parsed.data.package_id]
     );
     await pool.execute(

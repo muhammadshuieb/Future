@@ -10,6 +10,11 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 import { canManageOperations } from "../lib/permissions";
 import { cn } from "../lib/utils";
+import {
+  formatQuotaBytesLabel,
+  parseQuotaInputToBytesString,
+  quotaBytesToInputField,
+} from "../lib/quota-units";
 
 type Pkg = Record<string, unknown>;
 type SpeedSchedule = {
@@ -25,30 +30,6 @@ type SpeedSchedule = {
 };
 const currencies = ["USD", "SYP", "TRY"] as const;
 const weekDays = [0, 1, 2, 3, 4, 5, 6];
-
-function quotaGbToBytesString(gbStr: string): string {
-  const n = parseFloat(String(gbStr).replace(",", "."));
-  if (!Number.isFinite(n) || n <= 0) return "0";
-  const bytes = Math.round(n * 1024 ** 3);
-  return String(bytes);
-}
-
-function bytesToQuotaGbField(bytes: unknown): string {
-  const raw = String(bytes ?? "0").trim();
-  if (!raw || raw === "0") return "0";
-  try {
-    const b = BigInt(raw);
-    if (b <= 0n) return "0";
-    const gb = Number(b) / 1024 ** 3;
-    if (!Number.isFinite(gb)) return "0";
-    return gb >= 10 ? gb.toFixed(1) : gb.toFixed(2);
-  } catch {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return "0";
-    const gb = n / 1024 ** 3;
-    return gb >= 10 ? gb.toFixed(1) : gb.toFixed(2);
-  }
-}
 
 function formatMbpsFromBits(bits: unknown): string {
   const n = Number(bits ?? 0);
@@ -178,7 +159,7 @@ export function PackagesPage() {
     setEditId(String(p.id));
     setName(String(p.name ?? ""));
     setRate(String(p.mikrotik_rate_limit ?? ""));
-    setQuotaGb(bytesToQuotaGbField(p.quota_total_bytes));
+    setQuotaGb(quotaBytesToInputField(p.quota_total_bytes));
     setPrice(String(p.price ?? "0"));
     setCurrency(String(p.currency ?? "USD"));
     setBillingDays(String(p.billing_period_days ?? "30"));
@@ -215,7 +196,7 @@ export function PackagesPage() {
           body: JSON.stringify({
             name,
             mikrotik_rate_limit: rate || null,
-            quota_total_bytes: quotaGbToBytesString(quotaGb),
+            quota_total_bytes: parseQuotaInputToBytesString(quotaGb),
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
@@ -245,7 +226,7 @@ export function PackagesPage() {
           body: JSON.stringify({
             name,
             mikrotik_rate_limit: rate || null,
-            quota_total_bytes: quotaGbToBytesString(quotaGb),
+            quota_total_bytes: parseQuotaInputToBytesString(quotaGb),
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
@@ -466,9 +447,7 @@ export function PackagesPage() {
               <div className="flex justify-between gap-2 border-b border-[hsl(var(--border))]/50 pb-2">
                 <dt className="opacity-60">{t("packages.quotaGb")}</dt>
                 <dd className="text-end font-mono">
-                  {String(p.quota_total_bytes ?? "0") === "0"
-                    ? t("packages.unlimited")
-                    : `${bytesToQuotaGbField(p.quota_total_bytes)} GB`}
+                  {formatQuotaBytesLabel(p.quota_total_bytes, t("packages.unlimited"))}
                 </dd>
               </div>
               <div className="flex justify-between gap-2">
@@ -537,7 +516,7 @@ export function PackagesPage() {
               label={t("packages.quotaGb")}
               value={quotaGb}
               onChange={(e) => setQuotaGb(e.target.value)}
-              placeholder="0"
+              placeholder="50M"
             />
             <TextField label={t("packages.pool")} value={framedPool} onChange={(e) => setFramedPool(e.target.value)} />
           </div>

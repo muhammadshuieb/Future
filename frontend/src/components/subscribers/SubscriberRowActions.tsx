@@ -30,10 +30,11 @@ export type SubscriberRowActionsProps = {
   onDelete: () => void;
 };
 
-type MenuCoords = { top: number; left: number };
+type MenuCoords = { top: number; left: number; maxHeight: number };
 
 const VIEWPORT_PAD = 8;
 const MENU_WIDTH_FALLBACK = 260;
+const MENU_HEIGHT_FALLBACK = 280;
 
 /** Keep a fixed menu fully inside the viewport; prefer aligning its trailing edge to the button's trailing edge. */
 function clampMenuLeft(anchor: DOMRect, menuWidth: number): number {
@@ -77,11 +78,30 @@ export function SubscriberRowActions({
     if (!el) return;
     const r = el.getBoundingClientRect();
     const gap = 4;
-    const measured =
-      menuPanelRef.current?.getBoundingClientRect().width ?? menuPanelRef.current?.offsetWidth ?? 0;
-    const menuWidth = Math.max(MENU_WIDTH_FALLBACK, measured);
+    const panel = menuPanelRef.current;
+    const measuredW = panel?.getBoundingClientRect().width ?? panel?.offsetWidth ?? 0;
+    const measuredH = panel?.getBoundingClientRect().height ?? panel?.offsetHeight ?? 0;
+    const menuWidth = Math.max(MENU_WIDTH_FALLBACK, measuredW);
+    const menuHeight = Math.max(MENU_HEIGHT_FALLBACK, measuredH);
     const left = clampMenuLeft(r, menuWidth);
-    setMenuCoords({ top: r.bottom + gap, left });
+
+    const maxHeight = Math.max(120, window.innerHeight - VIEWPORT_PAD * 2);
+    const effectiveHeight = Math.min(menuHeight, maxHeight);
+    const spaceBelow = window.innerHeight - VIEWPORT_PAD - (r.bottom + gap);
+    const spaceAbove = r.top - gap - VIEWPORT_PAD;
+    const openUp = spaceBelow < effectiveHeight && spaceAbove > spaceBelow;
+
+    let top: number;
+    if (openUp) {
+      top = Math.max(VIEWPORT_PAD, r.top - gap - effectiveHeight);
+    } else {
+      top = r.bottom + gap;
+      if (top + effectiveHeight > window.innerHeight - VIEWPORT_PAD) {
+        top = Math.max(VIEWPORT_PAD, window.innerHeight - VIEWPORT_PAD - effectiveHeight);
+      }
+    }
+
+    setMenuCoords({ top, left, maxHeight });
   }, []);
 
   useLayoutEffect(() => {
@@ -124,6 +144,8 @@ export function SubscriberRowActions({
         top: menuCoords.top,
         left: menuCoords.left,
         maxWidth: `min(22rem, calc(100vw - ${VIEWPORT_PAD * 2}px))`,
+        maxHeight: menuCoords.maxHeight,
+        overflowY: "auto",
       }}
     >
       <Link
