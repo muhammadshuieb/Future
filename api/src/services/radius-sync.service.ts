@@ -2,6 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
 import { resolveRadiusSyncDenyReason } from "../lib/radius-sync-deny.js";
+import { resolveSimultaneousUseForRadiusSync } from "../lib/subscriber-radius.js";
 
 type SyncLogStatus = "success" | "failed";
 
@@ -42,11 +43,21 @@ export class RadiusSyncService {
     await this.log(tenantId, "package", packageId, "success");
   }
 
-  async syncSubscriber(subscriberId: string, tenantId: string): Promise<void> {
+  async syncSubscriber(
+    subscriberId: string,
+    tenantId: string,
+    opts?: { simultaneousUse?: number }
+  ): Promise<void> {
     const access = await loadSubscriberAccessRow(this.pool, { tenantId, subscriberId });
     if (!access) return;
     const username = access.username.trim();
     if (!username) return;
+    const simultaneousUse = await resolveSimultaneousUseForRadiusSync(
+      this.pool,
+      username,
+      access.package_simultaneous_use,
+      opts?.simultaneousUse
+    );
     const [tenantNasRows] = await this.pool.query<RowDataPacket[]>(
       `SELECT id FROM nas_devices WHERE tenant_id = ?`,
       [tenantId]
@@ -75,7 +86,7 @@ export class RadiusSyncService {
       );
       await conn.execute(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)`,
-        [username, String(Math.max(1, Number(access.package_simultaneous_use ?? 1)))]
+        [username, String(simultaneousUse)]
       );
       if (access.expiration_date) {
         await conn.execute(

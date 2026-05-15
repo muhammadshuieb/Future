@@ -44,6 +44,7 @@ const subscriberBody = z.object({
   password: z.string().min(1).optional(),
   status: z.enum(["active", "disabled", "expired", "suspended"]).optional(),
   expiration_date: z.string().nullable().optional(),
+  simultaneous_use: z.number().int().min(1).max(32).optional(),
 });
 
 const listQuerySchema = z.object({
@@ -234,7 +235,9 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,
     [id, tenantId, body.password as string]
   );
-  await radiusSync.syncSubscriber(id, tenantId);
+  await radiusSync.syncSubscriber(id, tenantId, {
+    simultaneousUse: body.simultaneous_use,
+  });
   res.status(201).json({ id });
 });
 
@@ -700,7 +703,9 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
       [req.params.id, tenantId, body.password]
     );
   }
-  await radiusSync.syncSubscriber(req.params.id, tenantId);
+  await radiusSync.syncSubscriber(req.params.id, tenantId, {
+    simultaneousUse: body.simultaneous_use,
+  });
   res.json({ ok: true });
 });
 

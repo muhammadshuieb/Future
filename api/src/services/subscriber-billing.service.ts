@@ -3,8 +3,8 @@ import type { Pool, PoolConnection } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { hasTable } from "../db/schemaGuards.js";
-import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
-import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
+import { resolveExpirationAfterPayment } from "../lib/billing.js";
+import { formatExpirationForDb } from "../lib/expiration-date.js";
 import { withTransaction } from "../db/transaction.js";
 import { chargeManagerWalletWithConnection, ManagerBalanceError } from "./manager-wallet.service.js";
 import { sendSubscriberBillingDemandWhatsApp } from "./whatsapp.service.js";
@@ -293,21 +293,58 @@ const recordBody = z.object({
   subscription_expires_at: z.string().min(1).optional(),
 });
 
-function resolveExpirationAfterPayment(
-  explicitRaw: string | undefined,
-  currentExpiration: Date | null,
-  billingDays: number
-): { next: Date; usedExplicit: boolean } {
-  if (explicitRaw?.trim()) {
-    const parsed = parseSubscriptionExpirationInput(explicitRaw);
-    if (!parsed) throw new Error("invalid_expiration");
-    return { next: parsed, usedExplicit: true };
+export type RecordPackagePaymentInput = z.infer<typeof recordBody>;
+
+async function applyExpirationAfterFullPayment(
+  conn: PoolConnection,
+  tenantId: string,
+  subscriberId: string,
+  billingDays: number,
+  explicitRaw?: string
+): Promise<
+  | {
+      previous_expiration_date: string | null;
+      new_expiration_date: string;
+      used_explicit_date: boolean;
+    }
+  | { error: "invalid_expiration" }
+> {
+  const [ex] = await conn.query<RowDataPacket[]>(
+    `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [subscriberId, tenantId]
+  );
+  const prevRaw = ex[0]?.expiration_date != null ? String(ex[0].expiration_date) : null;
+  let nextExp: Date;
+  try {
+    nextExp = resolveExpirationAfterPayment(explicitRaw, prevRaw, billingDays).next;
+  } catch {
+    return { error: "invalid_expiration" };
   }
-  const base = currentExpiration && !Number.isNaN(currentExpiration.getTime()) ? currentExpiration : new Date();
-  return { next: extendSubscriptionByDaysNoon(base, billingDays), usedExplicit: false };
+  await conn.execute(`UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`, [
+    formatExpirationForDb(nextExp),
+    subscriberId,
+    tenantId,
+  ]);
+  return {
+    previous_expiration_date: prevRaw,
+    new_expiration_date: formatExpirationForDb(nextExp),
+    used_explicit_date: Boolean(explicitRaw?.trim()),
+  };
 }
 
-export type RecordPackagePaymentInput = z.infer<typeof recordBody>;
+async function packageBillingPeriodDays(
+  conn: PoolConnection,
+  tenantId: string,
+  subscriberId: string
+): Promise<number> {
+  const [pRow] = await conn.query<RowDataPacket[]>(
+    `SELECT billing_period_days FROM packages p
+     JOIN subscribers s ON s.package_id = p.id AND s.tenant_id = p.tenant_id
+     WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
+    [subscriberId, tenantId]
+  );
+  return Number(pRow[0]?.billing_period_days ?? 30);
+}
 
 export async function recordPackagePayment(
   pool: Pool,
@@ -379,9 +416,10 @@ export async function recordPackagePayment(
 
       if (b.payment_allocations && b.payment_allocations.length > 0) {
         let partial = false;
+        let fullyPaidInvoices = 0;
         for (const al of b.payment_allocations) {
           const [invRows] = await conn.query<RowDataPacket[]>(
-            `SELECT id, amount, status FROM invoices WHERE id = ? AND tenant_id = ? AND subscriber_id = ? LIMIT 1 FOR UPDATE`,
+            `SELECT id, amount, status, meta FROM invoices WHERE id = ? AND tenant_id = ? AND subscriber_id = ? LIMIT 1 FOR UPDATE`,
             [al.invoice_id, tenantId, subscriberId]
           );
           const inv = invRows[0];
@@ -410,9 +448,27 @@ export async function recordPackagePayment(
           const newPaid = paidSoFar + al.amount;
           if (newPaid + 0.009 >= amount) {
             await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [al.invoice_id, tenantId]);
+            fullyPaidInvoices += 1;
           } else {
             partial = true;
           }
+        }
+        if (fullyPaidInvoices > 0) {
+          const periodDays = await packageBillingPeriodDays(conn, tenantId, subscriberId);
+          const extension = await applyExpirationAfterFullPayment(
+            conn,
+            tenantId,
+            subscriberId,
+            periodDays * fullyPaidInvoices,
+            b.subscription_expires_at
+          );
+          if ("error" in extension) return { kind: "invalid_expiration" as const };
+          return {
+            kind: "ok" as const,
+            allocation: true,
+            partial,
+            expiration_audit: extension,
+          };
         }
         return { kind: "ok" as const, allocation: true, partial };
       }
@@ -463,43 +519,21 @@ export async function recordPackagePayment(
       let partial = false;
       if (newPaid + 0.009 >= invAmount) {
         await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [invoiceId, tenantId]);
-        const [pRow] = await conn.query<RowDataPacket[]>(
-          `SELECT billing_period_days FROM packages p JOIN subscribers s ON s.package_id = p.id AND s.tenant_id = p.tenant_id
-           WHERE s.id = ? AND s.tenant_id = ? LIMIT 1`,
-          [subscriberId, tenantId]
-        );
-        const days = Number(pRow[0]?.billing_period_days ?? 30);
-        const [ex] = await conn.query<RowDataPacket[]>(
-          `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
-          [subscriberId, tenantId]
-        );
-        const prevRaw = ex[0]?.expiration_date != null ? String(ex[0].expiration_date) : null;
-        const curExp = prevRaw ? new Date(prevRaw) : new Date();
-        let nextExp: Date;
-        try {
-          nextExp = resolveExpirationAfterPayment(
-            b.subscription_expires_at,
-            Number.isNaN(curExp.getTime()) ? null : curExp,
-            days
-          ).next;
-        } catch {
-          return { kind: "invalid_expiration" as const };
-        }
-        await conn.execute(`UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`, [
-          formatExpirationForDb(nextExp),
-          subscriberId,
+        const days = await packageBillingPeriodDays(conn, tenantId, subscriberId);
+        const extension = await applyExpirationAfterFullPayment(
+          conn,
           tenantId,
-        ]);
+          subscriberId,
+          days,
+          b.subscription_expires_at
+        );
+        if ("error" in extension) return { kind: "invalid_expiration" as const };
         return {
           kind: "ok" as const,
           partial,
           payment_id: payId,
           invoice_id: invoiceId!,
-          expiration_audit: {
-            previous_expiration_date: prevRaw,
-            new_expiration_date: formatExpirationForDb(nextExp),
-            used_explicit_date: Boolean(b.subscription_expires_at?.trim()),
-          },
+          expiration_audit: extension,
         };
       } else {
         partial = true;

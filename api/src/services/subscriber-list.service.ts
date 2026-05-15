@@ -116,8 +116,17 @@ export async function querySubscribersList(
     (await hasColumn(pool, "subscribers", "nas_server_id")) && (await hasTable(pool, "nas_devices"));
   const hasRegions = (await hasColumn(pool, "subscribers", "region_id")) && (await hasTable(pool, "subscriber_regions"));
   const hasRadacct = await hasTable(pool, "radacct");
+  const hasRadcheck = await hasTable(pool, "radcheck");
   const hasPost = await hasTable(pool, "radpostauth");
   const hasInvoices = await hasTable(pool, "invoices");
+  const simultaneousUseExpr = hasRadcheck
+    ? `COALESCE(
+         (SELECT CAST(rc.value AS UNSIGNED) FROM radcheck rc
+          WHERE rc.username = s.username AND rc.attribute = 'Simultaneous-Use' LIMIT 1),
+         p.simultaneous_use,
+         1
+       )`
+    : `COALESCE(p.simultaneous_use, 1)`;
 
   const accounting = new AccountingService(pool);
   const predOn = hasRadacct ? await accounting.buildActiveRadacctPredicate("r_on") : "0=1";
@@ -307,7 +316,8 @@ export async function querySubscribersList(
             ${subscriberUiStatusExpr} AS subscriber_ui_status,
             ${lastLoginExpr} AS last_login,
             ${debtExpr} AS debt_total,
-            ${overdueExpr} AS overdue_invoice_count
+            ${overdueExpr} AS overdue_invoice_count,
+            ${simultaneousUseExpr} AS simultaneous_use
             ${nasSelect}
             ${regSelect}
      FROM subscribers s

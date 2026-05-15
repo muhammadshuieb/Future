@@ -23,6 +23,36 @@ export function assertRadiusPush(
   }
 }
 
+export function clampSimultaneousUse(n: number): number {
+  return Math.max(1, Math.min(32, Math.floor(n)));
+}
+
+async function readRadcheckSimultaneous(pool: Pool, username: string): Promise<number | undefined> {
+  if (!(await hasTable(pool, "radcheck"))) return undefined;
+  const [simRows] = await pool.query<RowDataPacket[]>(
+    `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Simultaneous-Use' LIMIT 1`,
+    [username]
+  );
+  const v = Number(simRows[0]?.value);
+  if (Number.isFinite(v) && v >= 1) return clampSimultaneousUse(v);
+  return undefined;
+}
+
+/** RADIUS sync: API override → existing radcheck → package default. */
+export async function resolveSimultaneousUseForRadiusSync(
+  pool: Pool,
+  username: string,
+  packageDefault: number | null | undefined,
+  explicit?: number | null
+): Promise<number> {
+  if (explicit != null && Number.isFinite(Number(explicit))) {
+    return clampSimultaneousUse(Number(explicit));
+  }
+  const preserved = await readRadcheckSimultaneous(pool, username);
+  if (preserved != null) return preserved;
+  return clampSimultaneousUse(Number(packageDefault ?? 1));
+}
+
 /** Value for `createRadiusUser` / `enableRadiusUser`: explicit API body wins, else radcheck. */
 export async function resolveSimultaneousUseForRadiusRefresh(
   pool: Pool,
@@ -30,17 +60,9 @@ export async function resolveSimultaneousUseForRadiusRefresh(
   explicit?: number | null
 ): Promise<number | undefined> {
   if (explicit != null && Number.isFinite(Number(explicit))) {
-    return Math.max(1, Math.floor(Number(explicit)));
+    return clampSimultaneousUse(Number(explicit));
   }
-  if (await hasTable(pool, "radcheck")) {
-    const [simRows] = await pool.query<RowDataPacket[]>(
-      `SELECT value FROM radcheck WHERE username = ? AND attribute = 'Simultaneous-Use' LIMIT 1`,
-      [username]
-    );
-    const v = Number(simRows[0]?.value);
-    if (Number.isFinite(v) && v >= 1) return Math.floor(v);
-  }
-  return undefined;
+  return readRadcheckSimultaneous(pool, username);
 }
 
 export async function pushRadiusForSubscriber(

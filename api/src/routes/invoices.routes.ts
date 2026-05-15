@@ -3,8 +3,11 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
-import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
+import {
+  billingDaysFromInvoiceMeta,
+  resolveExpirationAfterPayment,
+} from "../lib/billing.js";
+import { formatExpirationForDb } from "../lib/expiration-date.js";
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
@@ -155,14 +158,18 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         [payId, t, req.params.id, subscriberId, amount, invCurrency, parsed.data.payment_method ?? "manual", paidAt]
       );
 
-      let metaDays = 30;
-      try {
-        const parsedMeta = typeof inv.meta === "string" ? JSON.parse(inv.meta) : inv.meta;
-        metaDays = Number((parsedMeta as { billing_days?: unknown } | null)?.billing_days ?? 30);
-      } catch {
-        metaDays = 30;
+      let extendDays = parsed.data.extend_days ?? billingDaysFromInvoiceMeta(inv.meta);
+      if (extendDays == null || extendDays < 1) {
+        const [pkgRows] = await conn.query<RowDataPacket[]>(
+          `SELECT p.billing_period_days
+           FROM packages p
+           JOIN subscribers s ON s.package_id = p.id AND s.tenant_id = p.tenant_id
+           WHERE s.id = ? AND s.tenant_id = ?
+           LIMIT 1`,
+          [subscriberId, t]
+        );
+        extendDays = Number(pkgRows[0]?.billing_period_days ?? 30);
       }
-      const extendDays = parsed.data.extend_days ?? metaDays;
       let subRows: RowDataPacket[];
       const [sub] = await conn.query<RowDataPacket[]>(
         `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
@@ -174,17 +181,14 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       if (subRows[0] && sub[0]) {
         previousExpiration =
           subRows[0].expiration_date != null ? String(subRows[0].expiration_date) : null;
-        const explicit = parsed.data.subscription_expires_at?.trim();
-        if (explicit) {
-          const parsedExp = parseSubscriptionExpirationInput(explicit);
-          if (!parsedExp) return { kind: "invalid_expiration" as const };
-          nextExpiration = parsedExp;
-        } else {
-          const current = previousExpiration ? new Date(previousExpiration) : new Date();
-          nextExpiration = extendSubscriptionByDaysNoon(
-            Number.isNaN(current.getTime()) ? new Date() : current,
+        try {
+          nextExpiration = resolveExpirationAfterPayment(
+            parsed.data.subscription_expires_at,
+            previousExpiration,
             extendDays
-          );
+          ).next;
+        } catch {
+          return { kind: "invalid_expiration" as const };
         }
         await conn.execute(
           `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
