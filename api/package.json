@@ -10,7 +10,7 @@
     "start:worker": "node dist/workers/index.js",
     "worker": "tsx watch src/workers/index.ts",
     "seed:staff": "tsx src/scripts/seed-staff.ts",
-    "test": "node --import tsx --test src/tests/subscriber-access-guard.test.ts src/tests/utf8-i18n-roundtrip.test.ts src/tests/encoding-mojibake.test.ts src/tests/enterprise-modules.test.ts src/tests/speed-profile.service.test.ts src/tests/radius-attr-format.test.ts src/tests/package-access-scope.test.ts src/tests/expiration-date.test.ts"
+    "test": "node --import tsx --test src/tests/subscriber-access-guard.test.ts src/tests/utf8-i18n-roundtrip.test.ts src/tests/encoding-mojibake.test.ts src/tests/enterprise-modules.test.ts src/tests/speed-profile.service.test.ts src/tests/radius-attr-format.test.ts src/tests/package-access-scope.test.ts src/tests/expiration-date.test.ts src/tests/radius-sync-deny.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

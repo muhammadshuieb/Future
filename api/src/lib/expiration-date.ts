@@ -18,3 +18,21 @@ export function formatExpirationForDb(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+
+/** Matches subscriber list SQL: `DATE(expiration_date) <= CURDATE()` is expired. */
+export function isSubscriptionExpiredByCalendarDate(
+  expiration: Date | string | null | undefined
+): boolean {
+  if (expiration == null || String(expiration).trim() === "") return false;
+  const exp = new Date(expiration as string);
+  if (Number.isNaN(exp.getTime())) return true;
+  const now = new Date();
+  const expY = exp.getFullYear();
+  const expM = exp.getMonth();
+  const expD = exp.getDate();
+  if (expY < now.getFullYear()) return true;
+  if (expY > now.getFullYear()) return false;
+  if (expM < now.getMonth()) return true;
+  if (expM > now.getMonth()) return false;
+  return expD <= now.getDate();
+}

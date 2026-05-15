@@ -1,10 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import {
-  evaluateSubscriberAccessFromRow,
-  loadSubscriberAccessRow,
-} from "../lib/subscriber-access-guard.js";
-import { subscriberNasAllowedForPackage } from "../lib/package-access-scope.js";
+import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
+import { resolveRadiusSyncDenyReason } from "../lib/radius-sync-deny.js";
 
 type SyncLogStatus = "success" | "failed";
 
@@ -50,7 +47,7 @@ export class RadiusSyncService {
     if (!access) return;
     const username = access.username.trim();
     if (!username) return;
-    const gate = evaluateSubscriberAccessFromRow(access);
+    const denyReason = resolveRadiusSyncDenyReason(access);
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -58,16 +55,13 @@ export class RadiusSyncService {
       await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
       await conn.execute(`DELETE FROM radusergroup WHERE username = ?`, [username]);
       const password = String(access.credential_password ?? "").trim();
-      const nasOk =
-        !access.package_id ||
-        subscriberNasAllowedForPackage(access.nas_server_id, access.package_allowed_nas_ids);
-      if (!gate.ok || !password || !nasOk) {
+      if (denyReason) {
         await conn.execute(
           `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
           [username]
         );
         await conn.commit();
-        await this.log(tenantId, "subscriber", subscriberId, "success");
+        await this.log(tenantId, "subscriber", subscriberId, "success", `radius_reject:${denyReason}`);
         return;
       }
       await conn.execute(

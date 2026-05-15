@@ -6,10 +6,11 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
 import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
-import { RadiusService } from "../services/radius.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
-import { pushRadiusForSubscriber } from "../lib/subscriber-radius.js";
+import { RadiusSyncService } from "../services/radius-sync.service.js";
+import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
+import { resolveRadiusSyncDenyReason } from "../lib/radius-sync-deny.js";
 import { requestHasManagerPermission } from "../lib/manager-permissions.js";
 import {
   chargeManagerWalletWithConnection,
@@ -21,7 +22,7 @@ import { Events } from "../events/eventTypes.js";
 import type { RowDataPacket } from "mysql2";
 
 const router = Router();
-const radius = new RadiusService(pool);
+const radiusSync = new RadiusSyncService(pool);
 const coa = new CoaService(pool);
 const currencySchema = z.enum(["USD", "SYP", "TRY"]);
 
@@ -233,13 +234,14 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         ip: req.ip ?? null,
       });
     }
-    let radiusSync: "ok" | "failed" = "ok";
+    let radiusSyncStatus: "ok" | "failed" = "ok";
     let radiusReason: string | null = null;
     try {
-      const pr = await pushRadiusForSubscriber(pool, radius, t, tx.subscriberId);
-      if (!pr.ok) {
-        radiusSync = "failed";
-        radiusReason = pr.reason;
+      await radiusSync.syncSubscriber(tx.subscriberId, t);
+      const access = await loadSubscriberAccessRow(pool, { tenantId: t, subscriberId: tx.subscriberId });
+      radiusReason = access ? resolveRadiusSyncDenyReason(access) : "not_found";
+      if (radiusReason) {
+        radiusSyncStatus = "failed";
       } else {
         let username: string | null = null;
         const [subRows] = await pool.query<RowDataPacket[]>(
@@ -263,9 +265,9 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         }
       }
     } catch (error) {
-      radiusSync = "failed";
+      radiusSyncStatus = "failed";
       radiusReason = (error as Error).message;
-      console.error("push radius after invoice payment failed", error);
+      console.error("radius sync after invoice payment failed", error);
     }
     await emitEvent(Events.INVOICE_PAID, {
       tenantId: t,
@@ -279,7 +281,7 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
     res.json({
       ok: true,
       payment_id: tx.paymentId,
-      radius_sync: radiusSync,
+      radius_sync: radiusSyncStatus,
       radius_reason: radiusReason,
     });
   } catch (error) {

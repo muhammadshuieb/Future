@@ -6,6 +6,7 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { hasTable, hasColumn } from "../db/schemaGuards.js";
+import { isSubscriptionExpiredByCalendarDate } from "./expiration-date.js";
 
 export type SubscriberAccessRow = {
   tenant_status: string | null;
@@ -55,7 +56,7 @@ export function evaluateSubscriberAccessFromRow(
     if (Number.isNaN(exp.getTime())) {
       return { ok: false, reason: "invalid_expiration" };
     }
-    if (exp.getTime() < Date.now()) {
+    if (isSubscriptionExpiredByCalendarDate(r.expiration_date)) {
       return { ok: false, reason: "expired" };
     }
   }
