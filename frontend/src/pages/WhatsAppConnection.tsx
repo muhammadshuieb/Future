@@ -25,6 +25,9 @@ type Settings = {
   message_interval_seconds: number;
   auto_send_new: boolean;
   usage_alert_thresholds: number[];
+  company_name: string;
+  emoji_image_url: string;
+  attach_emoji_image: boolean;
 };
 
 type QrResponse = {
@@ -44,6 +47,9 @@ export function WhatsAppConnectionPage() {
     message_interval_seconds: 30,
     auto_send_new: true,
     usage_alert_thresholds: [10, 20, 30, 50],
+    company_name: "",
+    emoji_image_url: "",
+    attach_emoji_image: false,
   });
   const [qr, setQr] = useState<QrResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -321,6 +327,30 @@ export function WhatsAppConnectionPage() {
               );
             })}
           </div>
+        </div>
+        <div className="space-y-3 border-t border-[hsl(var(--border))] pt-4">
+          <div className="text-sm font-semibold">{t("whatsapp.templateOptions")}</div>
+          <TextField
+            label={t("whatsapp.companyName")}
+            value={settings.company_name}
+            onChange={(e) => setSettings((s) => ({ ...s, company_name: e.target.value }))}
+            placeholder={t("whatsapp.companyNamePlaceholder")}
+          />
+          <TextField
+            label={t("whatsapp.emojiImageUrl")}
+            value={settings.emoji_image_url}
+            onChange={(e) => setSettings((s) => ({ ...s, emoji_image_url: e.target.value }))}
+            placeholder="https://example.com/emoji.png"
+          />
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.attach_emoji_image}
+              onChange={(e) => setSettings((s) => ({ ...s, attach_emoji_image: e.target.checked }))}
+            />
+            {t("whatsapp.attachEmojiImage")}
+          </label>
+          <p className="text-xs opacity-60">{t("whatsapp.emojiImageHint")}</p>
         </div>
       </Card>
 

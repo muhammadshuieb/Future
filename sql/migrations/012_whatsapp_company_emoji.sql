@@ -1,0 +1,2 @@
+-- Company branding and optional emoji image for WhatsApp template messages.
+-- Runtime ensureSchema in whatsapp.service.ts also adds these columns when missing.

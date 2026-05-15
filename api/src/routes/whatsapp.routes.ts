@@ -52,6 +52,9 @@ const settingsBody = z.object({
   message_interval_seconds: z.number().int().min(0).max(300),
   auto_send_new: z.boolean(),
   usage_alert_thresholds: z.array(z.number().int()).default([10, 20, 30, 50]),
+  company_name: z.string().max(128).optional().default(""),
+  emoji_image_url: z.string().max(512).optional().default(""),
+  attach_emoji_image: z.boolean().optional().default(false),
 }).refine((x) => x.usage_alert_thresholds.every((n) => [10, 20, 30, 50].includes(n)), {
   message: "invalid_thresholds",
 });

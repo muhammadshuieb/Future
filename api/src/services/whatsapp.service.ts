@@ -19,6 +19,9 @@ type WhatsAppSettingsRow = RowDataPacket & {
   message_interval_seconds: number;
   auto_send_new: number;
   usage_alert_thresholds: string | null;
+  company_name: string | null;
+  emoji_image_url: string | null;
+  attach_emoji_image: number | null;
   last_check_ok: number | null;
   last_check_at: string | null;
   last_error: string | null;
@@ -67,6 +70,9 @@ export type WhatsAppSettingsView = {
   message_interval_seconds: number;
   auto_send_new: boolean;
   usage_alert_thresholds: number[];
+  company_name: string;
+  emoji_image_url: string;
+  attach_emoji_image: boolean;
 };
 
 export type WhatsAppTemplateView = {
@@ -104,15 +110,15 @@ export type WhatsAppBroadcastInput = {
 
 const DEFAULT_TEMPLATES: Record<WhatsAppTemplateKey, string> = {
   new_account:
-    "مرحباً {{full_name}}،\nنرحب بك في خدمتنا.\nتم تفعيل اشتراكك بنجاح.\n\n• اسم المستخدم: {{username}}\n• كلمة المرور: {{password}}\n• الباقة: {{package_name}}\n• السرعة: {{speed}}\n• تاريخ الانتهاء: {{expiration_date}}\n\nنتمنى لك تجربة ممتعة.",
+    "مرحباً {{full_name}}،\n{{company_name}} ترحب بك.\nتم تفعيل اشتراكك بنجاح.\n\n• اسم المستخدم: {{username}}\n• كلمة المرور: {{password}}\n• الباقة: {{package_name}}\n• تاريخ الانتهاء: {{expiration_date}}\n\nنتمنى لك تجربة ممتعة.",
   expiry_soon:
-    "مرحباً {{full_name}}،\nتنبيه باقتراب انتهاء اشتراكك.\nالمتبقي: {{days_left}} يوم.\n\n• الباقة: {{package_name}}\n• السرعة: {{speed}}\n• تاريخ الانتهاء: {{expiration_date}}\n\nيرجى التجديد قبل انتهاء الاشتراك لضمان استمرار الخدمة.",
+    "مرحباً {{full_name}}،\nتنبيه من {{company_name}} باقتراب انتهاء اشتراكك.\nالمتبقي: {{days_left}} يوم.\n\n• الباقة: {{package_name}}\n• تاريخ الانتهاء: {{expiration_date}}\n• وقت الانتهاء: {{expiration_time}}\n\nيرجى التجديد قبل انتهاء الاشتراك لضمان استمرار الخدمة.",
   payment_due:
-    "مرحباً {{full_name}}،\nنود تذكيرك بوجود ذمة مالية مستحقة على حسابك.\n\n• إجمالي المستحقات: {{due_amount}} {{currency}}\n• عدد الفواتير غير المدفوعة: {{unpaid_count}}\n• أقدم تاريخ استحقاق: {{oldest_due_date}}\n\n{{billing_detail}}\nيرجى السداد في أقرب وقت لتجنب أي انقطاع بالخدمة. شكراً لتعاونك.",
+    "مرحباً {{full_name}}،\n{{company_name}} تذكّرك بوجود ذمة مالية مستحقة على حسابك.\n\n• إجمالي المستحقات: {{due_amount}} {{currency}}\n• عدد الفواتير غير المدفوعة: {{unpaid_count}}\n• أقدم تاريخ استحقاق: {{oldest_due_date}}\n\n{{billing_detail}}\nيرجى السداد في أقرب وقت لتجنب أي انقطاع بالخدمة. شكراً لتعاونك.",
   usage_threshold:
-    "مرحباً {{full_name}}،\nتنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن أو تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
+    "مرحباً {{full_name}}،\n{{company_name}} — تنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن أو تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
   invoice_paid:
-    "مرحباً {{full_name}}،\nتم تأكيد دفع الفاتورة بنجاح.\n\n• رقم الفاتورة: {{invoice_no}}\n• المبلغ المدفوع: {{amount}} {{currency}}\n• وقت الدفع: {{paid_at}}\n\nشكراً لثقتكم.",
+    "مرحباً {{full_name}}،\n{{company_name}} — تم تأكيد دفع الفاتورة بنجاح.\n\n• رقم الفاتورة: {{invoice_no}}\n• المبلغ المدفوع: {{amount}} {{currency}}\n• وقت الدفع: {{paid_at}}\n\nشكراً لثقتكم.",
 };
 
 const nextAllowedSendByTenant = new Map<string, number>();
@@ -197,6 +203,29 @@ async function ensureSchema(): Promise<void> {
   await pool.query(`PREPARE stmt FROM @sql`);
   await pool.query(`EXECUTE stmt`);
   await pool.query(`DEALLOCATE PREPARE stmt`);
+  for (const col of [
+    { name: "company_name", ddl: "VARCHAR(128) NOT NULL DEFAULT ''" },
+    { name: "emoji_image_url", ddl: "VARCHAR(512) NULL" },
+    { name: "attach_emoji_image", ddl: "TINYINT(1) NOT NULL DEFAULT 0" },
+  ]) {
+    await pool.query(`
+      SET @sql = (
+        SELECT IF(
+          EXISTS (
+            SELECT 1 FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'whatsapp_settings'
+              AND COLUMN_NAME = '${col.name}'
+          ),
+          'SELECT 1',
+          'ALTER TABLE whatsapp_settings ADD COLUMN ${col.name} ${col.ddl}'
+        )
+      );
+    `);
+    await pool.query(`PREPARE stmt FROM @sql`);
+    await pool.query(`EXECUTE stmt`);
+    await pool.query(`DEALLOCATE PREPARE stmt`);
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_templates (
       tenant_id CHAR(36) NOT NULL,
@@ -329,8 +358,47 @@ function formatDate(value: Date | string | null): string {
   return d.toISOString().slice(0, 10);
 }
 
+function formatDateTime(value: Date | string | null): string {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
 function interpolate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => vars[key] ?? "");
+}
+
+async function resolveCompanyName(tenantId: string, settings: WhatsAppSettingsRow): Promise<string> {
+  const fromSettings = String(settings.company_name ?? "").trim();
+  if (fromSettings) return fromSettings;
+  if (await hasTable(pool, "tenants")) {
+    const [rows] = await pool.query<RowDataPacket[]>(`SELECT name FROM tenants WHERE id = ? LIMIT 1`, [tenantId]);
+    const tenantName = String(rows[0]?.name ?? "").trim();
+    if (tenantName) return tenantName;
+  }
+  return "شركتنا";
+}
+
+async function buildTemplateVars(
+  tenantId: string,
+  settings: WhatsAppSettingsRow,
+  extra: Record<string, string>
+): Promise<Record<string, string>> {
+  const company_name = await resolveCompanyName(tenantId, settings);
+  return { company_name, ...extra };
+}
+
+function imageMimetypeFromUrl(url: string): string {
+  const low = url.toLowerCase();
+  if (low.endsWith(".webp")) return "image/webp";
+  if (low.endsWith(".gif")) return "image/gif";
+  if (low.endsWith(".jpg") || low.endsWith(".jpeg")) return "image/jpeg";
+  return "image/png";
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getSettingsRow(tenantId: string): Promise<WhatsAppSettingsRow> {
@@ -430,6 +498,73 @@ async function sendWahaMessage(
       ? String((parsed as { id?: unknown }).id ?? "")
       : null;
   return { providerId: providerId || null };
+}
+
+async function sendWahaImage(
+  settings: WhatsAppSettingsRow,
+  phone: string,
+  imageUrl: string
+): Promise<{ providerId: string | null }> {
+  const baseUrl = String(settings.waha_url ?? "").replace(/\/+$/, "");
+  const session = String(settings.session_name ?? "").trim();
+  if (!baseUrl || !session) throw new Error("waha_not_configured");
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (settings.api_key) {
+    headers.Authorization = `Bearer ${settings.api_key}`;
+    headers["X-Api-Key"] = settings.api_key;
+  }
+  const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
+  const response = await fetch(`${baseUrl}/api/sendImage`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      session,
+      chatId,
+      file: {
+        mimetype: imageMimetypeFromUrl(imageUrl),
+        url: imageUrl,
+      },
+    }),
+  });
+  const textBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`waha_image_send_failed: ${response.status} ${textBody.slice(0, 300)}`);
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(textBody);
+  } catch {
+    parsed = null;
+  }
+  const providerId =
+    typeof parsed === "object" && parsed !== null && "id" in parsed
+      ? String((parsed as { id?: unknown }).id ?? "")
+      : null;
+  return { providerId: providerId || null };
+}
+
+/** Sends optional branding emoji/sticker image then the text body. */
+async function deliverWhatsAppMessage(
+  settings: WhatsAppSettingsRow,
+  phone: string,
+  text: string
+): Promise<{ providerId: string | null }> {
+  const imageUrl = String(settings.emoji_image_url ?? "").trim();
+  const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && imageUrl.length > 0;
+  let lastId: string | null = null;
+  if (attachEmoji) {
+    try {
+      const img = await sendWahaImage(settings, phone, imageUrl);
+      lastId = img.providerId;
+      await sleepMs(800);
+    } catch (e) {
+      console.warn("[whatsapp] emoji image skipped", e instanceof Error ? e.message : e);
+    }
+  }
+  const textResult = await sendWahaMessage(settings, phone, text);
+  return { providerId: textResult.providerId ?? lastId };
 }
 
 async function resolveWahaChatId(
@@ -744,6 +879,9 @@ export async function getWhatsAppSettings(tenantId: string): Promise<WhatsAppSet
     message_interval_seconds: Number(settings.message_interval_seconds ?? 30),
     auto_send_new: Boolean(settings.auto_send_new),
     usage_alert_thresholds: parseUsageThresholds(settings.usage_alert_thresholds),
+    company_name: String(settings.company_name ?? ""),
+    emoji_image_url: String(settings.emoji_image_url ?? ""),
+    attach_emoji_image: Boolean(Number(settings.attach_emoji_image ?? 0)),
   };
 }
 
@@ -758,6 +896,9 @@ export async function updateWhatsAppSettings(
     message_interval_seconds: number;
     auto_send_new: boolean;
     usage_alert_thresholds: number[];
+    company_name?: string;
+    emoji_image_url?: string;
+    attach_emoji_image?: boolean;
   }
 ): Promise<WhatsAppSettingsView> {
   await ensureSchema();
@@ -765,7 +906,7 @@ export async function updateWhatsAppSettings(
   await pool.execute(
     `UPDATE whatsapp_settings
      SET enabled = ?, waha_url = ?, session_name = ?, api_key = ?, reminder_days = ?, message_interval_seconds = ?, auto_send_new = ?,
-         usage_alert_thresholds = ?,
+         usage_alert_thresholds = ?, company_name = ?, emoji_image_url = ?, attach_emoji_image = ?,
          last_check_ok = NULL, last_check_at = NULL, last_error = NULL
      WHERE tenant_id = ?`,
     [
@@ -777,6 +918,9 @@ export async function updateWhatsAppSettings(
       input.message_interval_seconds,
       input.auto_send_new ? 1 : 0,
       parseUsageThresholds(input.usage_alert_thresholds.join(",")).join(","),
+      (input.company_name ?? "").trim().slice(0, 128),
+      (input.emoji_image_url ?? "").trim().slice(0, 512) || null,
+      input.attach_emoji_image ? 1 : 0,
       tenantId,
     ]
   );
@@ -926,19 +1070,22 @@ export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent
             Math.ceil((new Date(expDate.toDateString()).getTime() - new Date(new Date().toDateString()).getTime()) / 86400000)
           )
         : 0;
-    const msg = interpolate(templates.usage_threshold, {
-      full_name: fullName,
-      username: String(row.username ?? ""),
-      usage_percent: String(targetThreshold),
-      used_gb: (used / 1024 ** 3).toFixed(2),
-      quota_gb: (quota / 1024 ** 3).toFixed(2),
-      remaining_percent: String(Math.max(0, Math.round(100 - usagePercent))),
-      expiration_date: formatDate(expDate),
-      days_left: String(daysLeft),
-    });
+    const msg = interpolate(
+      templates.usage_threshold,
+      await buildTemplateVars(tenantId, settings, {
+        full_name: fullName,
+        username: String(row.username ?? ""),
+        usage_percent: String(targetThreshold),
+        used_gb: (used / 1024 ** 3).toFixed(2),
+        quota_gb: (quota / 1024 ** 3).toFixed(2),
+        remaining_percent: String(Math.max(0, Math.round(100 - usagePercent))),
+        expiration_date: formatDate(expDate),
+        days_left: String(daysLeft),
+      })
+    );
     try {
       await enforceMessageInterval(tenantId, settings);
-      const result = await sendWahaMessage(settings, phone, msg);
+      const result = await deliverWhatsAppMessage(settings, phone, msg);
       await insertMessageLog({
         tenantId,
         subscriberId,
@@ -1031,17 +1178,21 @@ export async function sendPaymentDueReminders(tenantId: string): Promise<{ sent:
         .join(" ") ||
       String(row.nickname ?? "").trim() ||
       String(row.username ?? "");
-    const message = interpolate(templates.payment_due, {
-      full_name: fullName,
-      username: String(row.username ?? ""),
-      due_amount: Number(row.due_amount ?? 0).toFixed(2),
-      currency: String(row.currency ?? "USD").toUpperCase() === "SYP" ? "SYP" : "USD",
-      unpaid_count: String(Number(row.unpaid_count ?? 0)),
-      oldest_due_date: formatDate(row.oldest_due_date ? String(row.oldest_due_date) : null),
-    });
+    const message = interpolate(
+      templates.payment_due,
+      await buildTemplateVars(tenantId, settings, {
+        full_name: fullName,
+        username: String(row.username ?? ""),
+        due_amount: Number(row.due_amount ?? 0).toFixed(2),
+        currency: String(row.currency ?? "USD").toUpperCase() === "SYP" ? "SYP" : "USD",
+        unpaid_count: String(Number(row.unpaid_count ?? 0)),
+        oldest_due_date: formatDate(row.oldest_due_date ? String(row.oldest_due_date) : null),
+        billing_detail: "",
+      })
+    );
     try {
       await enforceMessageInterval(tenantId, settings);
-      const result = await sendWahaMessage(settings, phone, message);
+      const result = await deliverWhatsAppMessage(settings, phone, message);
       await insertMessageLog({
         tenantId,
         subscriberId,
@@ -1201,17 +1352,19 @@ export async function sendNewSubscriberWhatsApp(input: {
   if (!normalized) return;
   if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) return;
   const templates = await getTemplateMap(input.tenantId);
-  const message = interpolate(templates.new_account, {
-    username: input.username,
-    full_name: input.fullName || input.username,
-    password: input.password,
-    package_name: input.packageName || "-",
-    speed: input.speed || "-",
-    expiration_date: formatDate(input.expirationDate),
-  });
+  const message = interpolate(
+    templates.new_account,
+    await buildTemplateVars(input.tenantId, settings, {
+      username: input.username,
+      full_name: input.fullName || input.username,
+      password: input.password,
+      package_name: input.packageName || "-",
+      expiration_date: formatDate(input.expirationDate),
+    })
+  );
   try {
     await enforceMessageInterval(input.tenantId, settings);
-    const sent = await sendWahaMessage(settings, normalized, message);
+    const sent = await deliverWhatsAppMessage(settings, normalized, message);
     await insertMessageLog({
       tenantId: input.tenantId,
       subscriberId: input.subscriberId,
@@ -1290,23 +1443,26 @@ export async function sendExpiryReminders(tenantId: string): Promise<{ sent: num
             Math.ceil((new Date(expDate.toDateString()).getTime() - new Date(new Date().toDateString()).getTime()) / 86400000)
           )
         : 0;
-    const msg = interpolate(templates.expiry_soon, {
-      username: String(row.username ?? ""),
-      full_name:
-        [String(row.first_name ?? ""), String(row.last_name ?? "")]
-          .map((x) => x.trim())
-          .filter(Boolean)
-          .join(" ") ||
-        String(row.nickname ?? "").trim() ||
-        String(row.username ?? ""),
-      package_name: String(row.package_name ?? "-"),
-      speed: String(row.mikrotik_rate_limit ?? "-"),
-      expiration_date: formatDate(expDate),
-      days_left: String(daysLeft),
-    });
+    const msg = interpolate(
+      templates.expiry_soon,
+      await buildTemplateVars(tenantId, settings, {
+        username: String(row.username ?? ""),
+        full_name:
+          [String(row.first_name ?? ""), String(row.last_name ?? "")]
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .join(" ") ||
+          String(row.nickname ?? "").trim() ||
+          String(row.username ?? ""),
+        package_name: String(row.package_name ?? "-"),
+        expiration_date: formatDate(expDate),
+        expiration_time: formatDateTime(expDate),
+        days_left: String(daysLeft),
+      })
+    );
     try {
       await enforceMessageInterval(tenantId, settings);
-      const result = await sendWahaMessage(settings, normalized, msg);
+      const result = await deliverWhatsAppMessage(settings, normalized, msg);
       await insertMessageLog({
         tenantId,
         subscriberId,
@@ -1377,7 +1533,7 @@ export async function sendWhatsAppBroadcast(
     if (!phone) continue;
     try {
       await enforceMessageInterval(tenantId, settings);
-      const result = await sendWahaMessage(settings, phone, message);
+      const result = await deliverWhatsAppMessage(settings, phone, message);
       await insertMessageLog({
         tenantId,
         subscriberId: row.id ? String(row.id) : null,
@@ -1510,17 +1666,20 @@ export async function sendInvoicePaidWhatsApp(input: {
   const currency = String(input.currency ?? "").trim().toUpperCase() === "SYP" ? "SYP" : String(input.currency ?? "USD").trim() || "USD";
   const amountText =
     input.amount != null && Number.isFinite(input.amount) ? Number(input.amount).toFixed(2) : "";
-  const message = interpolate(templates.invoice_paid, {
-    full_name: fullName,
-    username: String(row.username ?? ""),
-    invoice_no: String(input.invoiceNo ?? "—"),
-    amount: amountText || "—",
-    currency,
-    paid_at: paidAtText,
-  });
+  const message = interpolate(
+    templates.invoice_paid,
+    await buildTemplateVars(input.tenantId, settings, {
+      full_name: fullName,
+      username: String(row.username ?? ""),
+      invoice_no: String(input.invoiceNo ?? "—"),
+      amount: amountText || "—",
+      currency,
+      paid_at: paidAtText,
+    })
+  );
   try {
     await enforceMessageInterval(input.tenantId, settings);
-    const result = await sendWahaMessage(settings, phone, message);
+    const result = await deliverWhatsAppMessage(settings, phone, message);
     await insertMessageLog({
       tenantId: input.tenantId,
       subscriberId: input.subscriberId,
@@ -1618,18 +1777,21 @@ export async function sendSubscriberBillingDemandWhatsApp(input: {
   const billingDetail = [input.headline?.trim() ? `${input.headline.trim()}\n` : "", "تفاصيل الفواتير المفتوحة:", ...lines].join(
     "\n"
   );
-  const message = interpolate(templates.payment_due, {
-    full_name: fullName,
-    username: String(row.username ?? ""),
-    due_amount: total.toFixed(2),
-    currency: cur === "SYP" ? "SYP" : cur === "TRY" ? "TRY" : "USD",
-    unpaid_count: String(invRows.length),
-    oldest_due_date: formatDate(oldest),
-    billing_detail: billingDetail,
-  });
+  const message = interpolate(
+    templates.payment_due,
+    await buildTemplateVars(input.tenantId, settings, {
+      full_name: fullName,
+      username: String(row.username ?? ""),
+      due_amount: total.toFixed(2),
+      currency: cur === "SYP" ? "SYP" : cur === "TRY" ? "TRY" : "USD",
+      unpaid_count: String(invRows.length),
+      oldest_due_date: formatDate(oldest),
+      billing_detail: billingDetail,
+    })
+  );
   try {
     await enforceMessageInterval(input.tenantId, settings);
-    const result = await sendWahaMessage(settings, phone, message);
+    const result = await deliverWhatsAppMessage(settings, phone, message);
     await insertMessageLog({
       tenantId: input.tenantId,
       subscriberId: input.subscriberId,
@@ -1695,10 +1857,11 @@ export async function sendSubscriberPaymentBatchWhatsApp(input: {
       .join(" ") ||
     String(row.nickname ?? "").trim() ||
     String(row.username ?? "");
+  const companyName = await resolveCompanyName(input.tenantId, settings);
   const bodyLines = input.lines.map((l) => `• ${l.invoice_no}: ${l.amount.toFixed(2)} ${l.currency}`).join("\n");
   const message =
     `مرحباً ${fullName}،\n` +
-    `تم استلام دفعة بمبلغ إجمالي ${input.totalPaid.toFixed(2)} ${input.currency} وتوزيعها كالتالي:\n` +
+    `${companyName} — تم استلام دفعة بمبلغ إجمالي ${input.totalPaid.toFixed(2)} ${input.currency} وتوزيعها كالتالي:\n` +
     `${bodyLines}\n\n` +
     (input.outstandingAfter <= 0.01
       ? `تمت تسوية الذمة بالكامل على حسابكم.\n`
@@ -1706,7 +1869,7 @@ export async function sendSubscriberPaymentBatchWhatsApp(input: {
     `شكراً لتعاونكم.`;
   try {
     await enforceMessageInterval(input.tenantId, settings);
-    const result = await sendWahaMessage(settings, phone, message);
+    const result = await deliverWhatsAppMessage(settings, phone, message);
     await insertMessageLog({
       tenantId: input.tenantId,
       subscriberId: input.subscriberId,
@@ -1760,7 +1923,7 @@ export async function sendSubscriberFinancialReportWhatsApp(input: {
   if (!message) return { sent: false, reason: "empty_message" };
   try {
     await enforceMessageInterval(input.tenantId, settings);
-    const result = await sendWahaMessage(settings, phone, message);
+    const result = await deliverWhatsAppMessage(settings, phone, message);
     await insertMessageLog({
       tenantId: input.tenantId,
       subscriberId: input.subscriberId,

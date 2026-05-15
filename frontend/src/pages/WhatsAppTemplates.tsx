@@ -3,7 +3,7 @@ import { RefreshCw, Save, Sparkles } from "lucide-react";
 import { apiFetch, readApiError } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
-import { TextAreaField } from "../components/ui/TextField";
+import { TextAreaField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 
@@ -29,6 +29,19 @@ export function WhatsAppTemplatesPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [autoFixing, setAutoFixing] = useState(false);
+  const [waSettings, setWaSettings] = useState({
+    enabled: false,
+    waha_url: "",
+    session_name: "",
+    api_key: "",
+    reminder_days: 5,
+    message_interval_seconds: 30,
+    auto_send_new: true,
+    usage_alert_thresholds: [10, 20, 30, 50] as number[],
+    company_name: "",
+    emoji_image_url: "",
+    attach_emoji_image: false,
+  });
 
   function looksCorrupted(body: string): boolean {
     const qCount = (body.match(/\?/g) || []).length;
@@ -40,8 +53,38 @@ export function WhatsAppTemplatesPage() {
     setLoading(true);
     setError(null);
     try {
-      const r = await apiFetch("/api/whatsapp/templates");
+      const [r, rSettings] = await Promise.all([
+        apiFetch("/api/whatsapp/templates"),
+        apiFetch("/api/whatsapp/settings"),
+      ]);
       if (!r.ok) throw new Error(await readApiError(r));
+      if (rSettings.ok) {
+        const cfg = (await rSettings.json()) as {
+          settings: {
+            company_name?: string;
+            emoji_image_url?: string;
+            attach_emoji_image?: boolean;
+            reminder_days?: number;
+            message_interval_seconds?: number;
+            auto_send_new?: boolean;
+            usage_alert_thresholds?: number[];
+            enabled?: boolean;
+          };
+        };
+        setWaSettings({
+          enabled: Boolean(cfg.settings.enabled),
+          waha_url: String(cfg.settings.waha_url ?? ""),
+          session_name: String(cfg.settings.session_name ?? ""),
+          api_key: String(cfg.settings.api_key ?? ""),
+          reminder_days: Number(cfg.settings.reminder_days ?? 5),
+          message_interval_seconds: Number(cfg.settings.message_interval_seconds ?? 30),
+          auto_send_new: Boolean(cfg.settings.auto_send_new ?? true),
+          usage_alert_thresholds: cfg.settings.usage_alert_thresholds ?? [10, 20, 30, 50],
+          company_name: cfg.settings.company_name ?? "",
+          emoji_image_url: cfg.settings.emoji_image_url ?? "",
+          attach_emoji_image: Boolean(cfg.settings.attach_emoji_image),
+        });
+      }
       const data = (await r.json()) as { items: Template[] };
       const next = {
         new_account: data.items.find((x) => x.template_key === "new_account")?.body ?? "",
@@ -122,6 +165,11 @@ export function WhatsAppTemplatesPage() {
       if (!c.ok) throw new Error(await readApiError(c));
       if (!d.ok) throw new Error(await readApiError(d));
       if (!e.ok) throw new Error(await readApiError(e));
+      const settingsRes = await apiFetch("/api/whatsapp/settings", {
+        method: "PUT",
+        body: JSON.stringify(waSettings),
+      });
+      if (!settingsRes.ok) throw new Error(await readApiError(settingsRes));
       setInfo(t("whatsapp.saved"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -174,6 +222,31 @@ export function WhatsAppTemplatesPage() {
       {info ? <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">{info}</div> : null}
 
       <Card className="space-y-4">
+        <div className="text-sm font-semibold">{t("whatsapp.templateOptions")}</div>
+        <TextField
+          label={t("whatsapp.companyName")}
+          value={waSettings.company_name}
+          onChange={(e) => setWaSettings((s) => ({ ...s, company_name: e.target.value }))}
+          placeholder={t("whatsapp.companyNamePlaceholder")}
+        />
+        <TextField
+          label={t("whatsapp.emojiImageUrl")}
+          value={waSettings.emoji_image_url}
+          onChange={(e) => setWaSettings((s) => ({ ...s, emoji_image_url: e.target.value }))}
+          placeholder="https://example.com/emoji.png"
+        />
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={waSettings.attach_emoji_image}
+            onChange={(e) => setWaSettings((s) => ({ ...s, attach_emoji_image: e.target.checked }))}
+          />
+          {t("whatsapp.attachEmojiImage")}
+        </label>
+        <p className="text-xs opacity-60">{t("whatsapp.emojiImageHint")}</p>
+      </Card>
+
+      <Card className="space-y-4">
         <TextAreaField
           label={t("whatsapp.templateNew")}
           value={templates.new_account}
@@ -202,7 +275,7 @@ export function WhatsAppTemplatesPage() {
         <div className="text-xs opacity-70">
           {t("whatsapp.templateVars")}:{" "}
           <code>
-            {"{{full_name}}, {{username}}, {{password}}, {{package_name}}, {{speed}}, {{expiration_date}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}, {{invoice_no}}, {{amount}}, {{paid_at}}"}
+            {"{{company_name}}, {{full_name}}, {{username}}, {{password}}, {{package_name}}, {{expiration_date}}, {{expiration_time}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}, {{invoice_no}}, {{amount}}, {{paid_at}}"}
           </code>
         </div>
         <p className="text-xs opacity-60">{t("whatsapp.templateVarsBillingHint")}</p>
