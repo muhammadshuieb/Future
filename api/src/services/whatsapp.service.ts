@@ -6,9 +6,8 @@ import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.j
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import {
-  readEmojiAssetFromStored,
+  loadEmojiFileForWahaSend,
   resolveEmojiPreviewUrl,
-  resolveWahaEmojiFetchUrl,
   saveWhatsAppEmojiImage,
 } from "../lib/whatsapp-assets.js";
 
@@ -324,6 +323,21 @@ function interpolate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => vars[key] ?? "");
 }
 
+/** Ensure company name appears in every outgoing WhatsApp text (templates + broadcasts). */
+async function finalizeWhatsAppText(
+  tenantId: string,
+  settings: WhatsAppSettingsRow,
+  raw: string
+): Promise<string> {
+  const company = await resolveCompanyName(tenantId, settings);
+  let text = interpolate(String(raw ?? ""), { company_name: company });
+  text = text.replace(/\{\{\s*company_name\s*\}\}/gi, company);
+  if (company && !text.includes(company)) {
+    text = `${company}\n\n${text}`;
+  }
+  return text;
+}
+
 async function resolveCompanyName(tenantId: string, settings: WhatsAppSettingsRow): Promise<string> {
   const fromSettings = String(settings.company_name ?? "").trim();
   if (fromSettings) return fromSettings;
@@ -472,17 +486,10 @@ async function sendWahaImage(
   }
   const chatId = await resolveWahaChatId(baseUrl, session, headers, phone);
 
-  const onDisk = await readEmojiAssetFromStored(storedImage);
-  const fileBody = onDisk
-    ? {
-        mimetype: onDisk.mimetype,
-        filename: onDisk.filename,
-        data: onDisk.buffer.toString("base64"),
-      }
-    : {
-        mimetype: imageMimetypeFromUrl(storedImage),
-        url: resolveWahaEmojiFetchUrl(storedImage),
-      };
+  const filePayload = await loadEmojiFileForWahaSend(storedImage);
+  if (!filePayload) {
+    throw new Error("emoji_file_unavailable");
+  }
 
   const response = await fetch(`${baseUrl}/api/sendImage`, {
     method: "POST",
@@ -490,7 +497,7 @@ async function sendWahaImage(
     body: JSON.stringify({
       session,
       chatId,
-      file: fileBody,
+      file: filePayload,
     }),
   });
   const textBody = await response.text();
@@ -516,6 +523,8 @@ async function deliverWhatsAppMessage(
   phone: string,
   text: string
 ): Promise<{ providerId: string | null }> {
+  const tenantId = String(settings.tenant_id);
+  const finalText = await finalizeWhatsAppText(tenantId, settings, text);
   const storedImage = String(settings.emoji_image_url ?? "").trim();
   const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && storedImage.length > 0;
   let lastId: string | null = null;
@@ -526,10 +535,10 @@ async function deliverWhatsAppMessage(
       await sleepMs(800);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("[whatsapp] emoji image send failed", msg);
+      console.error("[whatsapp] emoji image send failed", msg, { tenantId, storedImage });
     }
   }
-  const textResult = await sendWahaMessage(settings, phone, text);
+  const textResult = await sendWahaMessage(settings, phone, finalText);
   return { providerId: textResult.providerId ?? lastId };
 }
 
@@ -1566,7 +1575,7 @@ export async function resendWhatsAppMessage(tenantId: string, logId: string): Pr
   if (!row) return null;
   try {
     await enforceMessageInterval(tenantId, settings);
-    const result = await sendWahaMessage(settings, row.phone, row.message_body);
+    const result = await deliverWhatsAppMessage(settings, row.phone, row.message_body);
     await insertMessageLog({
       tenantId,
       subscriberId: row.subscriber_id,

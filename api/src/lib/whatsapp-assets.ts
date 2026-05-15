@@ -142,3 +142,40 @@ export async function readEmojiAssetFromStored(
     return null;
   }
 }
+
+/**
+ * Load emoji for WAHA sendImage: local disk (API container) or HTTP fetch from API (worker container).
+ */
+export async function loadEmojiFileForWahaSend(
+  stored: string | null | undefined
+): Promise<{ mimetype: string; filename: string; data: string } | null> {
+  const t = String(stored ?? "").trim();
+  if (!t) return null;
+
+  let file = await readEmojiAssetFromStored(t);
+  if (!file) {
+    const url = resolveWahaEmojiFetchUrl(t);
+    if (!url) return null;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) return null;
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      if (buffer.length === 0) return null;
+      const parsed = parseEmojiAssetPath(t);
+      const ext = parsed?.ext === "jpeg" ? "jpg" : parsed?.ext ?? "png";
+      file = {
+        buffer,
+        mimetype: emojiMimetypeFromExt(ext),
+        filename: `emoji.${ext}`,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    mimetype: file.mimetype,
+    filename: file.filename,
+    data: file.buffer.toString("base64"),
+  };
+}
