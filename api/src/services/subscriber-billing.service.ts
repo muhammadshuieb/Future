@@ -7,7 +7,16 @@ import { resolveExpirationAfterPayment } from "../lib/billing.js";
 import { formatExpirationForDb } from "../lib/expiration-date.js";
 import { withTransaction } from "../db/transaction.js";
 import { chargeManagerWalletWithConnection, ManagerBalanceError } from "./manager-wallet.service.js";
+import { emitEvent } from "../events/eventBus.js";
+import { Events } from "../events/eventTypes.js";
 import { sendSubscriberBillingDemandWhatsApp } from "./whatsapp.service.js";
+
+type PaidInvoiceNotice = {
+  invoice_id: string;
+  invoice_no: string;
+  amount: number;
+  currency: string;
+};
 
 export type BillingContext = {
   subscriber: {
@@ -401,6 +410,7 @@ export async function recordPackagePayment(
     }
 
     const result = await withTransaction(async (conn) => {
+      const paidInvoices: PaidInvoiceNotice[] = [];
       const [subRows] = await conn.query<RowDataPacket[]>(
         `SELECT id, username, package_id, expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
         [subscriberId, tenantId]
@@ -419,7 +429,7 @@ export async function recordPackagePayment(
         let fullyPaidInvoices = 0;
         for (const al of b.payment_allocations) {
           const [invRows] = await conn.query<RowDataPacket[]>(
-            `SELECT id, amount, status, meta FROM invoices WHERE id = ? AND tenant_id = ? AND subscriber_id = ? LIMIT 1 FOR UPDATE`,
+            `SELECT id, amount, status, meta, invoice_no, currency FROM invoices WHERE id = ? AND tenant_id = ? AND subscriber_id = ? LIMIT 1 FOR UPDATE`,
             [al.invoice_id, tenantId, subscriberId]
           );
           const inv = invRows[0];
@@ -448,6 +458,12 @@ export async function recordPackagePayment(
           const newPaid = paidSoFar + al.amount;
           if (newPaid + 0.009 >= amount) {
             await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [al.invoice_id, tenantId]);
+            paidInvoices.push({
+              invoice_id: al.invoice_id,
+              invoice_no: String(inv.invoice_no ?? ""),
+              amount,
+              currency: String(inv.currency ?? b.currency).toUpperCase(),
+            });
             fullyPaidInvoices += 1;
           } else {
             partial = true;
@@ -468,9 +484,10 @@ export async function recordPackagePayment(
             allocation: true,
             partial,
             expiration_audit: extension,
+            paid_invoices: paidInvoices,
           };
         }
-        return { kind: "ok" as const, allocation: true, partial };
+        return { kind: "ok" as const, allocation: true, partial, paid_invoices: paidInvoices };
       }
 
       const invs = await invoiceRowsForUpdate(conn, pool, tenantId, subscriberId);
@@ -487,7 +504,7 @@ export async function recordPackagePayment(
         );
       }
       const [invLock] = await conn.query<RowDataPacket[]>(
-        `SELECT id, amount, status FROM invoices WHERE id = ? AND tenant_id = ? FOR UPDATE`,
+        `SELECT id, amount, status, invoice_no, currency FROM invoices WHERE id = ? AND tenant_id = ? FOR UPDATE`,
         [invoiceId, tenantId]
       );
       const invRow = invLock[0];
@@ -519,6 +536,12 @@ export async function recordPackagePayment(
       let partial = false;
       if (newPaid + 0.009 >= invAmount) {
         await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [invoiceId, tenantId]);
+        paidInvoices.push({
+          invoice_id: invoiceId!,
+          invoice_no: String(invRow.invoice_no ?? ""),
+          amount: invAmount,
+          currency: String(invRow.currency ?? b.currency).toUpperCase(),
+        });
         const days = await packageBillingPeriodDays(conn, tenantId, subscriberId);
         const extension = await applyExpirationAfterFullPayment(
           conn,
@@ -534,11 +557,12 @@ export async function recordPackagePayment(
           payment_id: payId,
           invoice_id: invoiceId!,
           expiration_audit: extension,
+          paid_invoices: paidInvoices,
         };
       } else {
         partial = true;
       }
-      return { kind: "ok" as const, partial, payment_id: payId, invoice_id: invoiceId! };
+      return { kind: "ok" as const, partial, payment_id: payId, invoice_id: invoiceId!, paid_invoices: paidInvoices };
     });
 
     if (result.kind === "not_found") return { ok: false, error: "not_found" };
@@ -551,12 +575,26 @@ export async function recordPackagePayment(
       allocation?: boolean;
       payment_id?: string;
       invoice_id?: string;
+      paid_invoices?: PaidInvoiceNotice[];
       expiration_audit?: {
         previous_expiration_date: string | null;
         new_expiration_date: string;
         used_explicit_date: boolean;
       };
     };
+    for (const inv of r.paid_invoices ?? []) {
+      await emitEvent(Events.INVOICE_PAID, {
+        tenantId,
+        invoiceId: inv.invoice_id,
+        subscriberId,
+        invoiceNo: inv.invoice_no,
+        amount: inv.amount,
+        currency: inv.currency,
+        paidAt: new Date().toISOString(),
+      }).catch((err) => {
+        console.error("[recordPackagePayment] invoice paid WhatsApp enqueue failed", err);
+      });
+    }
     return {
       ok: true,
       partial: Boolean(r.partial),

@@ -55,6 +55,24 @@ function scopeIdsAreUnrestricted(stored: string[], options: Array<{ id: string }
   return normalizeScopeIdsForForm(stored, options).length === 0;
 }
 
+function isScopeItemSelected(id: string, stored: string[], options: Array<{ id: string }>): boolean {
+  return scopeIdsAreUnrestricted(stored, options) || stored.includes(id);
+}
+
+/** Uncheck one item from «all selected» → whitelist all except that id; re-check last gap → back to all. */
+function toggleScopeItem(id: string, stored: string[], optionIds: string[]): string[] {
+  if (!optionIds.length) return [];
+  if (scopeIdsAreUnrestricted(stored, optionIds.map((x) => ({ id: x })))) {
+    return optionIds.filter((x) => x !== id);
+  }
+  if (stored.includes(id)) {
+    return stored.filter((x) => x !== id);
+  }
+  const next = [...stored, id];
+  if (next.length >= optionIds.length) return [];
+  return next;
+}
+
 export function PackagesPage() {
   const { t, isRtl, locale } = useI18n();
   const { user } = useAuth();
@@ -77,7 +95,6 @@ export function PackagesPage() {
   const [price, setPrice] = useState("0");
   const [currency, setCurrency] = useState("USD");
   const [billingDays, setBillingDays] = useState("30");
-  const [simUse, setSimUse] = useState("1");
   const [accountType, setAccountType] = useState<"subscriptions" | "cards">("subscriptions");
   const [framedPool, setFramedPool] = useState("");
   const [allowedNasIds, setAllowedNasIds] = useState<string[]>([]);
@@ -144,7 +161,6 @@ export function PackagesPage() {
     setPrice("0");
     setCurrency("USD");
     setBillingDays("30");
-    setSimUse("1");
     setAccountType("subscriptions");
     setFramedPool("");
     setAllowedNasIds([]);
@@ -163,7 +179,6 @@ export function PackagesPage() {
     setPrice(String(p.price ?? "0"));
     setCurrency(String(p.currency ?? "USD"));
     setBillingDays(String(p.billing_period_days ?? "30"));
-    setSimUse(String(p.simultaneous_use ?? "1"));
     setAccountType(String(p.account_type ?? "subscriptions") === "cards" ? "cards" : "subscriptions");
     setFramedPool(String(p.default_framed_pool ?? ""));
     setAllowedNasIds(
@@ -200,11 +215,10 @@ export function PackagesPage() {
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
-            simultaneous_use: parseInt(simUse, 10) || 1,
             account_type: accountType,
             default_framed_pool: framedPool || null,
-            allowed_nas_ids: allowedNasIds,
-            available_manager_names: allowedStaffNames,
+            allowed_nas_ids: normalizeScopeIdsForForm(allowedNasIds, nasOptions),
+            available_manager_names: normalizeScopeIdsForForm(allowedStaffNames, managerOptions),
           }),
         });
         if (r.ok) {
@@ -230,11 +244,10 @@ export function PackagesPage() {
             price: parseFloat(price) || 0,
             currency,
             billing_period_days: parseInt(billingDays, 10) || 30,
-            simultaneous_use: parseInt(simUse, 10) || 1,
             account_type: accountType,
             default_framed_pool: framedPool || null,
-            allowed_nas_ids: allowedNasIds,
-            available_manager_names: allowedStaffNames,
+            allowed_nas_ids: normalizeScopeIdsForForm(allowedNasIds, nasOptions),
+            available_manager_names: normalizeScopeIdsForForm(allowedStaffNames, managerOptions),
           }),
         });
         if (r.ok) {
@@ -277,20 +290,16 @@ export function PackagesPage() {
     }
   }
 
-  const nasUnrestricted = allowedNasIds.length === 0;
-  const managersUnrestricted = allowedStaffNames.length === 0;
+  const nasAllSelected = scopeIdsAreUnrestricted(allowedNasIds, nasOptions);
+  const managersAllSelected = scopeIdsAreUnrestricted(allowedStaffNames, managerOptions);
+  const nasOptionIds = nasOptions.map((n) => n.id);
+  const managerOptionIds = managerOptions.map((m) => m.id);
 
   function toggleNas(id: string) {
-    setAllowedNasIds((current) => {
-      if (current.length === 0) return [id];
-      return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
-    });
+    setAllowedNasIds((current) => toggleScopeItem(id, current, nasOptionIds));
   }
   function toggleManager(id: string) {
-    setAllowedStaffNames((current) => {
-      if (current.length === 0) return [id];
-      return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
-    });
+    setAllowedStaffNames((current) => toggleScopeItem(id, current, managerOptionIds));
   }
 
   function toggleScheduleDay(day: number) {
@@ -531,10 +540,7 @@ export function PackagesPage() {
               ))}
             </SelectField>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label={t("packages.billingDays")} value={billingDays} onChange={(e) => setBillingDays(e.target.value)} />
-            <TextField label={t("packages.simUse")} value={simUse} onChange={(e) => setSimUse(e.target.value)} />
-          </div>
+          <TextField label={t("packages.billingDays")} value={billingDays} onChange={(e) => setBillingDays(e.target.value)} />
           <SelectField label={t("packages.type")} value={accountType} onChange={(e) => setAccountType(e.target.value as "subscriptions" | "cards")}>
             <option value="subscriptions">{t("packages.type.subscriptions")}</option>
             <option value="cards">{t("packages.type.cards")}</option>
@@ -547,10 +553,8 @@ export function PackagesPage() {
                   <span>{t("packages.selectAll")}</span>
                   <input
                     type="checkbox"
-                    checked={nasUnrestricted}
-                    onChange={(e) =>
-                      setAllowedNasIds(e.target.checked ? [] : nasOptions.map((n) => n.id))
-                    }
+                    checked={nasAllSelected}
+                    onChange={() => setAllowedNasIds([])}
                   />
                 </label>
                 <div className="max-h-40 space-y-1 overflow-auto">
@@ -562,7 +566,7 @@ export function PackagesPage() {
                       <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{n.name}</span>
                       <input
                         type="checkbox"
-                        checked={nasUnrestricted || allowedNasIds.includes(n.id)}
+                        checked={isScopeItemSelected(n.id, allowedNasIds, nasOptions)}
                         onChange={() => toggleNas(n.id)}
                       />
                     </label>
@@ -577,12 +581,8 @@ export function PackagesPage() {
                   <span>{t("packages.selectAll")}</span>
                   <input
                     type="checkbox"
-                    checked={managersUnrestricted}
-                    onChange={(e) =>
-                      setAllowedStaffNames(
-                        e.target.checked ? [] : managerOptions.map((m) => m.id)
-                      )
-                    }
+                    checked={managersAllSelected}
+                    onChange={() => setAllowedStaffNames([])}
                   />
                 </label>
                 <div className="max-h-40 space-y-1 overflow-auto">
@@ -594,7 +594,7 @@ export function PackagesPage() {
                       <span className={cn("truncate", locale === "ar" ? "ms-2" : "me-2")}>{m.name}</span>
                       <input
                         type="checkbox"
-                        checked={managersUnrestricted || allowedStaffNames.includes(m.id)}
+                        checked={isScopeItemSelected(m.id, allowedStaffNames, managerOptions)}
                         onChange={() => toggleManager(m.id)}
                       />
                     </label>

@@ -30,8 +30,6 @@ export function NasPage() {
   const [secretValues, setSecretValues] = useState<Record<string, string | undefined>>({});
   const [secretLoading, setSecretLoading] = useState<Record<string, boolean>>({});
   const [deleteTarget, setDeleteTarget] = useState<NasRow | null>(null);
-  const [syncingRadius, setSyncingRadius] = useState(false);
-  const [syncRadiusFeedback, setSyncRadiusFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
@@ -63,24 +61,6 @@ export function NasPage() {
 
   async function onDeleteNas(n: NasRow) {
     setDeleteTarget(n);
-  }
-
-  async function syncRadiusNasTable() {
-    setSyncRadiusFeedback(null);
-    setSyncingRadius(true);
-    try {
-      const r = await apiFetch("/api/nas/sync-radius", { method: "POST" });
-      if (r.ok) {
-        setSyncRadiusFeedback({ ok: true, text: t("nas.syncRadiusOk") });
-      } else {
-        const raw = await readApiError(r);
-        setSyncRadiusFeedback({ ok: false, text: formatStaffApiError(r.status, raw, t) });
-      }
-    } catch (e) {
-      setSyncRadiusFeedback({ ok: false, text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setSyncingRadius(false);
-    }
   }
 
   async function confirmDeleteNas() {
@@ -250,18 +230,6 @@ export function NasPage() {
           {loadError}
         </div>
       ) : null}
-      {syncRadiusFeedback ? (
-        <div
-          className={cn(
-            "whitespace-pre-wrap rounded-xl border px-4 py-2 text-sm",
-            syncRadiusFeedback.ok
-              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
-              : "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200"
-          )}
-        >
-          {syncRadiusFeedback.text}
-        </div>
-      ) : null}
 
       <Card variant="subtle" className="border-sky-500/25 bg-sky-500/5">
         <div className="text-sm font-semibold text-sky-700 dark:text-sky-300">{t("nas.radiusHelpTitle")}</div>
@@ -277,17 +245,6 @@ export function NasPage() {
           <Button type="button" variant="outline" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2", loading && "animate-spin")} />
           </Button>
-          {canManage ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void syncRadiusNasTable()}
-              disabled={loading || syncingRadius}
-              title={t("nas.syncRadiusHint")}
-            >
-              {syncingRadius ? t("common.loading") : t("nas.syncRadius")}
-            </Button>
-          ) : null}
           {canManage ? (
             <Button type="button" onClick={openCreate}>
               <Plus className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />

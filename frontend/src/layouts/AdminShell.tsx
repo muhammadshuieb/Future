@@ -38,6 +38,7 @@ import {
   ArrowUpCircle,
   Braces,
   Zap,
+  CreditCard,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -46,6 +47,7 @@ import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { LogoMark } from "../components/brand/Logo";
 import { canOpenStaffSection, canViewSpeedProfiles } from "../lib/permissions";
+import { AdminSessionIdleDialog } from "../components/AdminSessionIdleDialog";
 import { useAdminInactivityLogout } from "../hooks/useAdminInactivityLogout";
 
 type NavItem = {
@@ -139,7 +141,7 @@ function itemClass(active: boolean, tone: ToneKey, small = false) {
 
 export function AdminShell() {
   const { user, logout } = useAuth();
-  useAdminInactivityLogout(Boolean(user));
+  const { idleWarningOpen, idleSecondsLeft, onContinueBrowsing } = useAdminInactivityLogout(Boolean(user));
   const { theme, toggle } = useTheme();
   const { t, locale, setLocale, isRtl } = useI18n();
   const location = useLocation();
@@ -147,6 +149,7 @@ export function AdminShell() {
   const canOpenStaff = canOpenStaffSection(user?.role, user?.permissions);
   const isSubscribersRoute =
     location.pathname.startsWith("/users") ||
+    location.pathname.startsWith("/prepaid-cards") ||
     location.pathname.startsWith("/packages") ||
     location.pathname.startsWith("/subscriber-zones") ||
     location.pathname.startsWith("/online-users") ||
@@ -274,6 +277,8 @@ export function AdminShell() {
     { to: "/packages", labelKey: "nav.subscriberPlans", icon: Package, tone: "violet" },
     { to: "/subscriber-zones", labelKey: "nav.subscriberZones", icon: MapPin, tone: "rose" },
     { to: "/users", labelKey: "nav.subscribersItem", icon: Wifi, tone: "blue" },
+    { to: "/users/prepaid-cards", labelKey: "nav.prepaidCards", icon: CreditCard, tone: "fuchsia" },
+    { to: "/users/prepaid-cards-list", labelKey: "nav.prepaidCardsList", icon: ScrollText, tone: "pink" },
     { to: "/online-users", labelKey: "nav.onlineUsers", icon: Radio, tone: "green" },
     ...(canViewSpeedProfiles(user?.role, user?.permissions)
       ? ([
@@ -554,6 +559,11 @@ export function AdminShell() {
           <Outlet />
         </main>
       </div>
+      <AdminSessionIdleDialog
+        open={idleWarningOpen}
+        secondsLeft={idleSecondsLeft}
+        onContinue={onContinueBrowsing}
+      />
     </div>
   );
 }

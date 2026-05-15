@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { apiFetch, getStaffToken, setStaffToken } from "../lib/api";
+import { setCachedSessionTimeoutMinutes, touchStaffActivity } from "../lib/staffSession";
 import { useAuth } from "../context/AuthContext";
 
 const ALLOWED_TIMEOUTS = [5, 10, 15, 30, 60] as const;
-const DEFAULT_TIMEOUT_MIN = 30;
+const DEFAULT_TIMEOUT_MIN = 5;
 const WARN_BEFORE_MS = 60_000;
 
 type SystemSettingsSlice = {
@@ -18,23 +19,35 @@ function normalizeTimeoutMinutes(raw: unknown): number {
 }
 
 /**
- * Logs staff out after configured inactivity. Resets on pointer, keyboard, scroll, and API calls.
+ * Logs staff out after configured inactivity. Resets on pointer, keyboard, scroll, API calls, and navigation.
  */
 export function useAdminInactivityLogout(enabled: boolean) {
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const timeoutMsRef = useRef(DEFAULT_TIMEOUT_MIN * 60_000);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const warnedRef = useRef(false);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const warningOpenRef = useRef(false);
+
+  const [idleWarningOpen, setIdleWarningOpen] = useState(false);
+  const [idleSecondsLeft, setIdleSecondsLeft] = useState(60);
+
+  const clearCountdown = useCallback(() => {
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = null;
+  }, []);
 
   const clearTimers = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     if (warnTimerRef.current) clearTimeout(warnTimerRef.current);
     timerRef.current = null;
     warnTimerRef.current = null;
-    warnedRef.current = false;
-  }, []);
+    clearCountdown();
+    warningOpenRef.current = false;
+    setIdleWarningOpen(false);
+  }, [clearCountdown]);
 
   const doLogout = useCallback(() => {
     clearTimers();
@@ -43,27 +56,49 @@ export function useAdminInactivityLogout(enabled: boolean) {
     navigate("/login", { replace: true });
   }, [clearTimers, logout, navigate]);
 
+  const startWarningCountdown = useCallback(() => {
+    clearCountdown();
+    warningOpenRef.current = true;
+    setIdleSecondsLeft(60);
+    setIdleWarningOpen(true);
+    countdownRef.current = setInterval(() => {
+      setIdleSecondsLeft((s) => {
+        if (s <= 1) {
+          clearCountdown();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  }, [clearCountdown]);
+
   const scheduleLogout = useCallback(() => {
     clearTimers();
     const total = timeoutMsRef.current;
     const warnAt = Math.max(0, total - WARN_BEFORE_MS);
     if (warnAt > 0 && total > WARN_BEFORE_MS) {
       warnTimerRef.current = setTimeout(() => {
-        if (!warnedRef.current) {
-          warnedRef.current = true;
-          window.alert("ستنتهي جلستك خلال دقيقة بسبب عدم النشاط. حرّك الماوس أو اضغط مفتاحاً للبقاء متصلاً.");
-        }
+        startWarningCountdown();
       }, warnAt);
     }
     timerRef.current = setTimeout(() => {
       doLogout();
     }, total);
-  }, [clearTimers, doLogout]);
+  }, [clearTimers, doLogout, startWarningCountdown]);
 
   const resetActivity = useCallback(() => {
     if (!enabled || !getStaffToken()) return;
+    if (warningOpenRef.current) return;
+    touchStaffActivity();
     scheduleLogout();
   }, [enabled, scheduleLogout]);
+
+  const onContinueBrowsing = useCallback(() => {
+    if (!enabled || !getStaffToken()) return;
+    clearTimers();
+    touchStaffActivity();
+    scheduleLogout();
+  }, [enabled, clearTimers, scheduleLogout]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -73,7 +108,9 @@ export function useAdminInactivityLogout(enabled: boolean) {
         const r = await apiFetch("/api/system-settings");
         if (!r.ok || cancelled) return;
         const j = (await r.json()) as { settings?: SystemSettingsSlice };
-        timeoutMsRef.current = normalizeTimeoutMinutes(j.settings?.admin_session_timeout_minutes) * 60_000;
+        const mins = normalizeTimeoutMinutes(j.settings?.admin_session_timeout_minutes);
+        setCachedSessionTimeoutMinutes(mins);
+        timeoutMsRef.current = mins * 60_000;
         resetActivity();
       } catch {
         timeoutMsRef.current = DEFAULT_TIMEOUT_MIN * 60_000;
@@ -87,6 +124,11 @@ export function useAdminInactivityLogout(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return;
+    resetActivity();
+  }, [location.pathname, enabled, resetActivity]);
+
+  useEffect(() => {
+    if (!enabled) return;
     const events = ["mousedown", "keydown", "touchstart", "scroll", "click"] as const;
     const onActivity = () => resetActivity();
     for (const ev of events) {
@@ -94,7 +136,7 @@ export function useAdminInactivityLogout(enabled: boolean) {
     }
     const origFetch = window.fetch.bind(window);
     window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      if (getStaffToken()) resetActivity();
+      if (getStaffToken() && !warningOpenRef.current) resetActivity();
       return origFetch(input, init);
     }) as typeof window.fetch;
     resetActivity();
@@ -106,4 +148,6 @@ export function useAdminInactivityLogout(enabled: boolean) {
       clearTimers();
     };
   }, [enabled, resetActivity, clearTimers]);
+
+  return { idleWarningOpen, idleSecondsLeft, onContinueBrowsing };
 }

@@ -102,7 +102,7 @@ router.get("/templates", async (req, res) => {
 });
 
 const templateBody = z.object({ body: z.string().min(3).max(4000) });
-const templateKey = z.enum(["new_account", "expiry_soon", "payment_due", "usage_threshold"]);
+const templateKey = z.enum(["new_account", "expiry_soon", "payment_due", "usage_threshold", "invoice_paid"]);
 
 router.put("/templates/:key", async (req, res) => {
   const parsedBody = templateBody.safeParse(req.body);

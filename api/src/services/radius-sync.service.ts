@@ -15,11 +15,6 @@ export class RadiusSyncService {
     await this.syncSubscribers(tenantId);
   }
 
-  /** Rebuild `nas` from all `nas_devices` for this tenant (idempotent; fixes missing/stale RADIUS clients). */
-  async syncAllNasDevices(tenantId: string): Promise<void> {
-    await this.syncNasDevices(tenantId);
-  }
-
   async syncPackage(packageId: string, tenantId: string): Promise<void> {
     const [rows] = await this.pool.query<RowDataPacket[]>(
       `SELECT id, name, mikrotik_rate_limit, default_framed_pool, simultaneous_use

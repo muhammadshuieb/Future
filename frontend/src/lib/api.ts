@@ -1,3 +1,5 @@
+import { clearStaffActivity, touchStaffActivity } from "./staffSession";
+
 const TOKEN_KEY = "fr_staff_token";
 const USER_TOKEN = "fr_user_token";
 const PORTAL_TOKEN_KEY = "fr_portal_token";
@@ -14,8 +16,13 @@ export function getStaffToken() {
 }
 
 export function setStaffToken(t: string | null) {
-  if (t) localStorage.setItem(TOKEN_KEY, t);
-  else localStorage.removeItem(TOKEN_KEY);
+  if (t) {
+    localStorage.setItem(TOKEN_KEY, t);
+    touchStaffActivity();
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+    clearStaffActivity();
+  }
 }
 
 export function getUserToken() {

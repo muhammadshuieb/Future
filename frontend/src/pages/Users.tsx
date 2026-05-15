@@ -60,7 +60,6 @@ type SubscriberRow = {
   simultaneous_use?: string | number | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
-type Nas = { id: string; name: string; ip: string };
 type RegionRow = { id: string; name: string; parent_id?: string | null };
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500] as const;
 type SortKey =
@@ -213,7 +212,6 @@ export function UsersPage() {
   const canRevealPassword = user?.role === "admin" || user?.role === "manager";
   const [items, setItems] = useState<SubscriberRow[]>([]);
   const [packages, setPackages] = useState<Pkg[]>([]);
-  const [nasList, setNasList] = useState<Nas[]>([]);
   const [regions, setRegions] = useState<RegionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
@@ -245,7 +243,6 @@ export function UsersPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [packageId, setPackageId] = useState("");
-  const [nasId, setNasId] = useState("");
   const [ipAddress, setIpAddress] = useState("");
   const [macAddress, setMacAddress] = useState("");
   const [pool, setPool] = useState("");
@@ -327,10 +324,9 @@ export function UsersPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [rSub, rPkg, rNas, rReg] = await Promise.all([
+      const [rSub, rPkg, rReg] = await Promise.all([
         apiFetch(`/api/subscribers/?${subscribersListQuery}`),
         apiFetch("/api/packages/?account_type=subscriptions"),
-        apiFetch("/api/nas/"),
         apiFetch("/api/regions/"),
       ]);
       const errParts: string[] = [];
@@ -354,13 +350,6 @@ export function UsersPage() {
       } else {
         const raw = await readApiError(rPkg);
         errParts.push(`${t("nav.packages")}: ${formatStaffApiError(rPkg.status, raw, t)}`);
-      }
-      if (rNas.ok) {
-        const j = (await rNas.json()) as { nas_servers: Nas[] };
-        setNasList(j.nas_servers ?? []);
-      } else {
-        const raw = await readApiError(rNas);
-        errParts.push(`${t("nav.nas")}: ${formatStaffApiError(rNas.status, raw, t)}`);
       }
       if (rReg.ok) {
         const j = (await rReg.json()) as { items: RegionRow[] };
@@ -451,7 +440,6 @@ export function UsersPage() {
           username,
           password,
           package_id: packageId,
-          nas_server_id: nasId || null,
           first_name: firstName || undefined,
           last_name: lastName || undefined,
           phone: phone || undefined,
@@ -474,7 +462,6 @@ export function UsersPage() {
       setUsername("");
       setPassword("");
       setPackageId("");
-      setNasId("");
       setIpAddress("");
       setMacAddress("");
       setPool("");
@@ -497,7 +484,6 @@ export function UsersPage() {
     setUsername("");
     setPassword("");
     setPackageId("");
-    setNasId("");
     setIpAddress("");
     setMacAddress("");
     setPool("");
@@ -1258,14 +1244,6 @@ export function UsersPage() {
             value={simultaneousUse}
             onChange={(e) => setSimultaneousUse(e.target.value)}
           />
-          <SelectField label={`${t("users.nas")} (${t("common.optional")})`} value={nasId} onChange={(e) => setNasId(e.target.value)}>
-            <option value="">—</option>
-            {nasList.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name} ({n.ip})
-              </option>
-            ))}
-          </SelectField>
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField
               label={`${t("users.ip")} (${t("common.optional")})`}

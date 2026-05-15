@@ -78,7 +78,6 @@ type Row = {
   whatsapp_opt_out?: number | string | boolean | null;
 };
 type Pkg = { id: string; name: string; price?: number | string | null; currency?: string | null };
-type Nas = { id: string; name: string; ip: string };
 type TrafficPoint = {
   period: string;
   sessions_count: number;
@@ -189,7 +188,6 @@ export function UserProfilePage() {
 
   const [row, setRow] = useState<Row | null>(null);
   const [packages, setPackages] = useState<Pkg[]>([]);
-  const [nasList, setNasList] = useState<Nas[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -211,7 +209,6 @@ export function UserProfilePage() {
   const [passwordBusy, setPasswordBusy] = useState(false);
 
   const [packageId, setPackageId] = useState("");
-  const [nasId, setNasId] = useState("");
   const [pool, setPool] = useState("");
   const [ipAddress, setIpAddress] = useState("");
   const [macAddress, setMacAddress] = useState("");
@@ -316,10 +313,9 @@ export function UserProfilePage() {
     setLoading(true);
     setRevealedPw(null);
     try {
-      const [rSub, rPkg, rNas, rReg] = await Promise.all([
+      const [rSub, rPkg, rReg] = await Promise.all([
         apiFetch("/api/subscribers/"),
         apiFetch("/api/packages/?account_type=subscriptions"),
-        apiFetch("/api/nas/"),
         apiFetch("/api/regions/"),
       ]);
       if (rReg.ok) {
@@ -330,17 +326,12 @@ export function UserProfilePage() {
       }
       const pkgItems = rPkg.ok ? ((await rPkg.json()) as { items: Pkg[] }).items : [];
       setPackages(pkgItems);
-      if (rNas.ok) {
-        const j = (await rNas.json()) as { nas_servers: Nas[] };
-        setNasList(j.nas_servers ?? []);
-      }
       if (rSub.ok) {
         const { items } = (await rSub.json()) as { items: Row[] };
         const found = items.find((x) => x.id === id) ?? null;
         setRow(found);
         if (found) {
           setPackageId(String(found.package_id ?? ""));
-          setNasId(found.nas_server_id ? String(found.nas_server_id) : "");
           setPool(String(found.pool ?? ""));
           setIpAddress(String(found.ip_address ?? ""));
           setMacAddress(String(found.mac_address ?? ""));
@@ -386,7 +377,6 @@ export function UserProfilePage() {
         method: "PATCH",
         body: JSON.stringify({
           package_id: packageId || undefined,
-          nas_server_id: nasId || null,
           pool: pool || null,
           ip_address: ipAddress || null,
           mac_address: macAddress || null,
@@ -1052,25 +1042,15 @@ export function UserProfilePage() {
                       {t("profile.subscriptionUnlimited")}
                     </label>
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <TextField
-                      label={t("packages.simUse")}
-                      type="number"
-                      min={1}
-                      max={32}
-                      value={simultaneousUse}
-                      onChange={(e) => setSimultaneousUse(e.target.value)}
-                      disabled={!canManage}
-                    />
-                    <SelectField label={t("users.nas")} value={nasId} onChange={(e) => setNasId(e.target.value)} disabled={!canManage}>
-                      <option value="">—</option>
-                      {nasList.map((n) => (
-                        <option key={n.id} value={n.id}>
-                          {n.name} ({n.ip})
-                        </option>
-                      ))}
-                    </SelectField>
-                  </div>
+                  <TextField
+                    label={t("packages.simUse")}
+                    type="number"
+                    min={1}
+                    max={32}
+                    value={simultaneousUse}
+                    onChange={(e) => setSimultaneousUse(e.target.value)}
+                    disabled={!canManage}
+                  />
                   <TextField label={t("users.pool")} value={pool} onChange={(e) => setPool(e.target.value)} disabled={!canManage} />
                   <div className="grid gap-4 sm:grid-cols-2">
                     <TextField label={t("users.ip")} value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} disabled={!canManage} />

@@ -8,7 +8,7 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 
 type Template = {
-  template_key: "new_account" | "expiry_soon" | "payment_due" | "usage_threshold";
+  template_key: "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
   body: string;
   updated_at: string | null;
 };
@@ -22,6 +22,7 @@ export function WhatsAppTemplatesPage() {
     expiry_soon: "",
     payment_due: "",
     usage_threshold: "",
+    invoice_paid: "",
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -47,6 +48,7 @@ export function WhatsAppTemplatesPage() {
         expiry_soon: data.items.find((x) => x.template_key === "expiry_soon")?.body ?? "",
         payment_due: data.items.find((x) => x.template_key === "payment_due")?.body ?? "",
         usage_threshold: data.items.find((x) => x.template_key === "usage_threshold")?.body ?? "",
+        invoice_paid: data.items.find((x) => x.template_key === "invoice_paid")?.body ?? "",
       };
       setTemplates(next);
       if (
@@ -70,6 +72,7 @@ export function WhatsAppTemplatesPage() {
               expiry_soon: fixed.items.find((x) => x.template_key === "expiry_soon")?.body ?? "",
               payment_due: fixed.items.find((x) => x.template_key === "payment_due")?.body ?? "",
               usage_threshold: fixed.items.find((x) => x.template_key === "usage_threshold")?.body ?? "",
+              invoice_paid: fixed.items.find((x) => x.template_key === "invoice_paid")?.body ?? "",
             });
             setInfo(t("whatsapp.professionalApplied"));
           }
@@ -92,7 +95,7 @@ export function WhatsAppTemplatesPage() {
     setError(null);
     setInfo(null);
     try {
-      const [a, b, c, d] = await Promise.all([
+      const [a, b, c, d, e] = await Promise.all([
         apiFetch("/api/whatsapp/templates/new_account", {
           method: "PUT",
           body: JSON.stringify({ body: templates.new_account }),
@@ -109,11 +112,16 @@ export function WhatsAppTemplatesPage() {
           method: "PUT",
           body: JSON.stringify({ body: templates.usage_threshold }),
         }),
+        apiFetch("/api/whatsapp/templates/invoice_paid", {
+          method: "PUT",
+          body: JSON.stringify({ body: templates.invoice_paid }),
+        }),
       ]);
       if (!a.ok) throw new Error(await readApiError(a));
       if (!b.ok) throw new Error(await readApiError(b));
       if (!c.ok) throw new Error(await readApiError(c));
       if (!d.ok) throw new Error(await readApiError(d));
+      if (!e.ok) throw new Error(await readApiError(e));
       setInfo(t("whatsapp.saved"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -186,10 +194,15 @@ export function WhatsAppTemplatesPage() {
           value={templates.usage_threshold}
           onChange={(e) => setTemplates((x) => ({ ...x, usage_threshold: e.target.value }))}
         />
+        <TextAreaField
+          label={t("whatsapp.templateInvoicePaid")}
+          value={templates.invoice_paid}
+          onChange={(e) => setTemplates((x) => ({ ...x, invoice_paid: e.target.value }))}
+        />
         <div className="text-xs opacity-70">
           {t("whatsapp.templateVars")}:{" "}
           <code>
-            {"{{full_name}}, {{username}}, {{password}}, {{package_name}}, {{speed}}, {{expiration_date}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}"}
+            {"{{full_name}}, {{username}}, {{password}}, {{package_name}}, {{speed}}, {{expiration_date}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}, {{invoice_no}}, {{amount}}, {{paid_at}}"}
           </code>
         </div>
         <p className="text-xs opacity-60">{t("whatsapp.templateVarsBillingHint")}</p>

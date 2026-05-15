@@ -25,17 +25,6 @@ const nasBody = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 });
 
-router.post(
-  "/sync-radius",
-  requireRole("admin", "manager"),
-  denyViewerWrites,
-  denyAccountant,
-  async (req, res) => {
-    await radiusSync.syncAllNasDevices(req.auth!.tenantId);
-    res.json({ ok: true });
-  }
-);
-
 router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT id, name, ip, type, status, coa_port, mikrotik_api_enabled, mikrotik_api_user,

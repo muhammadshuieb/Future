@@ -18,7 +18,10 @@ import {
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
-import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
+import {
+  sendNewSubscriberWhatsApp,
+  sendSubscriberFinancialReportWhatsApp,
+} from "../services/whatsapp.service.js";
 import {
   assertStaffCanAssignPackage,
   assertSubscriberFitsPackageNas,
@@ -45,7 +48,86 @@ const subscriberBody = z.object({
   status: z.enum(["active", "disabled", "expired", "suspended"]).optional(),
   expiration_date: z.string().nullable().optional(),
   simultaneous_use: z.number().int().min(1).max(32).optional(),
+  first_name: z.string().max(80).optional(),
+  last_name: z.string().max(80).optional(),
+  nickname: z.string().max(80).optional(),
+  phone: z.string().max(40).optional(),
+  address: z.string().max(255).optional(),
+  ip_address: z.string().max(45).optional(),
+  mac_address: z.string().max(32).optional(),
+  pool: z.string().max(64).optional(),
+  notes: z.string().max(2000).optional(),
+  region_id: z.string().nullable().optional(),
+  whatsapp_opt_out: z.boolean().optional(),
 });
+
+type SubscriberProfileBody = Pick<
+  z.infer<typeof subscriberBody>,
+  | "first_name"
+  | "last_name"
+  | "nickname"
+  | "phone"
+  | "address"
+  | "ip_address"
+  | "mac_address"
+  | "pool"
+  | "notes"
+  | "region_id"
+  | "whatsapp_opt_out"
+>;
+
+async function subscriberProfileInsertParts(
+  body: SubscriberProfileBody
+): Promise<{ columns: string[]; placeholders: string[]; values: unknown[] }> {
+  const columns: string[] = [];
+  const placeholders: string[] = [];
+  const values: unknown[] = [];
+  const candidates: Array<[string, unknown | undefined]> = [
+    ["first_name", body.first_name !== undefined ? body.first_name.trim() || null : undefined],
+    ["last_name", body.last_name !== undefined ? body.last_name.trim() || null : undefined],
+    ["nickname", body.nickname !== undefined ? body.nickname.trim() || null : undefined],
+    ["phone", body.phone !== undefined ? body.phone.trim() || null : undefined],
+    ["address", body.address !== undefined ? body.address.trim() || null : undefined],
+    ["ip_address", body.ip_address !== undefined ? body.ip_address.trim() || null : undefined],
+    ["mac_address", body.mac_address !== undefined ? body.mac_address.trim() || null : undefined],
+    ["pool", body.pool !== undefined ? body.pool.trim() || null : undefined],
+    ["notes", body.notes !== undefined ? body.notes.trim() || null : undefined],
+    ["region_id", body.region_id !== undefined ? body.region_id : undefined],
+    [
+      "whatsapp_opt_out",
+      body.whatsapp_opt_out === true ? 1 : body.whatsapp_opt_out === false ? 0 : undefined,
+    ],
+  ];
+  for (const [column, value] of candidates) {
+    if (value === undefined) continue;
+    if (!(await hasColumn(pool, "subscribers", column))) continue;
+    columns.push(column);
+    placeholders.push("?");
+    values.push(value);
+  }
+  return { columns, placeholders, values };
+}
+
+function subscriberProfilePatchSets(body: SubscriberProfileBody): { sets: string[]; values: unknown[] } {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const assign = (column: string, value: unknown) => {
+    sets.push(`${column} = ?`);
+    values.push(value);
+  };
+  if (body.first_name !== undefined) assign("first_name", body.first_name?.trim() || null);
+  if (body.last_name !== undefined) assign("last_name", body.last_name?.trim() || null);
+  if (body.nickname !== undefined) assign("nickname", body.nickname?.trim() || null);
+  if (body.phone !== undefined) assign("phone", body.phone?.trim() || null);
+  if (body.address !== undefined) assign("address", body.address?.trim() || null);
+  if (body.ip_address !== undefined) assign("ip_address", body.ip_address?.trim() || null);
+  if (body.mac_address !== undefined) assign("mac_address", body.mac_address?.trim() || null);
+  if (body.pool !== undefined) assign("pool", body.pool?.trim() || null);
+  if (body.notes !== undefined) assign("notes", body.notes?.trim() || null);
+  if (body.region_id !== undefined) assign("region_id", body.region_id);
+  if (body.whatsapp_opt_out !== undefined) assign("whatsapp_opt_out", body.whatsapp_opt_out ? 1 : 0);
+  return { sets, values };
+}
 
 const listQuerySchema = z.object({
   page: z.coerce.number().int().positive().max(10_000).optional().default(1),
@@ -63,23 +145,6 @@ const listQuerySchema = z.object({
   quota_status: z.enum(["all", "ok", "exhausted"]).optional().default("all"),
   debt_status: z.enum(["all", "overdue", "clean"]).optional().default("all"),
 });
-
-async function packageHasQuotaLimit(
-  tenantId: string,
-  packageId: string | null | undefined
-): Promise<boolean> {
-  if (!packageId) return false;
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT quota_total_bytes FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
-    [packageId, tenantId]
-  );
-  if (!rows[0]) return false;
-  try {
-    return BigInt(String(rows[0].quota_total_bytes ?? 0)) > 0n;
-  } catch {
-    return Number(rows[0].quota_total_bytes ?? 0) > 0;
-  }
-}
 
 async function subscriberIdentity(
   tenantId: string,
@@ -220,42 +285,66 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   const id = randomUUID();
   const body = parsed.data;
   const exp = body.expiration_date;
-  const quotaLimited =
-    exp === undefined ? await packageHasQuotaLimit(tenantId, body.package_id ?? null) : false;
-  const expFragment =
-    exp === null ? "NULL" : exp === undefined ? (quotaLimited ? "NULL" : "CURDATE()") : "?";
-  const insertArgs: (string | null)[] = [
-    id,
-    tenantId,
-    body.customer_id ?? null,
-    body.package_id ?? null,
-    body.username,
-    body.status ?? "active",
-  ];
-  if (exp !== null && exp !== undefined) {
-    insertArgs.push(exp);
-  }
+  /** New subscribers start expired until a package payment / paid invoice extends expiry. */
+  const pendingPayment = exp === undefined;
+  const expFragment = exp === null ? "NULL" : exp === undefined ? "CURDATE()" : "?";
+  const profileParts = await subscriberProfileInsertParts(body);
+  const baseColumns = ["id", "tenant_id", "customer_id", "package_id"];
+  const baseValues: unknown[] = [id, tenantId, body.customer_id ?? null, body.package_id ?? null];
   const withNas = await hasColumn(pool, "subscribers", "nas_server_id");
   if (withNas) {
-    insertArgs.splice(4, 0, body.nas_server_id ?? null);
-    await pool.execute(
-      `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, nas_server_id, username, status, expiration_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ${expFragment})`,
-      insertArgs
-    );
-  } else {
-    await pool.execute(
-      `INSERT INTO subscribers (id, tenant_id, customer_id, package_id, username, status, expiration_date)
-     VALUES (?, ?, ?, ?, ?, ?, ${expFragment})`,
-      insertArgs
-    );
+    baseColumns.push("nas_server_id");
+    baseValues.push(body.nas_server_id ?? null);
   }
+  baseColumns.push("username", "status", "expiration_date");
+  baseValues.push(body.username, body.status ?? (pendingPayment ? "expired" : "active"));
+  if (exp !== null && exp !== undefined) {
+    baseValues.push(exp);
+  }
+  const allColumns = [...baseColumns, ...profileParts.columns];
+  const allPlaceholders = [
+    ...baseColumns.map((c) => (c === "expiration_date" ? expFragment : "?")),
+    ...profileParts.placeholders,
+  ];
+  await pool.execute(
+    `INSERT INTO subscribers (${allColumns.join(", ")}) VALUES (${allPlaceholders.join(", ")})`,
+    [...baseValues, ...profileParts.values] as Array<string | number | null>
+  );
   await pool.execute(
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,
     [id, tenantId, body.password as string]
   );
   await radiusSync.syncSubscriber(id, tenantId, {
     simultaneousUse: body.simultaneous_use,
+  });
+  let packageName = "-";
+  let speed = "-";
+  if (body.package_id) {
+    const [pkgRows] = await pool.query<RowDataPacket[]>(
+      `SELECT name, mikrotik_rate_limit FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [body.package_id, tenantId]
+    );
+    if (pkgRows[0]) {
+      packageName = String(pkgRows[0].name ?? "-");
+      speed = String(pkgRows[0].mikrotik_rate_limit ?? "-");
+    }
+  }
+  const fullName =
+    [body.first_name?.trim(), body.last_name?.trim()].filter(Boolean).join(" ").trim() || body.username;
+  const expirationForWhatsApp =
+    exp === undefined ? new Date().toISOString().slice(0, 10) : exp === null ? null : exp;
+  void sendNewSubscriberWhatsApp({
+    tenantId,
+    subscriberId: id,
+    phone: body.phone ?? null,
+    username: body.username,
+    fullName,
+    password: body.password as string,
+    packageName,
+    speed,
+    expirationDate: expirationForWhatsApp,
+  }).catch((err) => {
+    console.error("[subscribers] welcome WhatsApp failed", err);
   });
   res.status(201).json({ id });
 });
@@ -694,6 +783,13 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
   if (body.username !== undefined) set("username", body.username);
   if (body.status !== undefined) set("status", body.status);
   if (body.expiration_date !== undefined) set("expiration_date", body.expiration_date);
+  const profilePatch = subscriberProfilePatchSets(body);
+  for (let i = 0; i < profilePatch.sets.length; i++) {
+    const column = profilePatch.sets[i]?.split(" = ")[0];
+    if (!column || !(await hasColumn(pool, "subscribers", column))) continue;
+    sets.push(profilePatch.sets[i]!);
+    values.push(profilePatch.values[i]);
+  }
   if (sets.length) {
     await pool.execute(
       `UPDATE subscribers SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?`,

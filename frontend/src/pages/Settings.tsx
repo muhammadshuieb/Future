@@ -45,7 +45,7 @@ export function SettingsPage() {
     radpostauth_retention_enabled: true,
     radpostauth_retention_months: 2,
     user_idle_timeout_minutes: 4,
-    admin_session_timeout_minutes: 30,
+    admin_session_timeout_minutes: 5,
     mikrotik_interim_update_minutes: 1,
     disconnect_on_activation: true,
     disconnect_on_update: true,
@@ -249,11 +249,11 @@ export function SettingsPage() {
         <label className="text-sm font-medium">{t("settings.adminSessionTimeout")}</label>
         <select
           className="w-full max-w-xs rounded-xl border border-[hsl(var(--border))] bg-transparent px-3 py-2.5 text-sm"
-          value={String(settings.admin_session_timeout_minutes ?? 30)}
+          value={String(settings.admin_session_timeout_minutes ?? 5)}
           onChange={(e) =>
             setSettings((p) => ({
               ...p,
-              admin_session_timeout_minutes: Number(e.target.value) || 30,
+              admin_session_timeout_minutes: Number(e.target.value) || 5,
             }))
           }
         >

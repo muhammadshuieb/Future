@@ -131,8 +131,8 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     admin_session_timeout_minutes: col.has("admin_session_timeout_minutes")
       ? ([5, 10, 15, 30, 60].includes(Number(row.admin_session_timeout_minutes))
           ? Number(row.admin_session_timeout_minutes)
-          : 30)
-      : 30,
+          : 5)
+      : 5,
     mikrotik_interim_update_minutes: col.has("mikrotik_interim_update_minutes")
       ? Math.max(1, Math.min(60, Number(row.mikrotik_interim_update_minutes ?? 1)))
       : 1,
@@ -254,9 +254,9 @@ export async function updateSystemSettings(
   }
   if (col.has("admin_session_timeout_minutes")) {
     const allowed = [5, 10, 15, 30, 60];
-    const raw = Math.floor(input.admin_session_timeout_minutes || 30);
+    const raw = Math.floor(input.admin_session_timeout_minutes || 5);
     baseSets.push("admin_session_timeout_minutes = ?");
-    baseVals.push(allowed.includes(raw) ? raw : 30);
+    baseVals.push(allowed.includes(raw) ? raw : 5);
   }
   if (col.has("mikrotik_interim_update_minutes")) {
     baseSets.push("mikrotik_interim_update_minutes = ?");

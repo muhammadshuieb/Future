@@ -1,5 +1,10 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { apiFetch, getStaffToken, readApiError, setStaffToken } from "../lib/api";
+import {
+  isStaffSessionIdleExpired,
+  setCachedSessionTimeoutMinutes,
+  touchStaffActivity,
+} from "../lib/staffSession";
 
 type User = {
   id: string;
@@ -59,13 +64,44 @@ const Ctx = createContext<{
   logout: () => void;
 } | null>(null);
 
+function resolveInitialUser(): User | null {
+  const tok = getStaffToken();
+  if (!tok) return null;
+  if (isStaffSessionIdleExpired()) {
+    setStaffToken(null);
+    return null;
+  }
+  return parseUserFromToken(tok);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => parseUserFromToken(getStaffToken()));
+  const [user, setUser] = useState<User | null>(() => resolveInitialUser());
 
   useEffect(() => {
     const tok = getStaffToken();
     if (!tok) return;
-    if (!parseUserFromToken(tok)) setStaffToken(null);
+    if (!parseUserFromToken(tok) || isStaffSessionIdleExpired()) {
+      setStaffToken(null);
+      setUser(null);
+      return;
+    }
+    touchStaffActivity();
+    void (async () => {
+      try {
+        const r = await apiFetch("/api/system-settings");
+        if (!r.ok) return;
+        const j = (await r.json()) as { settings?: { admin_session_timeout_minutes?: number } };
+        const raw = j.settings?.admin_session_timeout_minutes;
+        const n = Number(raw);
+        if ([5, 10, 15, 30, 60].includes(n)) setCachedSessionTimeoutMinutes(n);
+        if (isStaffSessionIdleExpired()) {
+          setStaffToken(null);
+          setUser(null);
+        }
+      } catch {
+        /* keep cached timeout */
+      }
+    })();
   }, []);
 
   async function login(

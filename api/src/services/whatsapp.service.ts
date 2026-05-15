@@ -6,7 +6,7 @@ import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 
-type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold";
+type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
 type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid" | "financial_report";
 
 type WhatsAppSettingsRow = RowDataPacket & {
@@ -111,6 +111,8 @@ const DEFAULT_TEMPLATES: Record<WhatsAppTemplateKey, string> = {
     "مرحباً {{full_name}}،\nنود تذكيرك بوجود ذمة مالية مستحقة على حسابك.\n\n• إجمالي المستحقات: {{due_amount}} {{currency}}\n• عدد الفواتير غير المدفوعة: {{unpaid_count}}\n• أقدم تاريخ استحقاق: {{oldest_due_date}}\n\n{{billing_detail}}\nيرجى السداد في أقرب وقت لتجنب أي انقطاع بالخدمة. شكراً لتعاونك.",
   usage_threshold:
     "مرحباً {{full_name}}،\nتنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن أو تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
+  invoice_paid:
+    "مرحباً {{full_name}}،\nتم تأكيد دفع الفاتورة بنجاح.\n\n• رقم الفاتورة: {{invoice_no}}\n• المبلغ المدفوع: {{amount}} {{currency}}\n• وقت الدفع: {{paid_at}}\n\nشكراً لثقتكم.",
 };
 
 const nextAllowedSendByTenant = new Map<string, number>();
@@ -261,6 +263,24 @@ async function ensureSchema(): Promise<void> {
   await pool.query(`EXECUTE stmt`);
   await pool.query(`DEALLOCATE PREPARE stmt`);
   await pool.query(`
+    SET @sql = (
+      SELECT IF(
+        EXISTS (
+          SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'whatsapp_templates'
+            AND COLUMN_NAME = 'template_key'
+            AND LOCATE('invoice_paid', COLUMN_TYPE) > 0
+        ),
+        'SELECT 1',
+        'ALTER TABLE whatsapp_templates MODIFY COLUMN template_key ENUM(''new_account'',''expiry_soon'',''payment_due'',''usage_threshold'',''invoice_paid'') NOT NULL'
+      )
+    );
+  `);
+  await pool.query(`PREPARE stmt FROM @sql`);
+  await pool.query(`EXECUTE stmt`);
+  await pool.query(`DEALLOCATE PREPARE stmt`);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_usage_alerts_sent (
       tenant_id CHAR(36) NOT NULL,
       subscriber_id CHAR(36) NOT NULL,
@@ -349,6 +369,7 @@ async function getTemplateMap(tenantId: string): Promise<Record<WhatsAppTemplate
     expiry_soon: DEFAULT_TEMPLATES.expiry_soon,
     payment_due: DEFAULT_TEMPLATES.payment_due,
     usage_threshold: DEFAULT_TEMPLATES.usage_threshold,
+    invoice_paid: DEFAULT_TEMPLATES.invoice_paid,
   };
   for (const row of rows) {
     map[row.template_key] = row.body;
@@ -830,6 +851,7 @@ export async function applyProfessionalArabicTemplates(tenantId: string): Promis
   await updateWhatsAppTemplate(tenantId, "expiry_soon", DEFAULT_TEMPLATES.expiry_soon);
   await updateWhatsAppTemplate(tenantId, "payment_due", DEFAULT_TEMPLATES.payment_due);
   await updateWhatsAppTemplate(tenantId, "usage_threshold", DEFAULT_TEMPLATES.usage_threshold);
+  await updateWhatsAppTemplate(tenantId, "invoice_paid", DEFAULT_TEMPLATES.invoice_paid);
 }
 
 export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent: number; failed: number }> {
@@ -1218,7 +1240,6 @@ export async function sendNewSubscriberWhatsApp(input: {
 }
 
 export async function sendExpiryReminders(tenantId: string): Promise<{ sent: number; failed: number }> {
-  if (false) return { sent: 0, failed: 0 };
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: 0, failed: 0 };
   const reminderDays = Number(settings.reminder_days ?? 5);
@@ -1481,21 +1502,22 @@ export async function sendInvoicePaidWhatsApp(input: {
       .join(" ") ||
     String(row.nickname ?? "").trim() ||
     String(row.username ?? "");
-  const amountText =
-    input.amount != null && Number.isFinite(input.amount)
-      ? `${Number(input.amount).toFixed(2)} ${String(input.currency ?? "").trim()}`.trim()
-      : null;
+  const templates = await getTemplateMap(input.tenantId);
   const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
   const paidAtText = Number.isNaN(paidAt.getTime())
     ? String(input.paidAt ?? "")
     : paidAt.toISOString().slice(0, 16).replace("T", " ");
-  const message =
-    `مرحباً ${fullName}،\n` +
-    `تم تأكيد دفع الفاتورة بنجاح.\n` +
-    `${input.invoiceNo ? `رقم الفاتورة: ${input.invoiceNo}\n` : ""}` +
-    `${amountText ? `المبلغ المدفوع: ${amountText}\n` : ""}` +
-    `وقت الدفع: ${paidAtText}\n\n` +
-    `شكراً لثقتكم.`;
+  const currency = String(input.currency ?? "").trim().toUpperCase() === "SYP" ? "SYP" : String(input.currency ?? "USD").trim() || "USD";
+  const amountText =
+    input.amount != null && Number.isFinite(input.amount) ? Number(input.amount).toFixed(2) : "";
+  const message = interpolate(templates.invoice_paid, {
+    full_name: fullName,
+    username: String(row.username ?? ""),
+    invoice_no: String(input.invoiceNo ?? "—"),
+    amount: amountText || "—",
+    currency,
+    paid_at: paidAtText,
+  });
   try {
     await enforceMessageInterval(input.tenantId, settings);
     const result = await sendWahaMessage(settings, phone, message);
