@@ -30,7 +30,27 @@ export type SubscriberRowActionsProps = {
   onDelete: () => void;
 };
 
-type MenuCoords = { top: number; right: number };
+type MenuCoords = { top: number; left: number };
+
+const VIEWPORT_PAD = 8;
+const MENU_WIDTH_FALLBACK = 260;
+
+/** Keep a fixed menu fully inside the viewport; prefer aligning its trailing edge to the button's trailing edge. */
+function clampMenuLeft(anchor: DOMRect, menuWidth: number): number {
+  const vw = window.innerWidth;
+  const maxLeft = vw - VIEWPORT_PAD - menuWidth;
+  let left = anchor.right - menuWidth;
+  if (left < VIEWPORT_PAD) {
+    left = anchor.left;
+  }
+  if (left > maxLeft) {
+    left = Math.max(VIEWPORT_PAD, maxLeft);
+  }
+  if (left < VIEWPORT_PAD) {
+    left = VIEWPORT_PAD;
+  }
+  return left;
+}
 
 export function SubscriberRowActions({
   subscriberId,
@@ -57,7 +77,11 @@ export function SubscriberRowActions({
     if (!el) return;
     const r = el.getBoundingClientRect();
     const gap = 4;
-    setMenuCoords({ top: r.bottom + gap, right: window.innerWidth - r.right });
+    const measured =
+      menuPanelRef.current?.getBoundingClientRect().width ?? menuPanelRef.current?.offsetWidth ?? 0;
+    const menuWidth = Math.max(MENU_WIDTH_FALLBACK, measured);
+    const left = clampMenuLeft(r, menuWidth);
+    setMenuCoords({ top: r.bottom + gap, left });
   }, []);
 
   useLayoutEffect(() => {
@@ -66,10 +90,12 @@ export function SubscriberRowActions({
       return;
     }
     updateMenuCoords();
+    const id = window.requestAnimationFrame(() => updateMenuCoords());
     const onReposition = () => updateMenuCoords();
     window.addEventListener("resize", onReposition);
     window.addEventListener("scroll", onReposition, true);
     return () => {
+      window.cancelAnimationFrame(id);
       window.removeEventListener("resize", onReposition);
       window.removeEventListener("scroll", onReposition, true);
     };
@@ -94,7 +120,11 @@ export function SubscriberRowActions({
       className={cn(
         "fixed z-[300] min-w-[11.5rem] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1 text-xs shadow-lg"
       )}
-      style={{ top: menuCoords.top, right: menuCoords.right }}
+      style={{
+        top: menuCoords.top,
+        left: menuCoords.left,
+        maxWidth: `min(22rem, calc(100vw - ${VIEWPORT_PAD * 2}px))`,
+      }}
     >
       <Link
         role="menuitem"
