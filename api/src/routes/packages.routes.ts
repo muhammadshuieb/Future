@@ -11,7 +11,7 @@ import {
 import { parseRateLimitToBitsPerSecPair } from "../lib/radius-attr-format.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
-import { hasColumn } from "../db/schemaGuards.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { RadiusSyncService } from "../services/radius-sync.service.js";
 
 const router = Router();
@@ -128,17 +128,30 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
   const nases = nasRows.map((r) => ({ id: String(r.id), name: String(r.name ?? "") }));
 
   let managers: Array<{ id: string; name: string }> = [];
-  if (await hasColumn(pool, "users", "tenant_id")) {
-    const [mgrRows] = await pool.query<RowDataPacket[]>(
-      `SELECT DISTINCT u.id, u.name
-       FROM users u
-       INNER JOIN user_roles ur ON ur.user_id = u.id
-       INNER JOIN roles r ON r.id = ur.role_id AND r.tenant_id = u.tenant_id
-       WHERE u.tenant_id = ? AND r.name = 'manager'
-       ORDER BY u.name`,
-      [tenantId]
-    );
-    managers = mgrRows.map((r) => ({ id: String(r.id), name: String(r.name ?? r.id) }));
+  if (
+    (await hasColumn(pool, "users", "tenant_id")) &&
+    (await hasTable(pool, "user_roles")) &&
+    (await hasTable(pool, "roles"))
+  ) {
+    try {
+      const [mgrRows] = await pool.query<RowDataPacket[]>(
+        `SELECT DISTINCT u.id,
+                COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(u.email), ''), CAST(u.id AS CHAR)) AS name
+         FROM users u
+         WHERE u.tenant_id = ?
+           AND EXISTS (
+             SELECT 1 FROM user_roles ur
+             INNER JOIN roles r ON r.id = ur.role_id AND r.tenant_id = ?
+             WHERE ur.user_id = u.id
+               AND LOWER(TRIM(r.name)) IN ('admin', 'manager')
+           )
+         ORDER BY name`,
+        [tenantId, tenantId]
+      );
+      managers = mgrRows.map((r) => ({ id: String(r.id), name: String(r.name ?? r.id) }));
+    } catch (e) {
+      console.warn("[packages] options.managers query failed", e);
+    }
   }
 
   res.json({

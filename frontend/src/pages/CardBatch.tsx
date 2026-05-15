@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Download, FileText, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
@@ -43,6 +44,7 @@ type SortKey = "series" | "card_type" | "generated_on" | "valid_till" | "gross_c
 
 export function CardBatchPage() {
   const { t, isRtl } = useI18n();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const can = canManageOperations(user?.role);
   const [packages, setPackages] = useState<Pkg[]>([]);
@@ -543,6 +545,15 @@ export function CardBatchPage() {
           <Button type="button" variant="outline" className="rounded-lg" onClick={printCards} disabled={items.length === 0}>
             <Printer className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
             {t("prepaid.cardsList.pdf")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="rounded-lg"
+            onClick={() => navigate("/prepaid-cards/print")}
+          >
+            <Printer className={cn("h-4 w-4", isRtl ? "ms-2" : "me-2")} />
+            {t("prepaid.print.print")}
           </Button>
           <span className="ms-auto rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:text-blue-300">{t("prepaid.series.total")}: {totalItems}</span>
           <span className="rounded-full bg-violet-500/15 px-2.5 py-1 text-xs font-semibold text-violet-700 dark:text-violet-300">

@@ -46,6 +46,7 @@ import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { LogoMark } from "../components/brand/Logo";
 import { canOpenStaffSection, canViewSpeedProfiles } from "../lib/permissions";
+import { useAdminInactivityLogout } from "../hooks/useAdminInactivityLogout";
 
 type NavItem = {
   to: string;
@@ -138,6 +139,7 @@ function itemClass(active: boolean, tone: ToneKey, small = false) {
 
 export function AdminShell() {
   const { user, logout } = useAuth();
+  useAdminInactivityLogout(Boolean(user));
   const { theme, toggle } = useTheme();
   const { t, locale, setLocale, isRtl } = useI18n();
   const location = useLocation();

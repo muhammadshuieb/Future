@@ -4,6 +4,7 @@ import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { hasTable } from "../db/schemaGuards.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
+import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
 import { withTransaction } from "../db/transaction.js";
 import { chargeManagerWalletWithConnection, ManagerBalanceError } from "./manager-wallet.service.js";
 import { sendSubscriberBillingDemandWhatsApp } from "./whatsapp.service.js";
@@ -288,7 +289,23 @@ const recordBody = z.object({
   send_whatsapp_reminder: z.boolean().optional(),
   pay_amount: z.number().positive().optional(),
   payment_allocations: z.array(z.object({ invoice_id: z.string().min(1), amount: z.number().positive() })).optional(),
+  /** When set on full payment, overrides package-day extension for subscriber expiration_date. */
+  subscription_expires_at: z.string().min(1).optional(),
 });
+
+function resolveExpirationAfterPayment(
+  explicitRaw: string | undefined,
+  currentExpiration: Date | null,
+  billingDays: number
+): { next: Date; usedExplicit: boolean } {
+  if (explicitRaw?.trim()) {
+    const parsed = parseSubscriptionExpirationInput(explicitRaw);
+    if (!parsed) throw new Error("invalid_expiration");
+    return { next: parsed, usedExplicit: true };
+  }
+  const base = currentExpiration && !Number.isNaN(currentExpiration.getTime()) ? currentExpiration : new Date();
+  return { next: extendSubscriptionByDaysNoon(base, billingDays), usedExplicit: false };
+}
 
 export type RecordPackagePaymentInput = z.infer<typeof recordBody>;
 
@@ -299,7 +316,19 @@ export async function recordPackagePayment(
   body: RecordPackagePaymentInput,
   auth: { role: string; sub: string }
 ): Promise<
-  | { ok: true; deferred?: boolean; partial?: boolean; allocation?: boolean }
+  | {
+      ok: true;
+      deferred?: boolean;
+      partial?: boolean;
+      allocation?: boolean;
+      payment_id?: string;
+      invoice_id?: string;
+      expiration_audit?: {
+        previous_expiration_date: string | null;
+        new_expiration_date: string;
+        used_explicit_date: boolean;
+      };
+    }
   | { ok: false; error: string }
 > {
   const parsed = recordBody.safeParse(body);
@@ -444,27 +473,63 @@ export async function recordPackagePayment(
           `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
           [subscriberId, tenantId]
         );
-        const curExp = ex[0]?.expiration_date ? new Date(String(ex[0].expiration_date)) : new Date();
-        const nextExp = extendSubscriptionByDaysNoon(Number.isNaN(curExp.getTime()) ? new Date() : curExp, days);
+        const prevRaw = ex[0]?.expiration_date != null ? String(ex[0].expiration_date) : null;
+        const curExp = prevRaw ? new Date(prevRaw) : new Date();
+        let nextExp: Date;
+        try {
+          nextExp = resolveExpirationAfterPayment(
+            b.subscription_expires_at,
+            Number.isNaN(curExp.getTime()) ? null : curExp,
+            days
+          ).next;
+        } catch {
+          return { kind: "invalid_expiration" as const };
+        }
         await conn.execute(`UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`, [
-          nextExp,
+          formatExpirationForDb(nextExp),
           subscriberId,
           tenantId,
         ]);
+        return {
+          kind: "ok" as const,
+          partial,
+          payment_id: payId,
+          invoice_id: invoiceId!,
+          expiration_audit: {
+            previous_expiration_date: prevRaw,
+            new_expiration_date: formatExpirationForDb(nextExp),
+            used_explicit_date: Boolean(b.subscription_expires_at?.trim()),
+          },
+        };
       } else {
         partial = true;
       }
-      return { kind: "ok" as const, partial };
+      return { kind: "ok" as const, partial, payment_id: payId, invoice_id: invoiceId! };
     });
 
     if (result.kind === "not_found") return { ok: false, error: "not_found" };
     if (result.kind === "bad_invoice") return { ok: false, error: "invalid_invoice" };
     if (result.kind === "overpay") return { ok: false, error: "payment_exceeds_balance" };
     if (result.kind === "nothing_to_pay") return { ok: false, error: "nothing_to_pay" };
+    if (result.kind === "invalid_expiration") return { ok: false, error: "invalid_expiration" };
+    const r = result as {
+      partial?: boolean;
+      allocation?: boolean;
+      payment_id?: string;
+      invoice_id?: string;
+      expiration_audit?: {
+        previous_expiration_date: string | null;
+        new_expiration_date: string;
+        used_explicit_date: boolean;
+      };
+    };
     return {
       ok: true,
-      partial: Boolean((result as { partial?: boolean }).partial),
-      allocation: Boolean((result as { allocation?: boolean }).allocation),
+      partial: Boolean(r.partial),
+      allocation: Boolean(r.allocation),
+      payment_id: r.payment_id,
+      invoice_id: r.invoice_id,
+      expiration_audit: r.expiration_audit,
     };
   } catch (e) {
     if (e instanceof ManagerBalanceError && e.code === "insufficient_balance") {

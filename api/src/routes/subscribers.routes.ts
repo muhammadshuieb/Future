@@ -21,6 +21,7 @@ import { AccountingService } from "../services/accounting.service.js";
 import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
 import { assertStaffCanAssignPackage, assertSubscriberFitsPackageNas } from "../lib/package-subscriber-validation.js";
 import { hasColumn } from "../db/schemaGuards.js";
+import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
@@ -337,10 +338,19 @@ router.post(
     await writeFinancialAudit(pool, {
       tenantId: req.auth!.tenantId,
       staffId: req.auth?.sub ?? null,
-      action: "record_package_payment",
+      action: out.expiration_audit ? "record_package_payment_update_expiry" : "record_package_payment",
       entityType: "subscriber",
       entityId: req.params.id,
-      payload: { result: out },
+      payload: {
+        result: out,
+        ...(out.expiration_audit
+          ? {
+              payment_id: out.payment_id,
+              invoice_id: out.invoice_id,
+              ...out.expiration_audit,
+            }
+          : {}),
+      },
       ip: req.ip ?? null,
     });
     res.json(out);
@@ -509,6 +519,35 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
   const body = parsed.data;
   const tenantId = req.auth!.tenantId;
 
+  let previousExpiration: string | null = null;
+  if (body.expiration_date !== undefined) {
+    if (
+      req.auth!.role === "manager" &&
+      !requestHasManagerPermission(req, "manage_subscribers") &&
+      !requestHasManagerPermission(req, "renew_subscriptions")
+    ) {
+      res.status(403).json({ error: "forbidden", detail: "missing_permission_update_expiry" });
+      return;
+    }
+    const [expRows] = await pool.query<RowDataPacket[]>(
+      `SELECT expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, tenantId]
+    );
+    if (!expRows[0]) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    previousExpiration = expRows[0].expiration_date != null ? String(expRows[0].expiration_date) : null;
+    if (body.expiration_date !== null) {
+      const parsedExp = parseSubscriptionExpirationInput(String(body.expiration_date));
+      if (!parsedExp) {
+        res.status(400).json({ error: "invalid_expiration" });
+        return;
+      }
+      body.expiration_date = formatExpirationForDb(parsedExp);
+    }
+  }
+
   if (body.package_id !== undefined || body.nas_server_id !== undefined) {
     const [curRows] = await pool.query<RowDataPacket[]>(
       `SELECT package_id, nas_server_id FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
@@ -563,6 +602,20 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
       `UPDATE subscribers SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?`,
       [...values, req.params.id, tenantId] as Array<string | number | null>
     );
+  }
+  if (body.expiration_date !== undefined) {
+    await writeFinancialAudit(pool, {
+      tenantId,
+      staffId: req.auth?.sub ?? null,
+      action: "subscriber_update_expiry",
+      entityType: "subscriber",
+      entityId: req.params.id,
+      payload: {
+        previous_expiration_date: previousExpiration,
+        new_expiration_date: body.expiration_date,
+      },
+      ip: req.ip ?? null,
+    });
   }
   if (body.password !== undefined) {
     await pool.execute(

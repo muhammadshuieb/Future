@@ -20,6 +20,7 @@ export type SystemSettingsView = {
    */
   radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
+  admin_session_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
@@ -127,6 +128,11 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     user_idle_timeout_minutes: col.has("user_idle_timeout_minutes")
       ? Math.max(2, Math.min(10_080, Number(row.user_idle_timeout_minutes ?? 4)))
       : 4,
+    admin_session_timeout_minutes: col.has("admin_session_timeout_minutes")
+      ? ([5, 10, 15, 30, 60].includes(Number(row.admin_session_timeout_minutes))
+          ? Number(row.admin_session_timeout_minutes)
+          : 30)
+      : 30,
     mikrotik_interim_update_minutes: col.has("mikrotik_interim_update_minutes")
       ? Math.max(1, Math.min(60, Number(row.mikrotik_interim_update_minutes ?? 1)))
       : 1,
@@ -193,6 +199,7 @@ export type SystemSettingsInput = {
   radpostauth_retention_enabled: boolean;
   radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
+  admin_session_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
@@ -244,6 +251,12 @@ export async function updateSystemSettings(
   if (col.has("user_idle_timeout_minutes")) {
     baseSets.push("user_idle_timeout_minutes = ?");
     baseVals.push(Math.max(2, Math.min(10_080, Math.floor(input.user_idle_timeout_minutes || 4))));
+  }
+  if (col.has("admin_session_timeout_minutes")) {
+    const allowed = [5, 10, 15, 30, 60];
+    const raw = Math.floor(input.admin_session_timeout_minutes || 30);
+    baseSets.push("admin_session_timeout_minutes = ?");
+    baseVals.push(allowed.includes(raw) ? raw : 30);
   }
   if (col.has("mikrotik_interim_update_minutes")) {
     baseSets.push("mikrotik_interim_update_minutes = ?");

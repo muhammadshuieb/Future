@@ -33,6 +33,13 @@ const bodySchema = z.object({
   radpostauth_retention_enabled: z.boolean().optional(),
   radpostauth_retention_months: z.number().int().min(1).max(36).optional(),
   user_idle_timeout_minutes: z.number().int().min(2).max(10080).optional(),
+  admin_session_timeout_minutes: z.union([
+    z.literal(5),
+    z.literal(10),
+    z.literal(15),
+    z.literal(30),
+    z.literal(60),
+  ]).optional(),
   mikrotik_interim_update_minutes: z.number().int().min(1).max(60).optional(),
   disconnect_on_activation: z.boolean().optional(),
   disconnect_on_update: z.boolean().optional(),
@@ -65,6 +72,8 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
       radpostauth_retention_months:
         parsed.data.radpostauth_retention_months ?? cur.radpostauth_retention_months,
       user_idle_timeout_minutes: parsed.data.user_idle_timeout_minutes ?? cur.user_idle_timeout_minutes,
+      admin_session_timeout_minutes:
+        parsed.data.admin_session_timeout_minutes ?? cur.admin_session_timeout_minutes,
       mikrotik_interim_update_minutes:
         parsed.data.mikrotik_interim_update_minutes ?? cur.mikrotik_interim_update_minutes,
       disconnect_on_activation: parsed.data.disconnect_on_activation ?? cur.disconnect_on_activation,

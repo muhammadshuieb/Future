@@ -63,11 +63,12 @@ const SystemHealthPage = lazy(() =>
   import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealthPage }))
 );
 const ServerLogsPage = lazy(() => import("./pages/ServerLogs").then((m) => ({ default: m.ServerLogsPage })));
-const CardBatchPage = lazy(() =>
-  import("./pages/PrepaidUnavailable").then((m) => ({ default: m.PrepaidUnavailablePage }))
-);
+const CardBatchPage = lazy(() => import("./pages/CardBatch").then((m) => ({ default: m.CardBatchPage })));
 const PrepaidCardsListPage = lazy(() =>
-  import("./pages/PrepaidUnavailable").then((m) => ({ default: m.PrepaidUnavailablePage }))
+  import("./pages/PrepaidCardsList").then((m) => ({ default: m.PrepaidCardsListPage }))
+);
+const PrepaidCardPrintPage = lazy(() =>
+  import("./pages/PrepaidCardPrintPage").then((m) => ({ default: m.PrepaidCardPrintPage }))
 );
 const WireGuardPage = lazy(() => import("./pages/WireGuard").then((m) => ({ default: m.WireGuardPage })));
 const FinanceDashboardPage = lazy(() =>
@@ -137,6 +138,7 @@ function AppRoutes() {
           <Route path="users" element={<UsersPage />} />
           <Route path="users/prepaid-cards" element={<CardBatchPage />} />
           <Route path="users/prepaid-cards-list" element={<PrepaidCardsListPage />} />
+          <Route path="prepaid-cards/print" element={<PrepaidCardPrintPage />} />
           <Route path="subscriber-zones" element={<SubscriberZonesPage />} />
           <Route path="users/:id" element={<UserProfilePage />} />
           <Route path="packages" element={<PackagesPage />} />

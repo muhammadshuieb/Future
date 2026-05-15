@@ -4,6 +4,8 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { extendSubscriptionByDaysNoon } from "../lib/billing.js";
+import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
+import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { RadiusService } from "../services/radius.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { getSystemSettings } from "../services/system-settings.service.js";
@@ -101,6 +103,7 @@ router.post("/generate-monthly", requireRole("admin", "manager", "accountant"), 
 const markPaidBody = z.object({
   payment_method: z.string().optional(),
   extend_days: z.number().int().min(1).max(400).optional(),
+  subscription_expires_at: z.string().min(1).optional(),
 });
 
 router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), async (req, res) => {
@@ -165,12 +168,25 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       );
       subRows = sub;
       let nextExpiration: Date | null = null;
+      let previousExpiration: string | null = null;
       if (subRows[0] && sub[0]) {
-        const current = new Date(subRows[0].expiration_date as string);
-        nextExpiration = extendSubscriptionByDaysNoon(current, extendDays);
+        previousExpiration =
+          subRows[0].expiration_date != null ? String(subRows[0].expiration_date) : null;
+        const explicit = parsed.data.subscription_expires_at?.trim();
+        if (explicit) {
+          const parsedExp = parseSubscriptionExpirationInput(explicit);
+          if (!parsedExp) return { kind: "invalid_expiration" as const };
+          nextExpiration = parsedExp;
+        } else {
+          const current = previousExpiration ? new Date(previousExpiration) : new Date();
+          nextExpiration = extendSubscriptionByDaysNoon(
+            Number.isNaN(current.getTime()) ? new Date() : current,
+            extendDays
+          );
+        }
         await conn.execute(
           `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
-          [nextExpiration, subscriberId, t]
+          [formatExpirationForDb(nextExpiration), subscriberId, t]
         );
       }
 
@@ -182,7 +198,9 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
         currency,
         invoiceNo,
         paidAt: paidAt.toISOString(),
-        nextExpiration: nextExpiration?.toISOString() ?? null,
+        nextExpiration: nextExpiration ? formatExpirationForDb(nextExpiration) : null,
+        previousExpiration,
+        usedExplicitExpiry: Boolean(parsed.data.subscription_expires_at?.trim()),
       };
     });
 
@@ -193,6 +211,27 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
     if (tx.kind === "already_paid") {
       res.status(409).json({ error: "already_paid" });
       return;
+    }
+    if (tx.kind === "invalid_expiration") {
+      res.status(400).json({ error: "invalid_expiration" });
+      return;
+    }
+    if (tx.previousExpiration != null || tx.nextExpiration) {
+      await writeFinancialAudit(pool, {
+        tenantId: t,
+        staffId: req.auth?.sub ?? null,
+        action: "invoice_paid_update_expiry",
+        entityType: "subscriber",
+        entityId: tx.subscriberId,
+        payload: {
+          invoice_id: req.params.id,
+          payment_id: tx.paymentId,
+          previous_expiration_date: tx.previousExpiration,
+          new_expiration_date: tx.nextExpiration,
+          used_explicit_date: tx.usedExplicitExpiry,
+        },
+        ip: req.ip ?? null,
+      });
     }
     let radiusSync: "ok" | "failed" = "ok";
     let radiusReason: string | null = null;

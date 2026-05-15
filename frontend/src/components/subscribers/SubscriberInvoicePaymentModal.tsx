@@ -84,6 +84,7 @@ export function SubscriberInvoicePaymentModal({
   const [sendWaReminder, setSendWaReminder] = useState(false);
   const [allocationMode, setAllocationMode] = useState(false);
   const [allocInputs, setAllocInputs] = useState<Record<string, string>>({});
+  const [subscriptionExpiresAt, setSubscriptionExpiresAt] = useState("");
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -174,6 +175,10 @@ export function SubscriberInvoicePaymentModal({
         if (sendWaReminder) {
           body.send_whatsapp_reminder = true;
         }
+      }
+
+      if (payTiming === "immediate" && subscriptionExpiresAt.trim()) {
+        body.subscription_expires_at = subscriptionExpiresAt.trim();
       }
 
       if (payTiming === "immediate" && allocationMode && ctx && ctx.unpaid_invoices.length > 1) {
@@ -431,6 +436,16 @@ export function SubscriberInvoicePaymentModal({
                 </div>
               ) : null}
             </div>
+          ) : null}
+
+          {payTiming === "immediate" ? (
+            <TextField
+              type="date"
+              label={t("users.paymentModal.subscriptionExpires")}
+              value={subscriptionExpiresAt}
+              onChange={(e) => setSubscriptionExpiresAt(e.target.value)}
+              hint={t("users.paymentModal.subscriptionExpiresHint")}
+            />
           ) : null}
 
           {payTiming === "immediate" && !allocationMode ? (

@@ -18,6 +18,7 @@ type SystemSettings = {
   radpostauth_retention_enabled: boolean;
   radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
+  admin_session_timeout_minutes: number;
   mikrotik_interim_update_minutes: number;
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
@@ -44,6 +45,7 @@ export function SettingsPage() {
     radpostauth_retention_enabled: true,
     radpostauth_retention_months: 2,
     user_idle_timeout_minutes: 4,
+    admin_session_timeout_minutes: 30,
     mikrotik_interim_update_minutes: 1,
     disconnect_on_activation: true,
     disconnect_on_update: true,
@@ -237,6 +239,31 @@ export function SettingsPage() {
             {t("settings.radpostauthPruneNow")}
           </Button>
         </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <ShieldCheck className="h-4 w-4 text-violet-500" />
+          {t("settings.security")}
+        </div>
+        <label className="text-sm font-medium">{t("settings.adminSessionTimeout")}</label>
+        <select
+          className="w-full max-w-xs rounded-xl border border-[hsl(var(--border))] bg-transparent px-3 py-2.5 text-sm"
+          value={String(settings.admin_session_timeout_minutes ?? 30)}
+          onChange={(e) =>
+            setSettings((p) => ({
+              ...p,
+              admin_session_timeout_minutes: Number(e.target.value) || 30,
+            }))
+          }
+        >
+          {[5, 10, 15, 30, 60].map((m) => (
+            <option key={m} value={m}>
+              {m} {t("settings.minutesUnit")}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] opacity-60">{t("settings.adminSessionTimeoutHint")}</p>
       </Card>
 
       <Card className="space-y-4">

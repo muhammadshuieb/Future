@@ -39,6 +39,7 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 import { canManageOperations, canViewSpeedProfiles } from "../lib/permissions";
 import { cn } from "../lib/utils";
+import { resolveSubscriberUiKind, subscriberStatusPresentation } from "../lib/subscriber-status";
 import {
   Area,
   AreaChart,
@@ -221,6 +222,8 @@ export function UserProfilePage() {
   const [regionId, setRegionId] = useState("");
   const [simultaneousUse, setSimultaneousUse] = useState("1");
   const [whatsappOptOut, setWhatsappOptOut] = useState(false);
+  const [expirationDate, setExpirationDate] = useState("");
+  const [expirationUnlimited, setExpirationUnlimited] = useState(false);
 
   const showSpeedPanel = canViewSpeedProfiles(user?.role, user?.permissions);
   const canSpeedOverride =
@@ -355,6 +358,13 @@ export function UserProfilePage() {
           }
           const woo = found.whatsapp_opt_out;
           setWhatsappOptOut(woo === true || woo === 1 || woo === "1");
+          if (found.expiration_date) {
+            setExpirationDate(String(found.expiration_date).slice(0, 10));
+            setExpirationUnlimited(false);
+          } else {
+            setExpirationDate("");
+            setExpirationUnlimited(true);
+          }
         }
       }
     } finally {
@@ -387,6 +397,7 @@ export function UserProfilePage() {
           region_id: regionId || null,
           simultaneous_use: Math.max(1, Math.min(32, parseInt(simultaneousUse, 10) || 1)),
           whatsapp_opt_out: whatsappOptOut,
+          expiration_date: expirationUnlimited ? null : expirationDate.trim() || undefined,
         }),
       });
       if (r.ok) {
@@ -595,6 +606,13 @@ export function UserProfilePage() {
   }
 
   const active = row.status === "active";
+  const uiKind = resolveSubscriberUiKind({
+    status: row.status,
+    expiration_date: row.expiration_date,
+    is_online: (row as Row & { is_online?: number }).is_online,
+    subscriber_ui_status: (row as Row & { subscriber_ui_status?: string }).subscriber_ui_status,
+  });
+  const statusPres = subscriberStatusPresentation(uiKind, t);
 
   function fmtBytes(value: string | number | null | undefined): string {
     const n = Number(value ?? 0);
@@ -740,7 +758,7 @@ export function UserProfilePage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 pb-10" dir={isRtl ? "rtl" : "ltr"}>
+    <div className="mx-auto max-w-5xl space-y-6 pb-10" dir={isRtl ? "rtl" : "ltr"}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className={cn("flex flex-wrap items-center gap-2", isRtl && "flex-row-reverse")}>
           <Button type="button" variant="ghost" className="h-9 w-9 shrink-0 p-0" onClick={onClose} aria-label={t("common.close")}>
@@ -776,14 +794,12 @@ export function UserProfilePage() {
                 </span>
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1",
-                    active
-                      ? "bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-400"
-                      : "bg-[hsl(var(--muted))] text-foreground/80 ring-[hsl(var(--border))]"
+                    "inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold",
+                    statusPres.badgeClass
                   )}
                 >
-                  <Activity className="h-3.5 w-3.5 shrink-0 opacity-80" />
-                  {String(row.status ?? "—")}
+                  <span className={cn("h-2 w-2 shrink-0 rounded-full", statusPres.dotClass)} />
+                  <span className="truncate">{statusPres.label}</span>
                 </span>
               </div>
             </div>
@@ -1018,6 +1034,24 @@ export function UserProfilePage() {
                       </option>
                     ))}
                   </SelectField>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <TextField
+                      type="date"
+                      label={t("profile.subscriptionExpires")}
+                      value={expirationDate}
+                      onChange={(e) => setExpirationDate(e.target.value)}
+                      disabled={!canManage || expirationUnlimited}
+                    />
+                    <label className="flex cursor-pointer items-center gap-2 self-end rounded-xl border border-[hsl(var(--border))] px-3 py-2.5 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={expirationUnlimited}
+                        onChange={(e) => setExpirationUnlimited(e.target.checked)}
+                        disabled={!canManage}
+                      />
+                      {t("profile.subscriptionUnlimited")}
+                    </label>
+                  </div>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <TextField
                       label={t("packages.simUse")}

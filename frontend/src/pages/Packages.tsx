@@ -95,9 +95,12 @@ export function PackagesPage() {
   const [scheduleDays, setScheduleDays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
   const [scheduleBusy, setScheduleBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
+  const load = useCallback(async (opts?: { quiet?: boolean }) => {
+    const quiet = opts?.quiet === true;
+    if (!quiet) {
+      setLoading(true);
+      setLoadError(null);
+    }
     try {
       const r = await apiFetch("/api/packages/");
       if (r.ok) {
@@ -108,7 +111,7 @@ export function PackagesPage() {
         setItems(payload.items);
         setNasOptions(payload.options?.nases ?? []);
         setManagerOptions(payload.options?.managers ?? []);
-      } else {
+      } else if (!quiet) {
         const raw = await readApiError(r);
         setLoadError(formatStaffApiError(r.status, raw, t));
       }
@@ -118,7 +121,9 @@ export function PackagesPage() {
         setSchedules(payload.items);
       }
     } finally {
-      setLoading(false);
+      if (!quiet) {
+        setLoading(false);
+      }
     }
   }, [t]);
 
@@ -135,6 +140,7 @@ export function PackagesPage() {
   }
 
   function openCreate() {
+    void load({ quiet: true });
     setEditId(null);
     setName("");
     setRate("");
@@ -153,6 +159,7 @@ export function PackagesPage() {
   }
 
   function openEdit(p: Pkg) {
+    void load({ quiet: true });
     setEditId(String(p.id));
     setName(String(p.name ?? ""));
     setRate(String(p.mikrotik_rate_limit ?? ""));
