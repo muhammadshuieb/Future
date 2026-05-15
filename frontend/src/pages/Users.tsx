@@ -12,8 +12,8 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 import { canManageOperations, canRecordFinance } from "../lib/permissions";
 import { SubscriberInvoicePaymentModal } from "../components/subscribers/SubscriberInvoicePaymentModal";
+import { SubscriberFinancialReportModal } from "../components/subscribers/SubscriberFinancialReportModal";
 import { SubscriberRowActions } from "../components/subscribers/SubscriberRowActions";
-import { printSubscriberFinancialReport } from "../lib/subscriber-financial-report-print";
 import { cn } from "../lib/utils";
 
 type SubscriberRow = {
@@ -295,7 +295,7 @@ export function UsersPage() {
   const [passwordLoadingId, setPasswordLoadingId] = useState<string | null>(null);
   const [toggleStatusLoadingId, setToggleStatusLoadingId] = useState<string | null>(null);
   const [paymentModal, setPaymentModal] = useState<{ id: string; username: string } | null>(null);
-  const [reportLoadingId, setReportLoadingId] = useState<string | null>(null);
+  const [financialReportModal, setFinancialReportModal] = useState<{ id: string; username: string } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
     title: string;
@@ -666,40 +666,6 @@ export function UsersPage() {
     a.download = "subscribers-selected.csv";
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  async function runFinancialReport(row: SubscriberRow, previewWindow: Window) {
-    if (!canFinance) return;
-    setReportLoadingId(row.id);
-    setMsg(null);
-    try {
-      const res = await printSubscriberFinancialReport(
-        row.id,
-        {
-          title: t("users.financialReportPrint.title"),
-          subscriber: t("users.financialReportPrint.subscriber"),
-          since: t("users.financialReportPrint.since"),
-          expires: t("users.financialReportPrint.expires"),
-          package: t("users.financialReportPrint.package"),
-          invoices: t("users.financialReportPrint.invoices"),
-          issueDate: t("users.financialReportPrint.issueDate"),
-          payments: t("users.financialReportPrint.payments"),
-          paymentDate: t("users.financialReportPrint.paymentDate"),
-          totals: t("users.financialReportPrint.totals"),
-          invoiced: t("users.financialReportPrint.invoiced"),
-          paid: t("users.financialReportPrint.paid"),
-          outstanding: t("users.financialReportPrint.outstanding"),
-          noData: t("users.financialReportPrint.noData"),
-          loadError: t("users.financialReportPrint.loadError"),
-        },
-        previewWindow
-      );
-      if (!res.ok) {
-        setMsg({ type: "err", text: res.error || t("users.financialReportError") });
-      }
-    } finally {
-      setReportLoadingId(null);
-    }
   }
 
   async function deleteOne(id: string, username: string) {
@@ -1213,7 +1179,7 @@ export function UsersPage() {
                         canFinance={canFinance}
                         accountDisabled={isExplicitlyDisabled(s)}
                         toggleLoading={toggleStatusLoadingId === s.id}
-                        reportLoading={reportLoadingId === s.id}
+                        reportLoading={false}
                         labels={{
                           menu: t("users.actions.menu"),
                           viewProfile: t("users.actions.viewProfile"),
@@ -1226,12 +1192,8 @@ export function UsersPage() {
                         }}
                         onPayment={() => setPaymentModal({ id: s.id, username: s.username })}
                         onFinancialReport={() => {
-                          const preview = window.open("", "_blank", "noopener,noreferrer");
-                          if (!preview) {
-                            setMsg({ type: "err", text: t("users.financialReportPopupBlocked") });
-                            return;
-                          }
-                          void runFinancialReport(s, preview);
+                          if (!canFinance) return;
+                          setFinancialReportModal({ id: s.id, username: s.username });
                         }}
                         onToggleStatus={() => void toggleSubscriberStatus(s)}
                         onDelete={() => void deleteOne(s.id, s.username)}
@@ -1400,6 +1362,12 @@ export function UsersPage() {
           }}
         />
       ) : null}
+      <SubscriberFinancialReportModal
+        open={financialReportModal != null}
+        subscriberId={financialReportModal?.id ?? null}
+        username={financialReportModal?.username ?? ""}
+        onClose={() => setFinancialReportModal(null)}
+      />
     </div>
   );
 }

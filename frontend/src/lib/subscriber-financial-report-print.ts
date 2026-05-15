@@ -6,7 +6,7 @@ function uiLocale(): Locale {
   return document.documentElement.lang === "en" ? "en" : "ar";
 }
 
-type Report = {
+export type SubscriberFinancialReportData = {
   generated_at: string;
   subscriber: {
     id: string;
@@ -41,6 +41,24 @@ type Report = {
   };
 };
 
+export type FinancialReportLabels = {
+  title: string;
+  subscriber: string;
+  since: string;
+  expires: string;
+  package: string;
+  invoices: string;
+  issueDate: string;
+  payments: string;
+  paymentDate: string;
+  totals: string;
+  invoiced: string;
+  paid: string;
+  outstanding: string;
+  noData: string;
+  loadError: string;
+};
+
 function esc(s: string) {
   return s
     .replace(/&/g, "&amp;")
@@ -49,58 +67,22 @@ function esc(s: string) {
     .replace(/"/g, "&quot;");
 }
 
-export async function printSubscriberFinancialReport(
-  subscriberId: string,
-  labels: {
-    title: string;
-    subscriber: string;
-    since: string;
-    expires: string;
-    package: string;
-    invoices: string;
-    issueDate: string;
-    payments: string;
-    paymentDate: string;
-    totals: string;
-    invoiced: string;
-    paid: string;
-    outstanding: string;
-    noData: string;
-    loadError: string;
-  },
-  /** Open synchronously from a click handler before any await, or popup blockers may prevent printing. */
-  previewWindow?: Window | null
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  let w = previewWindow ?? null;
-  const loadErrMsg = translate(uiLocale(), "users.financialReportPrint.loadError");
-  if (!w) {
-    w = window.open("", "_blank", "noopener,noreferrer");
-    if (!w) return { ok: false, error: loadErrMsg };
-  }
-
+export async function fetchSubscriberFinancialReportData(subscriberId: string): Promise<SubscriberFinancialReportData> {
   const enc = encodeURIComponent(subscriberId);
-  let r: Response;
-  try {
-    r = await apiFetch(`/api/subscribers/${enc}/financial-report`);
-  } catch (e) {
-    try {
-      w.close();
-    } catch {
-      /* ignore */
-    }
-    return { ok: false, error: `${loadErrMsg}: ${e instanceof Error ? e.message : String(e)}` };
-  }
+  const r = await apiFetch(`/api/subscribers/${enc}/financial-report`);
   if (!r.ok) {
     const raw = await readApiError(r);
-    try {
-      w.close();
-    } catch {
-      /* ignore */
-    }
-    return { ok: false, error: `${loadErrMsg}: ${raw}` };
+    throw new Error(raw || `HTTP ${r.status}`);
   }
-  const rep = (await r.json()) as Report;
-  const dir = typeof document !== "undefined" && document.documentElement.getAttribute("dir") === "rtl" ? "rtl" : "ltr";
+  return (await r.json()) as SubscriberFinancialReportData;
+}
+
+export function buildSubscriberFinancialReportHtml(
+  rep: SubscriberFinancialReportData,
+  labels: FinancialReportLabels,
+  dir: "rtl" | "ltr",
+  opts?: { autoPrintOnLoad?: boolean }
+): string {
   const rowsInv = rep.invoices.length
     ? rep.invoices
         .map(
@@ -118,7 +100,11 @@ export async function printSubscriberFinancialReport(
         .join("")
     : `<tr><td colspan="4">${esc(labels.noData)}</td></tr>`;
 
-  const html = `<!DOCTYPE html><html dir="${dir}"><head><meta charset="utf-8"/><title>${esc(labels.title)}</title>
+  const autoPrint = opts?.autoPrintOnLoad
+    ? `<script>window.onload=function(){window.print();}</script>`
+    : "";
+
+  return `<!DOCTYPE html><html dir="${dir}"><head><meta charset="utf-8"/><title>${esc(labels.title)}</title>
 <style>
 body{font-family:system-ui,sans-serif;padding:16px;color:#111}
 h1{font-size:18px}
@@ -142,11 +128,40 @@ ${esc(labels.paid)}: ${rep.totals.total_recorded_payments.toLocaleString()}<br/>
 ${esc(labels.outstanding)}: ${rep.totals.outstanding_balance.toLocaleString()}<br/>
 <small>${esc(rep.generated_at)}</small>
 </div>
-<script>window.onload=function(){window.print();}</script>
+${autoPrint}
 </body></html>`;
+}
 
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
-  return { ok: true };
+/**
+ * @deprecated Prefer in-app modal + {@link fetchSubscriberFinancialReportData} / {@link buildSubscriberFinancialReportHtml}.
+ * Opens a new window; popup blockers often block it.
+ */
+export async function printSubscriberFinancialReport(
+  subscriberId: string,
+  labels: FinancialReportLabels,
+  previewWindow?: Window | null
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let w = previewWindow ?? null;
+  const loadErrMsg = translate(uiLocale(), "users.financialReportPrint.loadError");
+  if (!w) {
+    w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) return { ok: false, error: loadErrMsg };
+  }
+
+  try {
+    const rep = await fetchSubscriberFinancialReportData(subscriberId);
+    const dir = typeof document !== "undefined" && document.documentElement.getAttribute("dir") === "rtl" ? "rtl" : "ltr";
+    const html = buildSubscriberFinancialReportHtml(rep, labels, dir, { autoPrintOnLoad: true });
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    return { ok: true };
+  } catch (e) {
+    try {
+      w.close();
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: `${loadErrMsg}: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }

@@ -17,11 +17,13 @@ import {
 } from "../services/subscriber-billing.service.js";
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
+import { AccountingService } from "../services/accounting.service.js";
 import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
 const coa = new CoaService(pool);
+const accounting = new AccountingService(pool);
 
 router.use(requireAuth);
 
@@ -196,6 +198,32 @@ router.get(
       return;
     }
     res.json(data);
+  }
+);
+
+router.get(
+  "/:id/traffic-report",
+  requireRole("admin", "manager", "accountant", "viewer"),
+  async (req, res, next) => {
+    try {
+      const q = z.object({ from: z.string().optional(), to: z.string().optional() }).safeParse(req.query);
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT username FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [req.params.id, req.auth!.tenantId]
+      );
+      if (!rows[0]) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const username = String((rows[0] as RowDataPacket).username ?? "");
+      const report = await accounting.buildSubscriberTrafficReport(req.auth!.tenantId, username, {
+        from: q.success ? q.data.from : undefined,
+        to: q.success ? q.data.to : undefined,
+      });
+      res.json(report);
+    } catch (e) {
+      next(e);
+    }
   }
 );
 
