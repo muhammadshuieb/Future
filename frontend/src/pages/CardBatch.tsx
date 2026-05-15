@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Download, FileText, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
@@ -7,7 +7,7 @@ import { Button } from "../components/ui/Button";
 import { ActionDialog } from "../components/ui/ActionDialog";
 import { TextField, SelectField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
-import { canManageOperations } from "../lib/permissions";
+import { canManageOperations, hasIspPermission } from "../lib/permissions";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/utils";
 
@@ -47,6 +47,16 @@ export function CardBatchPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const can = canManageOperations(user?.role);
+  const canPrint = user?.role === "admin" || hasIspPermission(user?.role, user?.permissions, "prepaid_cards:print");
+  const canSell = user?.role === "admin" || hasIspPermission(user?.role, user?.permissions, "prepaid_cards:sell");
+  const batchKeyRef = useRef<string | null>(null);
+  const [batchKind, setBatchKind] = useState<"print" | "sale">("print");
+
+  useEffect(() => {
+    if (user?.role !== "manager") return;
+    if (canPrint && !canSell) setBatchKind("print");
+    if (canSell && !canPrint) setBatchKind("sale");
+  }, [user?.role, canPrint, canSell]);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [items, setItems] = useState<SeriesRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -119,6 +129,16 @@ export function CardBatchPage() {
       setErr(t("cardBatch.selectPackage"));
       return;
     }
+    if (user?.role === "manager") {
+      if (batchKind === "sale" && !canSell) {
+        setErr("لا تملك صلاحية بيع الباقات المسبقة");
+        return;
+      }
+      if (batchKind === "print" && !canPrint) {
+        setErr("لا تملك صلاحية طباعة البطاقات");
+        return;
+      }
+    }
     if (!validTill) {
       setErr(t("prepaid.series.selectValidTill"));
       return;
@@ -142,6 +162,8 @@ export function CardBatchPage() {
         online_time_limit: Number(onlineLimit) || 0,
         available_time_from_activation: Number(availableTime) || 0,
         simultaneous_use: Math.max(1, Math.min(32, Math.floor(Number(simultaneousUse)) || 1)),
+        kind: batchKind,
+        client_batch_key: batchKeyRef.current ?? (batchKeyRef.current = crypto.randomUUID()),
       };
       const r = await apiFetch("/api/rm-cards/batch", { method: "POST", body: JSON.stringify(body) });
       if (!r.ok) {
@@ -150,6 +172,7 @@ export function CardBatchPage() {
         return;
       }
       const j = (await r.json()) as { created?: number; series?: string };
+      batchKeyRef.current = null;
       setMsg(t("prepaid.series.created").replace("{count}", String(j.created ?? 0)).replace("{series}", String(j.series ?? "-")));
       await load();
     } catch (e) {
@@ -449,6 +472,16 @@ export function CardBatchPage() {
             <option value="classic">{t("prepaid.cardsList.typeClassic")}</option>
             <option value="refill">{t("prepaid.cardsList.typeRefill")}</option>
           </SelectField>
+          {user?.role === "admin" || (canPrint && canSell) ? (
+            <SelectField
+              label="نوع العملية المالية"
+              value={batchKind}
+              onChange={(e) => setBatchKind(e.target.value as "print" | "sale")}
+            >
+              {(user?.role === "admin" || canPrint) && <option value="print">طباعة (محفظة المدير)</option>}
+              {(user?.role === "admin" || canSell) && <option value="sale">بيع</option>}
+            </SelectField>
+          ) : null}
           <TextField
             label={t("prepaid.series.quantity")}
             type="number"

@@ -71,8 +71,14 @@ const PrepaidCardPrintPage = lazy(() =>
   import("./pages/PrepaidCardPrintPage").then((m) => ({ default: m.PrepaidCardPrintPage }))
 );
 const WireGuardPage = lazy(() => import("./pages/WireGuard").then((m) => ({ default: m.WireGuardPage })));
-const FinanceDashboardPage = lazy(() =>
-  import("./pages/FinanceDashboard").then((m) => ({ default: m.FinanceDashboardPage }))
+const FinancialExecutiveDashboardPage = lazy(() =>
+  import("./pages/FinancialExecutiveDashboard").then((m) => ({ default: m.FinancialExecutiveDashboardPage }))
+);
+const FinancialReportsHubPage = lazy(() =>
+  import("./pages/FinancialReportsHub").then((m) => ({ default: m.FinancialReportsHubPage }))
+);
+const CompanyFinancePage = lazy(() =>
+  import("./pages/CompanyFinance").then((m) => ({ default: m.CompanyFinancePage }))
 );
 const UpdatesPage = lazy(() => import("./pages/Updates").then((m) => ({ default: m.UpdatesPage })));
 const EncodingHealthPage = lazy(() =>
@@ -134,7 +140,10 @@ function AppRoutes() {
           }
         >
           <Route index element={<DashboardPage />} />
-          <Route path="finance-dashboard" element={<FinanceDashboardPage />} />
+          <Route path="finance-dashboard" element={<Navigate to="/financial-dashboard" replace />} />
+          <Route path="financial-dashboard" element={<FinancialExecutiveDashboardPage />} />
+          <Route path="financial-reports" element={<FinancialReportsHubPage />} />
+          <Route path="company-finance" element={<CompanyFinancePage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="users/prepaid-cards" element={<CardBatchPage />} />
           <Route path="users/prepaid-cards-list" element={<PrepaidCardsListPage />} />

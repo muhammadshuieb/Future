@@ -1,15 +1,11 @@
-﻿import type { PoolConnection, RowDataPacket } from "mysql2/promise";
-import { pool } from "../db/pool.js";
+﻿import type { PoolConnection } from "mysql2/promise";
 import { withTransaction } from "../db/transaction.js";
-import { hasTable } from "../db/schemaGuards.js";
+import {
+  chargeManagerLedgerWithConnection,
+  type ManagerWalletLedgerType,
+} from "./manager-wallet-ledger.service.js";
 
-export class ManagerBalanceError extends Error {
-  code: "insufficient_balance" | "staff_not_found";
-  constructor(code: "insufficient_balance" | "staff_not_found", message: string) {
-    super(message);
-    this.code = code;
-  }
-}
+export { ManagerBalanceError } from "./manager-wallet-ledger.service.js";
 
 type ChargeInput = {
   tenantId: string;
@@ -21,47 +17,34 @@ type ChargeInput = {
   note?: string;
 };
 
-export async function chargeManagerWallet(input: ChargeInput): Promise<{ balance: number }> {
+function reasonToLedgerType(reason: string): ManagerWalletLedgerType {
+  const r = String(reason ?? "").toLowerCase();
+  if (r.includes("prepaid") || r.includes("card")) return "prepaid_card_print";
+  if (r.includes("renewal") || r.includes("subscription")) return "subscription_renewal";
+  return "invoice_payment";
+}
+
+export async function chargeManagerWallet(
+  input: ChargeInput
+): Promise<{ balance: number; ledger_id?: string }> {
   return withTransaction((conn) => chargeManagerWalletWithConnection(conn, input));
 }
 
 export async function chargeManagerWalletWithConnection(
   conn: PoolConnection,
   input: ChargeInput
-): Promise<{ balance: number }> {
-  if (!(await hasTable(pool, "users"))) {
-    throw new ManagerBalanceError("staff_not_found", "manager_not_found");
-  }
-  const staffUserId = String(input.staffId ?? "").trim();
-  if (!staffUserId) {
-    throw new ManagerBalanceError("staff_not_found", "manager_not_found");
-  }
-  const [rows] = await conn.query<RowDataPacket[]>(
-    `SELECT wallet_balance, COALESCE(allowed_negative_balance, 0) AS allowed_negative_balance,
-            CASE WHEN status = 'active' THEN 1 ELSE 0 END AS active
-     FROM users
-     WHERE id = ? AND tenant_id = ?
-     LIMIT 1 FOR UPDATE`,
-    [staffUserId, input.tenantId]
-  );
-  const row = rows[0];
-  if (!row || Number(row.active ?? 1) !== 1) {
-    throw new ManagerBalanceError("staff_not_found", "manager_not_found");
-  }
-  const current = Number(row.wallet_balance ?? 0);
-  const allowedNegative = Math.max(0, Number(row.allowed_negative_balance ?? 0));
-  const amount = Number(input.amount || 0);
-  if (amount <= 0) {
-    return { balance: current };
-  }
-  if (current - amount < -allowedNegative) {
-    throw new ManagerBalanceError("insufficient_balance", "insufficient_manager_balance");
-  }
-  const next = current - amount;
-  await conn.execute(`UPDATE users SET wallet_balance = ? WHERE id = ? AND tenant_id = ?`, [
-    next,
-    staffUserId,
-    input.tenantId,
-  ]);
-  return { balance: next };
+): Promise<{ balance: number; ledger_id?: string }> {
+  const out = await chargeManagerLedgerWithConnection(conn, {
+    tenantId: input.tenantId,
+    managerId: input.staffId,
+    amount: input.amount,
+    type: reasonToLedgerType(input.reason),
+    currency: input.currency ?? "USD",
+    referenceType: input.reason,
+    referenceId: input.subscriberId ?? input.note ?? null,
+    description: input.note ?? input.reason,
+    createdBy: input.staffId,
+    meta: { subscriber_id: input.subscriberId ?? null, reason: input.reason },
+  });
+  return { balance: out.balance_after, ledger_id: out.ledger_id || undefined };
 }

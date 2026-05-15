@@ -6,7 +6,10 @@ import { hasTable } from "../db/schemaGuards.js";
 import { resolveExpirationAfterPayment } from "../lib/billing.js";
 import { formatExpirationForDb } from "../lib/expiration-date.js";
 import { withTransaction } from "../db/transaction.js";
+import { hasColumn } from "../db/schemaGuards.js";
 import { chargeManagerWalletWithConnection, ManagerBalanceError } from "./manager-wallet.service.js";
+import { insertCommissionEntry, resolveRenewalCommission } from "./manager-commission.service.js";
+import { assignResponsibleManagerOnFinancialEvent } from "./subscriber-manager-assignment.service.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { sendSubscriberBillingDemandWhatsApp } from "./whatsapp.service.js";
@@ -54,6 +57,45 @@ export type BillingContext = {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+export async function applyManagerCollectionAccounting(
+  conn: PoolConnection,
+  schemaPool: Pool,
+  tenantId: string,
+  managerId: string,
+  packageId: string | null,
+  grossPaid: number,
+  currency: string,
+  subscriberId: string,
+  sourceType: string,
+  sourceId: string,
+  ledgerId: string | undefined
+): Promise<void> {
+  const split = await resolveRenewalCommission(
+    schemaPool,
+    tenantId,
+    managerId,
+    packageId,
+    grossPaid,
+    currency
+  );
+  await insertCommissionEntry(conn, {
+    tenantId,
+    managerId,
+    sourceType,
+    sourceId,
+    subscriberId,
+    packageId,
+    split,
+    ledgerEntryId: ledgerId ?? null,
+  });
+  if (await hasColumn(schemaPool, "users", "manager_obligation_balance")) {
+    await conn.execute(
+      `UPDATE users SET manager_obligation_balance = COALESCE(manager_obligation_balance, 0) + ? WHERE id = ? AND tenant_id = ?`,
+      [split.companyAmount, managerId, tenantId]
+    );
+  }
 }
 
 type SqlExec = Pick<Pool, "query">;
@@ -423,6 +465,8 @@ export async function recordPackagePayment(
           tenantId,
         ]);
       }
+      let pkgId: string | null = subRows[0]?.package_id != null ? String(subRows[0].package_id) : null;
+      if (b.package_id) pkgId = b.package_id;
 
       if (b.payment_allocations && b.payment_allocations.length > 0) {
         let partial = false;
@@ -439,15 +483,28 @@ export async function recordPackagePayment(
           const balance = round2(Math.max(0, amount - paidSoFar));
           if (al.amount > balance + 0.01) return { kind: "overpay" as const };
           if (auth.role === "manager") {
-            await chargeManagerWalletWithConnection(conn, {
+            const ch = await chargeManagerWalletWithConnection(conn, {
               tenantId,
               staffId: auth.sub,
               amount: al.amount,
               currency: b.currency,
-              reason: "invoice_payment_allocation",
+              reason: "subscription_renewal_allocation",
               subscriberId,
               note: String(inv.id),
             });
+            await applyManagerCollectionAccounting(
+              conn,
+              pool,
+              tenantId,
+              auth.sub,
+              pkgId,
+              al.amount,
+              b.currency,
+              subscriberId,
+              "payment_allocation",
+              al.invoice_id,
+              ch.ledger_id
+            );
           }
           const payId = randomUUID();
           await conn.execute(
@@ -479,6 +536,9 @@ export async function recordPackagePayment(
             b.subscription_expires_at
           );
           if ("error" in extension) return { kind: "invalid_expiration" as const };
+          if (auth.role === "manager") {
+            await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
+          }
           return {
             kind: "ok" as const,
             allocation: true,
@@ -486,6 +546,9 @@ export async function recordPackagePayment(
             expiration_audit: extension,
             paid_invoices: paidInvoices,
           };
+        }
+        if (auth.role === "manager") {
+          await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
         }
         return { kind: "ok" as const, allocation: true, partial, paid_invoices: paidInvoices };
       }
@@ -516,15 +579,28 @@ export async function recordPackagePayment(
       if (payTarget <= 0) return { kind: "nothing_to_pay" as const };
       if (payTarget > balance + 0.01) return { kind: "overpay" as const };
       if (auth.role === "manager") {
-        await chargeManagerWalletWithConnection(conn, {
+        const ch = await chargeManagerWalletWithConnection(conn, {
           tenantId,
           staffId: auth.sub,
           amount: payTarget,
           currency: b.currency,
-          reason: "invoice_mark_paid_partial",
+          reason: "subscription_renewal_payment",
           subscriberId,
           note: String(invoiceId),
         });
+        await applyManagerCollectionAccounting(
+          conn,
+          pool,
+          tenantId,
+          auth.sub,
+          pkgId,
+          payTarget,
+          b.currency,
+          subscriberId,
+          "package_payment",
+          String(invoiceId),
+          ch.ledger_id
+        );
       }
       const payId = randomUUID();
       await conn.execute(
@@ -551,6 +627,9 @@ export async function recordPackagePayment(
           b.subscription_expires_at
         );
         if ("error" in extension) return { kind: "invalid_expiration" as const };
+        if (auth.role === "manager") {
+          await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
+        }
         return {
           kind: "ok" as const,
           partial,
@@ -561,6 +640,9 @@ export async function recordPackagePayment(
         };
       } else {
         partial = true;
+      }
+      if (auth.role === "manager") {
+        await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
       }
       return { kind: "ok" as const, partial, payment_id: payId, invoice_id: invoiceId!, paid_invoices: paidInvoices };
     });

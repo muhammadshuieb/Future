@@ -3,6 +3,14 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
+import { CoaService } from "../services/coa.service.js";
+import { RadiusService } from "../services/radius.service.js";
+import { syncRmCardToRadius } from "../services/rm-card-radius-sync.service.js";
+import { writeAuditLog } from "../services/audit-log.service.js";
+import { writeFinancialAudit } from "../services/financial-audit.service.js";
+import { withTransaction } from "../db/transaction.js";
+import { requestHasIspPermission } from "../lib/isp-permissions.js";
+import { ManagerBalanceError } from "../services/manager-wallet-ledger.service.js";
 import {
   bulkDeleteRmCards,
   createRmCardBatch,
@@ -47,6 +55,8 @@ const batchBody = z.object({
   online_time_limit: z.number().int().min(0).optional().default(0),
   available_time_from_activation: z.number().int().min(0).optional().default(0),
   simultaneous_use: z.number().int().min(1).max(32).optional().default(1),
+  kind: z.enum(["print", "sale"]).optional().default("print"),
+  client_batch_key: z.string().min(1).max(64).optional(),
 });
 
 const patchCardBody = z.object({
@@ -100,8 +110,11 @@ router.get("/cards", requireRole("admin", "manager", "accountant", "viewer"), as
 router.delete("/cards-expired", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req, res, next) => {
   try {
     await ensureRmCardsTable(pool);
-    const deleted = await deleteExpiredRmCards(pool, req.auth!.tenantId);
-    res.json({ ok: true, deleted });
+    const deleted = await deleteExpiredRmCards(pool, req.auth!.tenantId, {
+      coa: new CoaService(pool),
+      radius: new RadiusService(pool),
+    });
+    res.json({ ok: true, terminated: deleted });
   } catch (e) {
     next(e);
   }
@@ -250,28 +263,101 @@ router.post("/batch", requireRole("admin", "manager"), denyViewerWrites, denyAcc
       res.status(400).json({ error: "invalid_body" });
       return;
     }
+    const kind = parsed.data.kind ?? "print";
+    if (req.auth!.role === "manager") {
+      if (kind === "sale" && !requestHasIspPermission(req, "prepaid_cards:sell")) {
+        res.status(403).json({ error: "forbidden", detail: "prepaid_cards:sell" });
+        return;
+      }
+      if (kind !== "sale" && !requestHasIspPermission(req, "prepaid_cards:print")) {
+        res.status(403).json({ error: "forbidden", detail: "prepaid_cards:print" });
+        return;
+      }
+    }
     const packageId = resolvePackageId(parsed.data);
     if (!packageId) {
       res.status(400).json({ error: "package_required" });
       return;
     }
-    const result = await createRmCardBatch(pool, req.auth!.tenantId, {
-      quantity: parsed.data.quantity,
-      card_type: parsed.data.card_type,
-      gross_card_value: parsed.data.gross_card_value,
-      valid_till: parsed.data.valid_till,
-      prefix: parsed.data.prefix,
-      pin_length: parsed.data.pin_length,
-      password_length: parsed.data.password_length,
-      package_id: packageId,
-      download_limit_mb: parsed.data.download_limit_mb ?? 0,
-      upload_limit_mb: parsed.data.upload_limit_mb ?? 0,
-      total_limit_mb: parsed.data.total_limit_mb ?? 0,
-      online_time_limit: parsed.data.online_time_limit ?? 0,
-      available_time_from_activation: parsed.data.available_time_from_activation ?? 0,
-      simultaneous_use: parsed.data.simultaneous_use ?? 1,
+    const tenantId = req.auth!.tenantId;
+    let result: Awaited<ReturnType<typeof createRmCardBatch>>;
+    try {
+      result = await withTransaction(async (conn) =>
+        createRmCardBatch(conn, pool, tenantId, {
+          quantity: parsed.data.quantity,
+          card_type: parsed.data.card_type,
+          gross_card_value: parsed.data.gross_card_value,
+          valid_till: parsed.data.valid_till,
+          prefix: parsed.data.prefix,
+          pin_length: parsed.data.pin_length,
+          password_length: parsed.data.password_length,
+          package_id: packageId,
+          download_limit_mb: parsed.data.download_limit_mb ?? 0,
+          upload_limit_mb: parsed.data.upload_limit_mb ?? 0,
+          total_limit_mb: parsed.data.total_limit_mb ?? 0,
+          online_time_limit: parsed.data.online_time_limit ?? 0,
+          available_time_from_activation: parsed.data.available_time_from_activation ?? 0,
+          simultaneous_use: parsed.data.simultaneous_use ?? 1,
+        }, {
+          role: req.auth!.role,
+          sub: req.auth!.sub,
+          kind,
+          client_batch_key: parsed.data.client_batch_key ?? null,
+        })
+      );
+    } catch (e) {
+      if (e instanceof ManagerBalanceError && e.code === "insufficient_balance") {
+        res.status(402).json({ error: "insufficient_manager_balance" });
+        return;
+      }
+      if (e instanceof Error && e.message === "prepaid_print_disabled") {
+        res.status(403).json({ error: "prepaid_print_disabled" });
+        return;
+      }
+      if (e instanceof Error && e.message === "prepaid_sell_disabled") {
+        res.status(403).json({ error: "prepaid_sell_disabled" });
+        return;
+      }
+      throw e;
+    }
+    for (const task of result.syncTasks) {
+      await syncRmCardToRadius(pool, task).catch((err) => {
+        console.error("[rm-cards] radius sync after batch failed", err);
+      });
+    }
+    if (!result.idempotent) {
+      void writeFinancialAudit(pool, {
+        tenantId: req.auth!.tenantId,
+        staffId: req.auth!.sub,
+        action: "prepaid_card_batch",
+        entityType: "prepaid_card_batches",
+        entityId: result.batch_id,
+        payload: {
+          series: result.series,
+          created: result.created,
+          kind,
+          idempotent: false,
+          ledger_id: result.ledger_id,
+        },
+        ip: req.ip,
+      });
+      void writeAuditLog(pool, {
+        tenantId: req.auth!.tenantId,
+        staffId: req.auth!.sub,
+        action: "prepaid_card_batch",
+        entityType: "rm_cards_series",
+        entityId: result.series,
+        payload: { created: result.created, batch_id: result.batch_id, kind },
+      });
+    }
+    const status = result.idempotent ? 200 : 201;
+    res.status(status).json({
+      created: result.created,
+      series: result.series,
+      batch_id: result.batch_id,
+      ledger_id: result.ledger_id,
+      idempotent: result.idempotent ?? false,
     });
-    res.status(201).json(result);
   } catch (e) {
     if (e instanceof Error && e.message === "package_not_found") {
       res.status(400).json({ error: "package_not_found" });

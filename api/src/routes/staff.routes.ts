@@ -17,6 +17,8 @@ import {
 import { hashStaffPassword } from "../lib/staff-password.js";
 import { writeAuditLog } from "../services/audit-log.service.js";
 import type { RowDataPacket } from "mysql2";
+import { withTransaction } from "../db/transaction.js";
+import { applyManagerWalletLedgerWithConnection } from "../services/manager-wallet-ledger.service.js";
 
 const router = Router();
 
@@ -384,21 +386,35 @@ router.post("/:id/topup", requireRole("admin", "manager"), async (req: Request, 
     res.status(404).json({ error: "not_found" });
     return;
   }
-  const nextBalance = Number(row.wallet_balance ?? 0) + amount;
-  await pool.execute(`UPDATE users SET wallet_balance = ? WHERE id = ? AND tenant_id = ?`, [
-    nextBalance,
-    targetId,
-    tenantId,
-  ]);
-  await writeAuditLog(pool, {
-    tenantId,
-    staffId: actorId,
-    action: "topup",
-    entityType: "staff_wallet",
-    entityId: targetId,
-    payload: { amount, note: parsed.data.note ?? null },
-  });
-  res.json({ ok: true, wallet_balance: nextBalance });
+  try {
+    const out = await withTransaction(async (conn) => {
+      const r = await applyManagerWalletLedgerWithConnection(conn, {
+        tenantId,
+        managerId: targetId,
+        delta: amount,
+        type: "topup",
+        currency: "USD",
+        referenceType: "staff_topup",
+        referenceId: actorId,
+        description: parsed.data.note ?? "wallet_topup",
+        createdBy: actorId,
+        meta: { note: parsed.data.note ?? null, actor_id: actorId },
+      });
+      return r;
+    });
+    await writeAuditLog(pool, {
+      tenantId,
+      staffId: actorId,
+      action: "topup",
+      entityType: "staff_wallet",
+      entityId: targetId,
+      payload: { amount, note: parsed.data.note ?? null, ledger_id: out.ledger_id },
+    });
+    res.json({ ok: true, wallet_balance: out.balance_after });
+  } catch (e) {
+    console.error("[staff topup]", e);
+    res.status(500).json({ error: "topup_failed" });
+  }
 });
 
 export default router;

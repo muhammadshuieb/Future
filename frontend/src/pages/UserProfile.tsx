@@ -37,7 +37,7 @@ import { Modal } from "../components/ui/Modal";
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
-import { canManageOperations, canViewSpeedProfiles } from "../lib/permissions";
+import { canManageOperations, canViewSpeedProfiles, hasIspPermission } from "../lib/permissions";
 import { cn } from "../lib/utils";
 import { resolveSubscriberUiKind, subscriberStatusPresentation } from "../lib/subscriber-status";
 import {
@@ -69,6 +69,7 @@ type Row = {
   phone?: string | null;
   address?: string | null;
   creator_name?: string | null;
+  responsible_manager_id?: string | null;
   expiration_date?: string | null;
   created_at?: string | null;
   used_bytes?: string | number | null;
@@ -221,6 +222,63 @@ export function UserProfilePage() {
   const [whatsappOptOut, setWhatsappOptOut] = useState(false);
   const [expirationDate, setExpirationDate] = useState("");
   const [expirationUnlimited, setExpirationUnlimited] = useState(false);
+
+  const canAssignManager = hasIspPermission(user?.role, user?.permissions, "subscribers:assign_manager");
+  const [managerOptions, setManagerOptions] = useState<{ id: string; name: string; email: string }[]>([]);
+  const [newResponsibleManagerId, setNewResponsibleManagerId] = useState("");
+  const [transferReason, setTransferReason] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferMsg, setTransferMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!canAssignManager || !id) return;
+    void (async () => {
+      try {
+        const r = await apiFetch("/api/staff/");
+        if (!r.ok) return;
+        const j = (await r.json()) as {
+          items?: { id: string; name: string; email: string; role: string }[];
+        };
+        setManagerOptions((j.items ?? []).filter((x) => x.role === "manager"));
+      } catch {
+        setManagerOptions([]);
+      }
+    })();
+  }, [canAssignManager, id]);
+
+  const currentResponsibleLabel = useMemo(() => {
+    const rid = row?.responsible_manager_id;
+    if (!rid) return "—";
+    const m = managerOptions.find((x) => x.id === rid);
+    return m ? `${m.name} (${m.email})` : rid;
+  }, [row?.responsible_manager_id, managerOptions]);
+
+  async function submitResponsibleManagerTransfer(e: React.FormEvent) {
+    e.preventDefault();
+    if (!id || !canAssignManager || !newResponsibleManagerId.trim() || !transferReason.trim()) return;
+    setTransferBusy(true);
+    setTransferMsg(null);
+    try {
+      const r = await apiFetch(`/api/subscribers/${id}/responsible-manager`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          responsible_manager_id: newResponsibleManagerId,
+          reason: transferReason.trim(),
+        }),
+      });
+      if (r.ok) {
+        setTransferMsg("تم تحديث المدير المسؤول.");
+        setTransferReason("");
+        setNewResponsibleManagerId("");
+        await load();
+      } else {
+        const raw = await readApiError(r);
+        setTransferMsg(formatStaffApiError(r.status, raw, t));
+      }
+    } finally {
+      setTransferBusy(false);
+    }
+  }
 
   const showSpeedPanel = canViewSpeedProfiles(user?.role, user?.permissions);
   const canSpeedOverride =
@@ -1139,6 +1197,49 @@ export function UserProfilePage() {
               ) : null}
             </form>
           </Card>
+
+          {canAssignManager ? (
+            <Card className="space-y-5" dir="rtl">
+              <ProfileSectionTitle
+                icon={Shield}
+                title="المدير المسؤول"
+                hint="تحويل مسؤولية المشترك بين المدراء (يتطلب تسجيل سبب)"
+              />
+              <div className="rounded-xl border border-[hsl(var(--border))]/80 bg-[hsl(var(--muted))]/15 px-4 py-3 text-sm">
+                <div className="text-[11px] font-semibold uppercase tracking-wide opacity-60">الحالي</div>
+                <div className="mt-1 font-mono text-xs break-all">{currentResponsibleLabel}</div>
+              </div>
+              <form className="space-y-4" onSubmit={(e) => void submitResponsibleManagerTransfer(e)}>
+                <SelectField
+                  label="تحويل المسؤولية إلى"
+                  value={newResponsibleManagerId}
+                  onChange={(e) => setNewResponsibleManagerId(e.target.value)}
+                >
+                  <option value="">— اختر مديراً —</option>
+                  {managerOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.email})
+                    </option>
+                  ))}
+                </SelectField>
+                <TextField
+                  label="سبب التحويل"
+                  value={transferReason}
+                  onChange={(e) => setTransferReason(e.target.value)}
+                  placeholder="مثال: نقل منطقة، طلب إداري، تصحيح تعيين…"
+                />
+                {transferMsg ? (
+                  <div className="text-xs opacity-80" role="status">
+                    {transferMsg}
+                  </div>
+                ) : null}
+                <Button type="submit" variant="primary" disabled={transferBusy || !newResponsibleManagerId || !transferReason.trim()}>
+                  {transferBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  حفظ التحويل
+                </Button>
+              </form>
+            </Card>
+          ) : null}
 
           <Card variant="subtle" className="space-y-5">
             <ProfileSectionTitle icon={Gauge} title={t("profile.sectionMeta")} />

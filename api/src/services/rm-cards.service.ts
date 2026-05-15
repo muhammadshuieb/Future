@@ -1,8 +1,14 @@
-import { randomInt } from "crypto";
-import type { Pool } from "mysql2/promise";
+import { randomInt, randomUUID } from "crypto";
+import type { Pool, PoolConnection } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { hasTable } from "../db/schemaGuards.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import {
+  applyManagerPrepaidBatchFinancials,
+  assertManagerCanPrintCards,
+  assertManagerCanSellCards,
+} from "./prepaid-batch-finance.service.js";
 import { removeRmCardFromRadius, syncRmCardToRadius } from "./rm-card-radius-sync.service.js";
+import { terminateExpiredPrepaidCardsManual } from "./prepaid-card-lifecycle.service.js";
 
 type CardRow = RowDataPacket & {
   id: number;
@@ -36,11 +42,45 @@ function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function cardStatus(row: { active: number; revoked: number; expiration: string }): "active" | "expired" | "disabled" {
-  if (Number(row.active ?? 1) === 0 || Number(row.revoked ?? 0) === 1) return "disabled";
+function cardStatus(row: {
+  active: number;
+  revoked: number;
+  expiration: string;
+  lifecycle_status?: string | null;
+}): "active" | "expired" | "disabled" | "consumed" {
+  const lifecycle = String(row.lifecycle_status ?? "")
+    .trim()
+    .toLowerCase();
+  if (lifecycle === "consumed") return "consumed";
+  if (lifecycle === "expired") return "expired";
+  if (lifecycle === "disabled" || Number(row.active ?? 1) === 0 || Number(row.revoked ?? 0) === 1) {
+    return "disabled";
+  }
   const exp = String(row.expiration ?? "").slice(0, 10);
   if (exp && exp < todayIsoDate()) return "expired";
   return "active";
+}
+
+async function syncCardRowToRadius(pool: Pool, row: RowDataPacket): Promise<void> {
+  await syncRmCardToRadius(pool, {
+    cardnum: String(row.cardnum),
+    password: String(row.password),
+    expiration: String(row.expiration),
+    package_id: row.package_id != null ? String(row.package_id) : null,
+    simultaneous_use: Number(row.simultaneous_use ?? 1),
+    active: Number(row.active ?? 1),
+    revoked: Number(row.revoked ?? 0),
+    total_limit_mb: Number(row.total_limit_mb ?? 0),
+    download_limit_mb: Number(row.download_limit_mb ?? 0),
+    upload_limit_mb: Number(row.upload_limit_mb ?? 0),
+    online_time_limit: Number(row.online_time_limit ?? 0),
+    lifecycle_status: row.lifecycle_status != null ? String(row.lifecycle_status) : "available",
+    terminate_reason: row.terminate_reason != null ? String(row.terminate_reason) : null,
+    used_bytes: row.used_bytes ?? 0,
+    used_seconds: row.used_seconds ?? 0,
+    available_time_from_activation: Number(row.available_time_from_activation ?? 0),
+    first_used_at: row.first_used_at ?? null,
+  });
 }
 
 function randomDigits(len: number): string {
@@ -58,13 +98,18 @@ function randomAlphanumeric(len: number): string {
 
 function mapCardRow(row: CardRow) {
   const status = cardStatus(row);
+  const totalMb = Number(row.total_limit_mb ?? 0);
+  const usedBytes = Number((row as RowDataPacket).used_bytes ?? 0);
+  const quotaBytes = totalMb > 0 ? totalMb * 1024 * 1024 : 0;
+  const onlineLimitMin = Number((row as RowDataPacket).online_time_limit ?? 0);
+  const usedSeconds = Number((row as RowDataPacket).used_seconds ?? 0);
   return {
     id: Number(row.id),
     cardnum: String(row.cardnum ?? ""),
     password: String(row.password ?? ""),
     series: String(row.series ?? ""),
     value: Number(row.value ?? 0),
-    total_limit_mb: Number(row.total_limit_mb ?? 0),
+    total_limit_mb: totalMb,
     expiration: String(row.expiration ?? "").slice(0, 10),
     date: row.date != null ? String(row.date) : String(row.generated_on ?? "").slice(0, 19),
     cardtype: Number(row.cardtype ?? 0),
@@ -74,6 +119,22 @@ function mapCardRow(row: CardRow) {
     package_id: row.package_id != null ? String(row.package_id) : null,
     service_name: row.service_name != null ? String(row.service_name) : "",
     status,
+    lifecycle_status: String((row as RowDataPacket).lifecycle_status ?? status),
+    used_bytes: String(usedBytes),
+    remaining_bytes: quotaBytes > 0 ? String(Math.max(0, quotaBytes - usedBytes)) : null,
+    used_seconds: usedSeconds,
+    remaining_seconds: onlineLimitMin > 0 ? Math.max(0, onlineLimitMin * 60 - usedSeconds) : null,
+    first_used_at:
+      (row as RowDataPacket).first_used_at != null ? String((row as RowDataPacket).first_used_at) : null,
+    last_used_at: (row as RowDataPacket).last_used_at != null ? String((row as RowDataPacket).last_used_at) : null,
+    expired_at: (row as RowDataPacket).expired_at != null ? String((row as RowDataPacket).expired_at) : null,
+    finished_at: (row as RowDataPacket).finished_at != null ? String((row as RowDataPacket).finished_at) : null,
+    terminate_reason:
+      (row as RowDataPacket).terminate_reason != null ? String((row as RowDataPacket).terminate_reason) : null,
+    last_disconnect_status:
+      (row as RowDataPacket).last_disconnect_status != null
+        ? String((row as RowDataPacket).last_disconnect_status)
+        : null,
   };
 }
 
@@ -99,6 +160,15 @@ export async function ensureRmCardsTable(pool: Pool): Promise<void> {
       simultaneous_use INT NOT NULL DEFAULT 1,
       active TINYINT(1) NOT NULL DEFAULT 1,
       revoked TINYINT(1) NOT NULL DEFAULT 0,
+      lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'available',
+      used_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      used_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      first_used_at DATETIME NULL,
+      last_used_at DATETIME NULL,
+      expired_at DATETIME NULL,
+      finished_at DATETIME NULL,
+      terminate_reason VARCHAR(64) NULL,
+      last_disconnect_status VARCHAR(255) NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
@@ -192,10 +262,20 @@ export async function listRmCards(
     where.push("c.package_id = ?");
     params.push(opts.serviceId.trim());
   }
+  const hasLifecycle = await hasColumn(pool, "rm_cards", "lifecycle_status");
   if (opts.status === "active") {
     where.push("c.active = 1 AND c.revoked = 0 AND c.expiration >= CURDATE()");
+    if (hasLifecycle) where.push("c.lifecycle_status IN ('available', 'active')");
   } else if (opts.status === "expired") {
-    where.push("c.expiration < CURDATE() AND c.active = 1 AND c.revoked = 0");
+    if (hasLifecycle) {
+      where.push(
+        "(c.lifecycle_status IN ('expired','consumed') OR (c.expiration < CURDATE() AND c.active = 1 AND c.revoked = 0))"
+      );
+    } else {
+      where.push("c.expiration < CURDATE() AND c.active = 1 AND c.revoked = 0");
+    }
+  } else if (opts.status === "consumed" && hasLifecycle) {
+    where.push("c.lifecycle_status = 'consumed'");
   } else if (opts.status === "disabled") {
     where.push("(c.active = 0 OR c.revoked = 1)");
   }
@@ -244,8 +324,18 @@ export async function listCardsBySeries(pool: Pool, tenantId: string, series: st
   return rows.map(mapCardRow);
 }
 
+export type SqlExecutor = Pool | PoolConnection;
+
+export type RmBatchFinanceContext = {
+  role: string;
+  sub: string;
+  kind: "print" | "sale";
+  client_batch_key?: string | null;
+};
+
 export async function createRmCardBatch(
-  pool: Pool,
+  exec: SqlExecutor,
+  schemaPool: Pool,
   tenantId: string,
   input: {
     quantity: number;
@@ -262,26 +352,139 @@ export async function createRmCardBatch(
     online_time_limit: number;
     available_time_from_activation: number;
     simultaneous_use: number;
-  }
-): Promise<{ created: number; series: string }> {
-  const [pkgRows] = await pool.query<RowDataPacket[]>(
-    `SELECT id FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+  },
+  finance: RmBatchFinanceContext | null
+): Promise<{
+  created: number;
+  series: string;
+  batch_id: string | null;
+  ledger_id: string | null;
+  syncTasks: Array<{
+    cardnum: string;
+    password: string;
+    expiration: string;
+    package_id: string;
+    simultaneous_use: number;
+    active: number;
+    revoked: number;
+    total_limit_mb: number;
+    download_limit_mb: number;
+    upload_limit_mb: number;
+    online_time_limit: number;
+    available_time_from_activation: number;
+    lifecycle_status: string;
+  }>;
+  idempotent?: boolean;
+}> {
+  const [pkgRows] = await exec.query<RowDataPacket[]>(
+    `SELECT id, currency FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
     [input.package_id, tenantId]
   );
   if (!pkgRows[0]) throw new Error("package_not_found");
-
+  const currency = String(pkgRows[0]?.currency ?? "USD").slice(0, 8).toUpperCase();
   const qty = Math.max(1, Math.min(500, Math.floor(input.quantity)));
+  const totalFace = Math.round(qty * Number(input.gross_card_value ?? 0) * 100) / 100;
+
+  const hasPcb = await hasTable(schemaPool, "prepaid_card_batches");
+  const hasKeyCol = hasPcb && (await hasColumn(schemaPool, "prepaid_card_batches", "client_batch_key"));
+  const keyTrim = finance?.client_batch_key?.trim();
+  if (keyTrim && hasKeyCol) {
+    const [ex] = await exec.query<RowDataPacket[]>(
+      `SELECT id, series, wallet_transaction_id FROM prepaid_card_batches WHERE tenant_id = ? AND client_batch_key = ? LIMIT 1`,
+      [tenantId, keyTrim]
+    );
+    if (ex[0]) {
+      const ser = String(ex[0].series ?? "");
+      const [cntRows] = await exec.query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS c FROM rm_cards WHERE tenant_id = ? AND series = ?`,
+        [tenantId, ser]
+      );
+      return {
+        created: Number(cntRows[0]?.c ?? 0),
+        series: ser,
+        batch_id: String(ex[0].id),
+        ledger_id: ex[0].wallet_transaction_id != null ? String(ex[0].wallet_transaction_id) : null,
+        syncTasks: [],
+        idempotent: true,
+      };
+    }
+  }
+
   const prefix = String(input.prefix ?? "PRE")
     .replace(/[^\w-]/g, "")
     .slice(0, 16) || "PRE";
   const series = `${prefix}-${Date.now().toString(36).toUpperCase()}`;
   const cardType = input.card_type === "refill" ? 1 : 0;
   const existing = new Set<string>();
-  const [existingRows] = await pool.query<RowDataPacket[]>(
+  const [existingRows] = await exec.query<RowDataPacket[]>(
     `SELECT cardnum FROM rm_cards WHERE tenant_id = ?`,
     [tenantId]
   );
   for (const r of existingRows) existing.add(String(r.cardnum ?? ""));
+
+  const batchId = randomUUID();
+  let ledgerId: string | null = null;
+  const conn = exec as PoolConnection;
+  const isManager = Boolean(finance && finance.role === "manager");
+
+  if (isManager && totalFace > 0) {
+    if (finance!.kind === "sale") {
+      await assertManagerCanSellCards(conn, tenantId, finance!.sub);
+    } else {
+      await assertManagerCanPrintCards(conn, tenantId, finance!.sub);
+    }
+    const rFin = await applyManagerPrepaidBatchFinancials(
+      conn,
+      schemaPool,
+      tenantId,
+      finance!.sub,
+      input.package_id,
+      totalFace,
+      currency,
+      batchId,
+      finance!.sub
+    );
+    ledgerId = rFin.ledger_id || null;
+  }
+
+  if (hasPcb) {
+    const hasSeriesCol = await hasColumn(schemaPool, "prepaid_card_batches", "series");
+    const hasClientKeyCol = await hasColumn(schemaPool, "prepaid_card_batches", "client_batch_key");
+    const kindStr = finance?.kind === "sale" ? "sale" : "print";
+    const printedBy = finance?.sub ?? null;
+    if (hasSeriesCol && hasClientKeyCol) {
+      await exec.execute(
+        `INSERT INTO prepaid_card_batches (id, tenant_id, batch_total_amount, currency, printed_by, wallet_transaction_id, kind, series, client_batch_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [batchId, tenantId, totalFace, currency, printedBy, ledgerId, kindStr, series, keyTrim || null]
+      );
+    } else {
+      await exec.execute(
+        `INSERT INTO prepaid_card_batches (id, tenant_id, batch_total_amount, currency, printed_by, wallet_transaction_id, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [batchId, tenantId, totalFace, currency, printedBy, ledgerId, kindStr]
+      );
+    }
+  }
+
+  const hasItems = await hasTable(schemaPool, "prepaid_card_batch_items");
+  const hasDedup = await hasTable(schemaPool, "prepaid_card_batch_dedup");
+
+  const syncTasks: Array<{
+    cardnum: string;
+    password: string;
+    expiration: string;
+    package_id: string;
+    simultaneous_use: number;
+    active: number;
+    revoked: number;
+    total_limit_mb: number;
+    download_limit_mb: number;
+    upload_limit_mb: number;
+    online_time_limit: number;
+    available_time_from_activation: number;
+    lifecycle_status: string;
+  }> = [];
 
   let created = 0;
   for (let i = 0; i < qty; i++) {
@@ -296,7 +499,7 @@ export async function createRmCardBatch(
     }
     if (!cardnum) throw new Error("cardnum_generation_failed");
     const password = randomAlphanumeric(input.password_length);
-    const [res] = await pool.execute(
+    const [res] = await exec.execute(
       `INSERT INTO rm_cards
         (tenant_id, series, cardnum, password, card_type, value, package_id, expiration,
          download_limit_mb, upload_limit_mb, total_limit_mb, online_time_limit,
@@ -320,7 +523,19 @@ export async function createRmCardBatch(
       ]
     );
     const insertId = Number((res as { insertId?: number }).insertId ?? 0);
-    await syncRmCardToRadius(pool, {
+    if (hasItems && hasPcb && insertId > 0) {
+      await exec.execute(
+        `INSERT INTO prepaid_card_batch_items (batch_id, rm_card_id, card_value) VALUES (?, ?, ?)`,
+        [batchId, insertId, input.gross_card_value]
+      );
+    }
+    if (hasDedup && insertId > 0) {
+      await exec.execute(
+        `INSERT INTO prepaid_card_batch_dedup (tenant_id, rm_card_id, batch_id) VALUES (?, ?, ?)`,
+        [tenantId, insertId, batchId]
+      );
+    }
+    syncTasks.push({
       cardnum,
       password,
       expiration: input.valid_till,
@@ -329,13 +544,21 @@ export async function createRmCardBatch(
       active: 1,
       revoked: 0,
       total_limit_mb: input.total_limit_mb,
-    }).catch((err) => {
-      console.error("[rm-cards] radius sync failed for", cardnum, err);
+      download_limit_mb: input.download_limit_mb,
+      upload_limit_mb: input.upload_limit_mb,
+      online_time_limit: input.online_time_limit,
+      available_time_from_activation: input.available_time_from_activation,
+      lifecycle_status: "available",
     });
     created += 1;
-    void insertId;
   }
-  return { created, series };
+  return {
+    created,
+    series,
+    batch_id: hasPcb ? batchId : null,
+    ledger_id: ledgerId,
+    syncTasks,
+  };
 }
 
 export async function getRmCardStats(pool: Pool, tenantId: string, cardId: number) {
@@ -405,9 +628,33 @@ export async function getRmCardStats(pool: Pool, tenantId: string, cardId: numbe
     });
   }
 
+  const [cardRows] = await pool.query<RowDataPacket[]>(
+    `SELECT used_bytes, used_seconds, total_limit_mb, online_time_limit,
+            first_used_at, last_used_at, expiration, expired_at, finished_at,
+            terminate_reason, last_disconnect_status, lifecycle_status
+     FROM rm_cards WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [cardId, tenantId]
+  );
+  const meta = cardRows[0];
+  const usedB = Number(meta?.used_bytes ?? usageBytes);
+  const quotaB = Number(meta?.total_limit_mb ?? totalLimitMb) * 1024 * 1024;
+  const onlineMin = Number(meta?.online_time_limit ?? 0);
+  const usedSec = Number(meta?.used_seconds ?? 0);
+
   return {
     total_limit_mb: totalLimitMb,
-    usage_bytes: String(usageBytes),
+    usage_bytes: String(usedB),
+    remaining_bytes: quotaB > 0 ? String(Math.max(0, quotaB - usedB)) : null,
+    used_seconds: usedSec,
+    remaining_seconds: onlineMin > 0 ? Math.max(0, onlineMin * 60 - usedSec) : null,
+    first_used_at: meta?.first_used_at != null ? String(meta.first_used_at) : null,
+    expires_at: meta?.expiration != null ? String(meta.expiration).slice(0, 10) : null,
+    expired_at: meta?.expired_at != null ? String(meta.expired_at) : null,
+    finished_at: meta?.finished_at != null ? String(meta.finished_at) : null,
+    terminate_reason: meta?.terminate_reason != null ? String(meta.terminate_reason) : null,
+    last_disconnect_status:
+      meta?.last_disconnect_status != null ? String(meta.last_disconnect_status) : null,
+    lifecycle_status: meta?.lifecycle_status != null ? String(meta.lifecycle_status) : null,
     daily_total_bytes: String(dailyBytes),
     monthly_total_bytes: String(monthlyBytes),
     sessions,
@@ -471,16 +718,7 @@ export async function updateRmCard(
   ] as Array<string | number | null>);
   const updated = await loadCardForSync(pool, tenantId, cardId);
   if (updated) {
-    await syncRmCardToRadius(pool, {
-      cardnum: String(updated.cardnum),
-      password: String(updated.password),
-      expiration: String(updated.expiration),
-      package_id: updated.package_id != null ? String(updated.package_id) : null,
-      simultaneous_use: Number(updated.simultaneous_use ?? 1),
-      active: Number(updated.active ?? 1),
-      revoked: Number(updated.revoked ?? 0),
-      total_limit_mb: Number(updated.total_limit_mb ?? 0),
-    });
+    await syncCardRowToRadius(pool, updated);
   }
   return true;
 }
@@ -510,15 +748,29 @@ export async function deleteRmCardSeries(pool: Pool, tenantId: string, series: s
   return rows.length;
 }
 
-export async function deleteExpiredRmCards(pool: Pool, tenantId: string): Promise<number> {
+export async function deleteExpiredRmCards(
+  pool: Pool,
+  tenantId: string,
+  opts?: { coa?: import("./coa.service.js").CoaService; radius?: import("./radius.service.js").RadiusService }
+): Promise<number> {
+  if (opts?.coa && opts?.radius) {
+    return terminateExpiredPrepaidCardsManual(pool, tenantId, opts.coa, opts.radius);
+  }
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, cardnum FROM rm_cards WHERE tenant_id = ? AND expiration < CURDATE()`,
+    `SELECT id, cardnum FROM rm_cards
+     WHERE tenant_id = ? AND expiration < CURDATE() AND lifecycle_status IN ('available', 'active')`,
     [tenantId]
   );
   if (!rows.length) return 0;
-  await pool.execute(`DELETE FROM rm_cards WHERE tenant_id = ? AND expiration < CURDATE()`, [tenantId]);
+  await pool.execute(
+    `UPDATE rm_cards
+     SET lifecycle_status = 'expired', active = 0, terminate_reason = 'calendar_expired', finished_at = NOW()
+     WHERE tenant_id = ? AND expiration < CURDATE() AND lifecycle_status IN ('available', 'active')`,
+    [tenantId]
+  );
   for (const r of rows) {
-    await removeRmCardFromRadius(pool, String(r.cardnum));
+    const full = await loadCardForSync(pool, tenantId, Number(r.id));
+    if (full) await syncCardRowToRadius(pool, full);
   }
   return rows.length;
 }

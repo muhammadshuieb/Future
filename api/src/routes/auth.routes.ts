@@ -12,9 +12,17 @@ import {
   accountantFinanceDefaults,
 } from "../lib/finance-permissions.js";
 import {
+  defaultManagerPermissions,
   normalizeManagerPermissions,
   parsePermissionsObject,
 } from "../lib/manager-permissions.js";
+import {
+  defaultIspPermissionsAccountant,
+  defaultIspPermissionsAllOn,
+  defaultIspPermissionsManager,
+  defaultIspPermissionsViewer,
+  normalizeIspPermissions,
+} from "../lib/isp-permissions.js";
 import {
   defaultSpeedProfilePermissionsAllOn,
   normalizeSpeedProfilePermissions,
@@ -118,15 +126,33 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       if (ok) {
         const role = String(user.role ?? "viewer") as Role;
         let permissions: Record<string, boolean> = {};
-        if (role === "manager") {
-          permissions = await managerJwtPermissions(String(user.tenant_id), user);
+        const userOverride = parsePermissionsObject(user.permissions_json ?? {});
+        if (role === "admin") {
+          permissions = {
+            ...defaultFinancePermissions(),
+            ...defaultManagerPermissions(),
+            ...defaultSpeedProfilePermissionsAllOn(),
+            ...defaultIspPermissionsAllOn(),
+            ...userOverride,
+          };
+        } else if (role === "manager") {
+          permissions = {
+            ...(await managerJwtPermissions(String(user.tenant_id), user)),
+            ...normalizeIspPermissions(userOverride, defaultIspPermissionsManager()),
+          };
         } else if (role === "viewer") {
-          permissions = await viewerJwtPermissions(String(user.tenant_id), user);
+          permissions = {
+            ...(await viewerJwtPermissions(String(user.tenant_id), user)),
+            ...normalizeIspPermissions(userOverride, defaultIspPermissionsViewer()),
+          };
         } else if (role === "accountant") {
-          permissions = normalizeFinancePermissions({
-            ...accountantFinanceDefaults(),
-            ...parsePermissionsObject(user.permissions_json ?? {}),
-          });
+          permissions = {
+            ...normalizeFinancePermissions({
+              ...accountantFinanceDefaults(),
+              ...userOverride,
+            }),
+            ...normalizeIspPermissions(userOverride, defaultIspPermissionsAccountant()),
+          };
         }
         const walletBalance = Number(user.wallet_balance ?? 0);
         const payload: JwtPayload = {

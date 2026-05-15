@@ -46,7 +46,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { LogoMark } from "../components/brand/Logo";
-import { canOpenStaffSection, canViewSpeedProfiles } from "../lib/permissions";
+import { canOpenStaffSection, canViewSpeedProfiles, hasIspPermission } from "../lib/permissions";
 import { AdminSessionIdleDialog } from "../components/AdminSessionIdleDialog";
 import { useAdminInactivityLogout } from "../hooks/useAdminInactivityLogout";
 
@@ -156,7 +156,10 @@ export function AdminShell() {
     location.pathname.startsWith("/speed-profiles");
   const isStaffRoute = location.pathname.startsWith("/staff");
   const isFinanceRoute =
+    location.pathname.startsWith("/financial-dashboard") ||
+    location.pathname.startsWith("/financial-reports") ||
     location.pathname.startsWith("/finance-dashboard") ||
+    location.pathname.startsWith("/company-finance") ||
     location.pathname.startsWith("/accounting") ||
     location.pathname.startsWith("/billing") ||
     location.pathname.startsWith("/inventory");
@@ -267,7 +270,14 @@ export function AdminShell() {
     { to: "/staff/audit", labelKey: "nav.auditLogs", icon: ClipboardList, tone: "teal" },
   ];
   const financeNav: NavItem[] = [
-    { to: "/finance-dashboard", labelKey: "nav.financeDashboard", icon: Activity, tone: "emerald" },
+    { to: "/financial-dashboard", labelKey: "nav.financialExecutive", icon: Activity, tone: "emerald" },
+    ...(hasIspPermission(user?.role, user?.permissions, "financial_reports:view")
+      ? ([{ to: "/financial-reports", labelKey: "nav.financialReports", icon: ScrollText, tone: "sky" }] as NavItem[])
+      : []),
+    ...(hasIspPermission(user?.role, user?.permissions, "financial_reports:view") ||
+    hasIspPermission(user?.role, user?.permissions, "managers:view_wallet")
+      ? ([{ to: "/company-finance", labelKey: "nav.companyFinanceAr", icon: FileText, tone: "violet" }] as NavItem[])
+      : []),
     { to: "/billing", labelKey: "nav.invoicesItem", icon: ReceiptText, tone: "emerald" },
     { to: "/accounting", labelKey: "nav.accounting", icon: Radio, tone: "green" },
     { to: "/inventory/expenses", labelKey: "nav.expenses", icon: Boxes, tone: "orange" },

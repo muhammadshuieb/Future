@@ -21,6 +21,8 @@ import {
   ManagerBalanceError,
 } from "../services/manager-wallet.service.js";
 import { withTransaction } from "../db/transaction.js";
+import { applyManagerCollectionAccounting } from "../services/subscriber-billing.service.js";
+import { assignResponsibleManagerOnFinancialEvent } from "../services/subscriber-manager-assignment.service.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import type { RowDataPacket } from "mysql2";
@@ -136,16 +138,34 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       const subscriberId = String(inv.subscriber_id ?? "");
       const currency = String(inv.currency ?? "USD");
       const invoiceNo = String(inv.invoice_no ?? "");
+      const [pkgRef] = await conn.query<RowDataPacket[]>(
+        `SELECT package_id FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [subscriberId, t]
+      );
+      const pkgId = pkgRef[0]?.package_id != null ? String(pkgRef[0].package_id) : null;
       if (req.auth!.role === "manager") {
-        await chargeManagerWalletWithConnection(conn, {
+        const ch = await chargeManagerWalletWithConnection(conn, {
           tenantId: t,
           staffId: req.auth!.sub,
           amount,
           currency,
-          reason: "invoice_mark_paid",
+          reason: "subscription_renewal_invoice_mark",
           subscriberId,
           note: invoiceNo,
         });
+        await applyManagerCollectionAccounting(
+          conn,
+          pool,
+          t,
+          req.auth!.sub,
+          pkgId,
+          amount,
+          currency,
+          subscriberId,
+          "invoice_mark_paid",
+          req.params.id,
+          ch.ledger_id
+        );
       }
 
       const paidAt = new Date();
@@ -194,6 +214,10 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
           `UPDATE subscribers SET expiration_date = ?, status = 'active' WHERE id = ? AND tenant_id = ?`,
           [formatExpirationForDb(nextExpiration), subscriberId, t]
         );
+      }
+
+      if (req.auth!.role === "manager" && subscriberId) {
+        await assignResponsibleManagerOnFinancialEvent(conn, t, subscriberId, req.auth!.sub, "invoice_payment");
       }
 
       return {

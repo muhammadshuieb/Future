@@ -1,5 +1,10 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
+import {
+  evaluatePrepaidCardAccessFromRow,
+  PREPAID_REPLY_MESSAGES,
+  type PrepaidDenyReason,
+} from "../lib/prepaid-card-access.js";
 
 export type RmCardRadiusRow = {
   cardnum: string;
@@ -10,13 +15,57 @@ export type RmCardRadiusRow = {
   active: number;
   revoked: number;
   total_limit_mb: number;
+  download_limit_mb?: number;
+  upload_limit_mb?: number;
+  online_time_limit?: number;
+  lifecycle_status?: string | null;
+  terminate_reason?: string | null;
+  used_bytes?: number | bigint | string | null;
+  used_seconds?: number | bigint | string | null;
+  available_time_from_activation?: number | null;
+  first_used_at?: Date | string | null;
 };
+
+function buildMikrotikRateLimit(row: RmCardRadiusRow, packageRate: string | null): string | null {
+  const dl = Number(row.download_limit_mb ?? 0);
+  const ul = Number(row.upload_limit_mb ?? 0);
+  if (dl > 0 || ul > 0) {
+    const up = ul > 0 ? `${ul}M` : "0";
+    const down = dl > 0 ? `${dl}M` : "0";
+    return `${up}/${down}`;
+  }
+  return packageRate;
+}
+
+function resolveDenyForSync(row: RmCardRadiusRow): { reason: PrepaidDenyReason; message: string } | null {
+  if (Number(row.active ?? 1) === 0 || Number(row.revoked ?? 0) === 1) {
+    return { reason: "disabled", message: PREPAID_REPLY_MESSAGES.disabled };
+  }
+  const explicit = String(row.terminate_reason ?? "").trim() as PrepaidDenyReason;
+  if (explicit && explicit in PREPAID_REPLY_MESSAGES) {
+    return { reason: explicit, message: PREPAID_REPLY_MESSAGES[explicit] };
+  }
+  const gate = evaluatePrepaidCardAccessFromRow({
+    lifecycle_status: row.lifecycle_status ?? null,
+    active: row.active,
+    revoked: row.revoked,
+    expiration: row.expiration,
+    total_limit_mb: row.total_limit_mb,
+    used_bytes: row.used_bytes ?? null,
+    used_seconds: row.used_seconds ?? null,
+    online_time_limit: row.online_time_limit ?? null,
+    available_time_from_activation: row.available_time_from_activation ?? null,
+    first_used_at: row.first_used_at ?? null,
+  });
+  if (!gate.ok) return { reason: gate.reason, message: gate.message };
+  return null;
+}
 
 export async function syncRmCardToRadius(pool: Pool, card: RmCardRadiusRow): Promise<void> {
   const username = String(card.cardnum ?? "").trim();
   if (!username) return;
   const password = String(card.password ?? "").trim();
-  const disabled = Number(card.active ?? 1) === 0 || Number(card.revoked ?? 0) === 1;
+  const deny = resolveDenyForSync(card);
 
   let packageRate: string | null = null;
   let packagePool: string | null = null;
@@ -38,10 +87,14 @@ export async function syncRmCardToRadius(pool: Pool, card: RmCardRadiusRow): Pro
     await conn.execute(`DELETE FROM radreply WHERE username = ?`, [username]);
     await conn.execute(`DELETE FROM radusergroup WHERE username = ?`, [username]);
 
-    if (disabled) {
+    if (deny) {
       await conn.execute(
         `INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Auth-Type', ':=', 'Reject')`,
         [username]
+      );
+      await conn.execute(
+        `INSERT INTO radreply (username, attribute, op, value) VALUES (?, 'Reply-Message', ':=', ?)`,
+        [username, deny.message.slice(0, 253)]
       );
       await conn.commit();
       return;
@@ -69,10 +122,12 @@ export async function syncRmCardToRadius(pool: Pool, card: RmCardRadiusRow): Pro
         String(card.package_id),
       ]);
     }
-    if (packageRate) {
+
+    const rateLimit = buildMikrotikRateLimit(card, packageRate);
+    if (rateLimit) {
       await conn.execute(
         `INSERT INTO radreply (username, attribute, op, value) VALUES (?, 'Mikrotik-Rate-Limit', ':=', ?)`,
-        [username, packageRate]
+        [username, rateLimit]
       );
     }
     if (packagePool) {
@@ -81,6 +136,16 @@ export async function syncRmCardToRadius(pool: Pool, card: RmCardRadiusRow): Pro
         [username, packagePool]
       );
     }
+
+    const onlineMin = Number(card.online_time_limit ?? 0);
+    if (onlineMin > 0) {
+      const sessionTimeoutSec = String(Math.min(2147483647, onlineMin * 60));
+      await conn.execute(
+        `INSERT INTO radreply (username, attribute, op, value) VALUES (?, 'Session-Timeout', ':=', ?)`,
+        [username, sessionTimeoutSec]
+      );
+    }
+
     const totalMb = Number(card.total_limit_mb ?? 0);
     if (totalMb > 0) {
       const octets = String(Math.floor(totalMb * 1024 * 1024));
@@ -89,6 +154,7 @@ export async function syncRmCardToRadius(pool: Pool, card: RmCardRadiusRow): Pro
         [username, octets]
       );
     }
+
     await conn.commit();
   } catch (e) {
     await conn.rollback();

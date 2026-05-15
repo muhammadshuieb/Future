@@ -10,8 +10,9 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import { withUsageCycleLock } from "../lib/usage-lock.js";
-import { enqueueCoaDisconnect } from "../services/task-queue.service.js";
 import { log } from "../services/logger.service.js";
+import { closeDisconnectedRadacctSessions } from "../services/session-disconnect.service.js";
+import { runPrepaidCardLifecycleCycle } from "../services/prepaid-card-lifecycle.service.js";
 import {
   radiusActiveSubscribers,
   radiusOpenSessions,
@@ -83,63 +84,6 @@ async function closeOpenRadacctSessions(username: string): Promise<void> {
        AND acctstoptime IS NULL`,
     [username]
   );
-}
-
-async function closeDisconnectedRadacctSessions(
-  username: string,
-  tenantId: string,
-  report: DisconnectAllReport | null,
-  reason: string
-): Promise<number> {
-  if (!report || !(await hasTable(pool, "radacct"))) return 0;
-  let closed = 0;
-  for (const item of report.results) {
-    const ok = item.coa.ok || Boolean(item.mikrotik?.ok);
-    if (!ok) {
-      await enqueueCoaDisconnect({
-        tenantId,
-        username,
-        nasIp: item.nas,
-        acctSessionId: item.acctSessionId,
-        framedIp: item.framedIp,
-      }).catch((e) => {
-        console.warn(
-          `[usage-worker] enqueue disconnect retry failed user=${username} nas=${item.nas}: ${
-            e instanceof Error ? e.message : String(e)
-          }`
-        );
-      });
-      console.warn(
-        `[usage-worker] disconnect pending reason=${reason} user=${username} nas=${item.nas} session=${
-          item.acctSessionId ?? "-"
-        } result=${item.coa.message}`
-      );
-      continue;
-    }
-
-    const params: string[] = [username, item.nas];
-    let where = "username = ? AND nasipaddress = ? AND acctstoptime IS NULL";
-    if (item.acctSessionId) {
-      where += " AND acctsessionid = ?";
-      params.push(item.acctSessionId);
-    } else if (item.framedIp) {
-      where += " AND framedipaddress = ?";
-      params.push(item.framedIp);
-    }
-    const [result] = await pool.execute<ResultSetHeader>(
-      `UPDATE radacct
-       SET acctstoptime = NOW(),
-           acctsessiontime = GREATEST(0, TIMESTAMPDIFF(SECOND, acctstarttime, NOW())),
-           acctterminatecause = CASE
-             WHEN COALESCE(acctterminatecause, '') = '' THEN 'Admin-Reset'
-             ELSE acctterminatecause
-           END
-       WHERE ${where}`,
-      params
-    );
-    closed += Number(result?.affectedRows ?? 0);
-  }
-  return closed;
 }
 
 /**
@@ -339,7 +283,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       console.error("[usage-worker] coa on expiry for", username, e);
       return null;
     });
-    await closeDisconnectedRadacctSessions(username, tenantId, report, "expired").catch((e) =>
+    await closeDisconnectedRadacctSessions(pool, username, tenantId, report, "expired").catch((e) =>
       console.error("[usage-worker] radacct close on expiry for", username, e)
     );
     await radius.disableRadiusUser(username);
@@ -381,7 +325,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
         console.error("[usage-worker] coa on overdue invoice for", username, e);
         return null;
       });
-      await closeDisconnectedRadacctSessions(username, tenantId, report, "overdue_invoice").catch((e) =>
+      await closeDisconnectedRadacctSessions(pool, username, tenantId, report, "overdue_invoice").catch((e) =>
         console.error("[usage-worker] radacct close on overdue invoice for", username, e)
       );
       await radius.disableRadiusUser(username).catch((e) =>
@@ -412,7 +356,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     } catch (e) {
       console.error("[usage-worker] coa before quota hard deny for", username, e);
     }
-    await closeDisconnectedRadacctSessions(username, tenantId, report, "quota").catch((e) =>
+    await closeDisconnectedRadacctSessions(pool, username, tenantId, report, "quota").catch((e) =>
       console.error("[usage-worker] radacct close before quota hard deny for", username, e)
     );
     if (report && !report.anyOk) {
@@ -450,8 +394,23 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
   await reconcileSubscriberSessions(pool, tenantId).catch((e) =>
     console.warn("[usage-worker] session reconcile failed", e instanceof Error ? e.message : e)
   );
+
+  let prepaidSummary = {
+    usage_refreshed: 0,
+    expired: 0,
+    quota_exceeded: 0,
+    time_exceeded: 0,
+    disconnect_sent: 0,
+    disconnect_failed: 0,
+  };
+  try {
+    prepaidSummary = await runPrepaidCardLifecycleCycle({ pool, tenantId, coa, radius });
+  } catch (e) {
+    console.error("[usage-worker] prepaid card lifecycle failed", e);
+  }
+
   console.info(
-    `[usage-worker] cycle summary: expired_handled=${expiredHandledCount} overdue_invoice_radius_cleared=${overdueInvoiceDenyCount} quota_suspended=${quotaDeniedCount} stale_policy_closed=${stalePolicy} timed_out=${timedOut}`
+    `[usage-worker] cycle summary: expired_handled=${expiredHandledCount} overdue_invoice_radius_cleared=${overdueInvoiceDenyCount} quota_suspended=${quotaDeniedCount} stale_policy_closed=${stalePolicy} timed_out=${timedOut} prepaid_expired=${prepaidSummary.expired} prepaid_quota=${prepaidSummary.quota_exceeded} prepaid_time=${prepaidSummary.time_exceeded}`
   );
   log.info(
     "usage_cycle_summary",
@@ -462,6 +421,7 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       quota_suspended: quotaDeniedCount,
       stale_policy_closed: stalePolicy,
       timed_out_sessions: timedOut,
+      prepaid: prepaidSummary,
     },
     "usage-worker"
   );

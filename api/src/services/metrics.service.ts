@@ -53,6 +53,31 @@ export const quotaExceededTotal = new Counter({
   registers: [registry],
 });
 
+export const prepaidCardsExpiredTotal = new Counter({
+  name: "futureradius_prepaid_cards_expired_total",
+  help: "Prepaid cards terminated for calendar expiration.",
+  registers: [registry],
+});
+
+export const prepaidCardsQuotaExceededTotal = new Counter({
+  name: "futureradius_prepaid_cards_quota_exceeded_total",
+  help: "Prepaid cards terminated for central quota exhaustion.",
+  registers: [registry],
+});
+
+export const prepaidCardsTimeExceededTotal = new Counter({
+  name: "futureradius_prepaid_cards_time_exceeded_total",
+  help: "Prepaid cards terminated for online or activation window limits.",
+  registers: [registry],
+});
+
+export const prepaidCardsDisconnectTotal = new Counter({
+  name: "futureradius_prepaid_cards_disconnect_total",
+  help: "Prepaid card CoA disconnect batch outcomes.",
+  labelNames: ["result"] as const,
+  registers: [registry],
+});
+
 export const workerStaleSessionsClosedTotal = new Counter({
   name: "futureradius_worker_stale_sessions_closed_total",
   help: "Number of radacct rows closed because they exceeded STALE_SESSION_MINUTES with no Acct-Update.",

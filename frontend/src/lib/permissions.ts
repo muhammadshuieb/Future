@@ -50,3 +50,13 @@ export function canManageSpeedProfiles(
       permissions?.apply_speed_override
   );
 }
+
+/** JWT merged permissions include keys like `financial_reports:view`, `managers:view_wallet`. */
+export function hasIspPermission(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined,
+  key: string
+): boolean {
+  if (role === "admin") return true;
+  return Boolean(permissions?.[key]);
+}

@@ -25,10 +25,14 @@ import {
   assertSubscriberFitsPackageNas,
   tenantNasDeviceIds,
 } from "../lib/package-subscriber-validation.js";
-import { hasColumn } from "../db/schemaGuards.js";
+import { hasColumn, hasTable } from "../db/schemaGuards.js";
+import { requestHasIspPermission } from "../lib/isp-permissions.js";
 import { formatExpirationForDb, parseSubscriptionExpirationInput } from "../lib/expiration-date.js";
 import { loadSubscriberAccessRow } from "../lib/subscriber-access-guard.js";
 import { resolveRadiusSyncDenyReason } from "../lib/radius-sync-deny.js";
+import { withTransaction } from "../db/transaction.js";
+import { logSubscriberManagerAudit } from "../services/subscriber-manager-assignment.service.js";
+import { writeAuditLog } from "../services/audit-log.service.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
@@ -180,21 +184,25 @@ router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (
     return;
   }
   const q = parsed.data;
+  const listFilters = {
+    q: q.q,
+    status_filter: q.status_filter,
+    package_id: q.package_id,
+    nas_server_id: q.nas_server_id,
+    region_id: q.region_id,
+    customer_id: q.customer_id,
+    expiry_from: q.expiry_from,
+    expiry_to: q.expiry_to,
+    quota_status: q.quota_status,
+    debt_status: q.debt_status,
+    ...(req.auth!.role === "manager" && !requestHasIspPermission(req, "subscribers:view_all")
+      ? { responsible_manager_id: req.auth!.sub }
+      : {}),
+  };
   const { rows, total } = await querySubscribersList(
     pool,
     req.auth!.tenantId,
-    {
-      q: q.q,
-      status_filter: q.status_filter,
-      package_id: q.package_id,
-      nas_server_id: q.nas_server_id,
-      region_id: q.region_id,
-      customer_id: q.customer_id,
-      expiry_from: q.expiry_from,
-      expiry_to: q.expiry_to,
-      quota_status: q.quota_status,
-      debt_status: q.debt_status,
-    },
+    listFilters,
     {
       sort_key: q.sort_key,
       sort_dir: q.sort_dir,
@@ -287,6 +295,24 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   const pendingPayment = exp === undefined;
   const expFragment = exp === null ? "NULL" : exp === undefined ? "CURDATE()" : "?";
   const profileParts = await subscriberProfileInsertParts(body);
+  const mgrFragment: { columns: string[]; values: unknown[]; placeholders: string[] } = {
+    columns: [],
+    values: [],
+    placeholders: [],
+  };
+  if ((await hasColumn(pool, "subscribers", "created_by_manager_id")) && req.auth?.role === "manager") {
+    mgrFragment.columns.push(
+      "created_by_manager_id",
+      "responsible_manager_id",
+      "assigned_manager_id",
+      "last_renewed_by_manager_id",
+      "manager_assigned_at",
+      "manager_assignment_source"
+    );
+    mgrFragment.placeholders.push("?", "?", "?", "?", "?", "?");
+    const sid = req.auth!.sub;
+    mgrFragment.values.push(sid, sid, sid, sid, new Date(), "created");
+  }
   const baseColumns = ["id", "tenant_id", "customer_id", "package_id"];
   const baseValues: unknown[] = [id, tenantId, body.customer_id ?? null, body.package_id ?? null];
   const withNas = await hasColumn(pool, "subscribers", "nas_server_id");
@@ -299,15 +325,23 @@ router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccounta
   if (exp !== null && exp !== undefined) {
     baseValues.push(exp);
   }
-  const allColumns = [...baseColumns, ...profileParts.columns];
+  const allColumns = [...baseColumns, ...profileParts.columns, ...mgrFragment.columns];
   const allPlaceholders = [
     ...baseColumns.map((c) => (c === "expiration_date" ? expFragment : "?")),
     ...profileParts.placeholders,
+    ...mgrFragment.placeholders,
   ];
   await pool.execute(
     `INSERT INTO subscribers (${allColumns.join(", ")}) VALUES (${allPlaceholders.join(", ")})`,
-    [...baseValues, ...profileParts.values] as Array<string | number | null>
+    [...baseValues, ...profileParts.values, ...mgrFragment.values] as Array<string | number | null>
   );
+  if (mgrFragment.columns.length && (await hasTable(pool, "subscriber_manager_audit"))) {
+    await pool.execute(
+      `INSERT INTO subscriber_manager_audit (id, tenant_id, subscriber_id, old_manager_id, new_manager_id, reason, source, changed_by)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [randomUUID(), tenantId, id, null, req.auth!.sub, null, "created", req.auth!.sub]
+    );
+  }
   await pool.execute(
     `INSERT INTO subscriber_credentials (subscriber_id, tenant_id, password) VALUES (?, ?, ?)`,
     [id, tenantId, body.password as string]
@@ -698,6 +732,131 @@ router.post(
       return;
     }
     res.json({ ok: true });
+  }
+);
+
+router.patch(
+  "/:id/responsible-manager",
+  requireRole("admin", "manager"),
+  denyViewerWrites,
+  denyAccountant,
+  async (req, res, next) => {
+    try {
+      if (!requestHasIspPermission(req, "subscribers:assign_manager")) {
+        res.status(403).json({ error: "forbidden", detail: "subscribers:assign_manager" });
+        return;
+      }
+      const body = z
+        .object({
+          responsible_manager_id: z.string().uuid(),
+          reason: z.string().min(1).max(500),
+        })
+        .safeParse(req.body);
+      if (!body.success) {
+        res.status(400).json({ error: "invalid_body" });
+        return;
+      }
+      if (!(await hasColumn(pool, "subscribers", "responsible_manager_id"))) {
+        res.status(503).json({ error: "schema_missing" });
+        return;
+      }
+      const tenantId = req.auth!.tenantId;
+      const subscriberId = req.params.id;
+      const newMgrId = body.data.responsible_manager_id;
+      const actorId = req.auth!.sub;
+
+      const [mgrRows] = await pool.query<RowDataPacket[]>(
+        `SELECT u.id
+         FROM users u
+         INNER JOIN user_roles ur ON ur.user_id = u.id
+         INNER JOIN roles r ON r.id = ur.role_id AND r.name = 'manager'
+         WHERE u.id = ? AND u.tenant_id = ?
+         LIMIT 1`,
+        [newMgrId, tenantId]
+      );
+      if (!mgrRows[0]) {
+        res.status(400).json({ error: "invalid_manager" });
+        return;
+      }
+
+      await withTransaction(async (conn) => {
+        const [subRows] = await conn.query<RowDataPacket[]>(
+          `SELECT id, responsible_manager_id, created_by_manager_id
+           FROM subscribers
+           WHERE id = ? AND tenant_id = ?
+           LIMIT 1 FOR UPDATE`,
+          [subscriberId, tenantId]
+        );
+        const sub = subRows[0];
+        if (!sub) {
+          throw Object.assign(new Error("not_found"), { code: 404 });
+        }
+        const oldResp =
+          sub.responsible_manager_id != null ? String(sub.responsible_manager_id) : null;
+        const createdBy =
+          (await hasColumn(pool, "subscribers", "created_by_manager_id")) &&
+          sub.created_by_manager_id != null
+            ? String(sub.created_by_manager_id)
+            : null;
+
+        if (req.auth!.role === "manager" && !requestHasIspPermission(req, "subscribers:view_all")) {
+          const owns =
+            (oldResp != null && oldResp === actorId) || (createdBy != null && createdBy === actorId);
+          if (!owns) {
+            throw Object.assign(new Error("forbidden_scope"), { code: 403 });
+          }
+        }
+
+        await conn.execute(
+          `UPDATE subscribers SET
+             responsible_manager_id = ?,
+             manager_assigned_at = CURRENT_TIMESTAMP(3),
+             manager_assignment_source = 'manual_admin',
+             updated_at = CURRENT_TIMESTAMP(3)
+           WHERE id = ? AND tenant_id = ?`,
+          [newMgrId, subscriberId, tenantId]
+        );
+
+        await logSubscriberManagerAudit(conn, {
+          tenantId,
+          subscriberId,
+          oldManagerId: oldResp,
+          newManagerId: newMgrId,
+          source: "manual_admin",
+          reason: body.data.reason,
+          changedBy: actorId,
+        });
+      });
+
+      await writeFinancialAudit(pool, {
+        tenantId,
+        staffId: actorId,
+        action: "subscriber_responsible_manager_transfer",
+        entityType: "subscribers",
+        entityId: subscriberId,
+        payload: { new_manager_id: newMgrId, reason: body.data.reason },
+        ip: req.ip,
+      });
+      await writeAuditLog(pool, {
+        tenantId,
+        staffId: actorId,
+        action: "subscriber_responsible_manager_transfer",
+        entityType: "subscribers",
+        entityId: subscriberId,
+        payload: { new_manager_id: newMgrId, reason: body.data.reason },
+      });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e && typeof e === "object" && "code" in e && (e as { code?: number }).code === 404) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (e && typeof e === "object" && "code" in e && (e as { code?: number }).code === 403) {
+        res.status(403).json({ error: "forbidden", detail: "subscriber_scope" });
+        return;
+      }
+      next(e);
+    }
   }
 );
 

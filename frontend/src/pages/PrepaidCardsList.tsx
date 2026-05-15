@@ -22,13 +22,34 @@ type CardRow = {
   cardtype: number;
   revoked: number;
   active: number;
-  status?: "active" | "expired" | "disabled";
+  status?: "active" | "expired" | "disabled" | "consumed";
+  lifecycle_status?: string;
+  used_bytes?: string | null;
+  remaining_bytes?: string | null;
+  used_seconds?: number | null;
+  remaining_seconds?: number | null;
+  first_used_at?: string | null;
+  last_used_at?: string | null;
+  expired_at?: string | null;
+  finished_at?: string | null;
+  terminate_reason?: string | null;
+  last_disconnect_status?: string | null;
   srvid?: number;
   service_name: string;
 };
 type CardStats = {
   total_limit_mb?: number;
   usage_bytes?: string;
+  remaining_bytes?: string | null;
+  used_seconds?: number;
+  remaining_seconds?: number | null;
+  first_used_at?: string | null;
+  expires_at?: string | null;
+  expired_at?: string | null;
+  finished_at?: string | null;
+  terminate_reason?: string | null;
+  last_disconnect_status?: string | null;
+  lifecycle_status?: string | null;
   daily_total_bytes?: string;
   monthly_total_bytes?: string;
   sessions?: Array<{
@@ -92,7 +113,14 @@ export function PrepaidCardsListPage() {
       { key: "type", label: t("prepaid.cardsList.colType"), defaultVisible: false },
       { key: "generated_on", label: t("prepaid.cardsList.colGenerated"), defaultVisible: false },
       { key: "valid_till", label: t("prepaid.cardsList.colValidTill") },
-      { key: "status", label: t("users.status") },
+      { key: "used_bytes", label: "البيانات المستخدمة", defaultVisible: true },
+      { key: "remaining_bytes", label: "البيانات المتبقية", defaultVisible: true },
+      { key: "used_seconds", label: "وقت الاستخدام", defaultVisible: false },
+      { key: "remaining_seconds", label: "الوقت المتبقي", defaultVisible: false },
+      { key: "first_used_at", label: "أول استخدام", defaultVisible: false },
+      { key: "status", label: "الحالة" },
+      { key: "terminate_reason", label: "سبب الإنهاء", defaultVisible: false },
+      { key: "last_disconnect", label: "آخر فصل", defaultVisible: false },
     ],
     [t]
   );
@@ -398,9 +426,30 @@ export function PrepaidCardsListPage() {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) return false;
     return exp < getTodayLocalIsoDate();
   }
-  function getCardVisualState(row: CardRow): "disabled" | "expired" | "active" {
+  function fmtSec(sec: number | null | undefined): string {
+    const s = Math.max(0, Number(sec ?? 0));
+    if (s <= 0) return "—";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}س ${m}د` : `${m}د`;
+  }
+  function terminateReasonAr(reason: string | null | undefined): string {
+    const map: Record<string, string> = {
+      calendar_expired: "البطاقة منتهية",
+      quota_exceeded: "انتهت كمية البيانات",
+      online_time_exceeded: "انتهت مدة الاستخدام",
+      activation_window_expired: "تم استهلاك البطاقة",
+      consumed: "تم استهلاك البطاقة",
+      expired: "البطاقة منتهية",
+      disabled: "البطاقة معطّلة",
+    };
+    return map[String(reason ?? "")] ?? (reason ? String(reason) : "—");
+  }
+  function getCardVisualState(row: CardRow): "disabled" | "expired" | "active" | "consumed" {
+    const lc = String(row.lifecycle_status ?? row.status ?? "").toLowerCase();
+    if (lc === "consumed") return "consumed";
     if (isDisabled(row)) return "disabled";
-    if (isExpiredByDate(row.expiration)) return "expired";
+    if (lc === "expired" || isExpiredByDate(row.expiration)) return "expired";
     return "active";
   }
   async function toggleCardStatus(row: CardRow) {
@@ -685,7 +734,14 @@ export function PrepaidCardsListPage() {
               {prepaidColumnVisibility.isVisible("type") ? <th className="px-2 py-2">{t("prepaid.cardsList.colType")}</th> : null}
               {prepaidColumnVisibility.isVisible("generated_on") ? header(t("prepaid.cardsList.colGenerated"), "generated_on") : null}
               {prepaidColumnVisibility.isVisible("valid_till") ? header(t("prepaid.cardsList.colValidTill"), "valid_till") : null}
-              {prepaidColumnVisibility.isVisible("status") ? header(t("users.status"), "status") : null}
+              {prepaidColumnVisibility.isVisible("used_bytes") ? header("البيانات المستخدمة", "used_bytes") : null}
+              {prepaidColumnVisibility.isVisible("remaining_bytes") ? header("البيانات المتبقية", "remaining_bytes") : null}
+              {prepaidColumnVisibility.isVisible("used_seconds") ? header("وقت الاستخدام", "used_seconds") : null}
+              {prepaidColumnVisibility.isVisible("remaining_seconds") ? header("الوقت المتبقي", "remaining_seconds") : null}
+              {prepaidColumnVisibility.isVisible("first_used_at") ? header("أول استخدام", "first_used_at") : null}
+              {prepaidColumnVisibility.isVisible("status") ? header("الحالة", "status") : null}
+              {prepaidColumnVisibility.isVisible("terminate_reason") ? header("سبب الإنهاء", "terminate_reason") : null}
+              {prepaidColumnVisibility.isVisible("last_disconnect") ? header("آخر فصل", "last_disconnect") : null}
               <th className="px-2 py-2">{t("common.actions")}</th>
             </tr>
           </thead>
@@ -716,6 +772,23 @@ export function PrepaidCardsListPage() {
                 {prepaidColumnVisibility.isVisible("type") ? <td className="px-2 py-1">{r.cardtype === 1 ? t("prepaid.cardsList.typeRefill") : t("prepaid.cardsList.typeClassic")}</td> : null}
                 {prepaidColumnVisibility.isVisible("generated_on") ? <td className="px-2 py-1">{String(r.date ?? "").slice(0, 10)}</td> : null}
                 {prepaidColumnVisibility.isVisible("valid_till") ? <td className="px-2 py-1">{String(r.expiration ?? "").slice(0, 10)}</td> : null}
+                {prepaidColumnVisibility.isVisible("used_bytes") ? (
+                  <td className="px-2 py-1 font-mono text-xs">{fmtBytes(Number(r.used_bytes ?? 0))}</td>
+                ) : null}
+                {prepaidColumnVisibility.isVisible("remaining_bytes") ? (
+                  <td className="px-2 py-1 font-mono text-xs">
+                    {r.remaining_bytes != null ? fmtBytes(Number(r.remaining_bytes)) : "—"}
+                  </td>
+                ) : null}
+                {prepaidColumnVisibility.isVisible("used_seconds") ? (
+                  <td className="px-2 py-1">{fmtSec(r.used_seconds)}</td>
+                ) : null}
+                {prepaidColumnVisibility.isVisible("remaining_seconds") ? (
+                  <td className="px-2 py-1">{fmtSec(r.remaining_seconds)}</td>
+                ) : null}
+                {prepaidColumnVisibility.isVisible("first_used_at") ? (
+                  <td className="px-2 py-1 text-xs">{r.first_used_at ? String(r.first_used_at).slice(0, 19) : "—"}</td>
+                ) : null}
                 {prepaidColumnVisibility.isVisible("status") ? <td className="px-2 py-1">
                   {(() => {
                     const visualState = getCardVisualState(r);
@@ -731,14 +804,22 @@ export function PrepaidCardsListPage() {
                     )}
                   >
                     {visualState === "disabled"
-                      ? t("prepaid.status.disabled")
-                      : visualState === "active"
-                        ? t("prepaid.status.active")
-                        : t("prepaid.status.expired")}
+                      ? "معطّلة"
+                      : visualState === "consumed"
+                        ? "مستهلكة"
+                        : visualState === "active"
+                          ? "نشطة"
+                          : "منتهية"}
                   </span>
                     );
                   })()}
                 </td> : null}
+                {prepaidColumnVisibility.isVisible("terminate_reason") ? (
+                  <td className="px-2 py-1 text-xs">{terminateReasonAr(r.terminate_reason)}</td>
+                ) : null}
+                {prepaidColumnVisibility.isVisible("last_disconnect") ? (
+                  <td className="px-2 py-1 text-xs font-mono">{r.last_disconnect_status ?? "—"}</td>
+                ) : null}
                 <td className="px-2 py-1">
                   <Button
                     type="button"

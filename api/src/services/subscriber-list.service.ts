@@ -14,6 +14,8 @@ export type SubscriberListFilters = {
   expiry_to?: string;
   quota_status?: "all" | "ok" | "exhausted";
   debt_status?: "all" | "overdue" | "clean";
+  /** When set, only subscribers assigned to this manager (ISP scope). */
+  responsible_manager_id?: string;
 };
 
 export type SubscriberListSort = {
@@ -224,6 +226,11 @@ export async function querySubscribersList(
 
   const where: string[] = ["s.tenant_id = ?"];
   const params: unknown[] = [tenantId];
+
+  if (filters.responsible_manager_id && (await hasColumn(pool, "subscribers", "responsible_manager_id"))) {
+    where.push("s.responsible_manager_id = ?");
+    params.push(filters.responsible_manager_id);
+  }
 
   const q = (filters.q ?? "").trim();
   if (q) {

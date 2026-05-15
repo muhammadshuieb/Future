@@ -84,6 +84,13 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
      ON DUPLICATE KEY UPDATE tenant_id = tenant_id`,
     [tenantId]
   );
+  try {
+    await pool.query(
+      `ALTER TABLE system_settings ADD COLUMN subscriber_manager_assignment_mode VARCHAR(32) NOT NULL DEFAULT 'latest_renewal_owner'`
+    );
+  } catch {
+    /* column exists */
+  }
 }
 
 function normalizePhone(raw: string | null | undefined): string {
