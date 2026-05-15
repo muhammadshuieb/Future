@@ -27,6 +27,7 @@ type Settings = {
   usage_alert_thresholds: number[];
   company_name: string;
   emoji_image_url: string;
+  emoji_image_preview_url?: string;
   attach_emoji_image: boolean;
 };
 
@@ -56,6 +57,7 @@ export function WhatsAppConnectionPage() {
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadingEmoji, setUploadingEmoji] = useState(false);
   const [testing, setTesting] = useState(false);
   const [autoConfiguring, setAutoConfiguring] = useState(false);
 
@@ -180,6 +182,25 @@ export function WhatsAppConnectionPage() {
     if (!status.enabled) return t("dash.disabled");
     return status.connected ? t("dash.connected") : t("dash.disconnected");
   }, [status, t]);
+
+  async function uploadEmojiImage(file: File) {
+    setUploadingEmoji(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const r = await apiFetch("/api/whatsapp/emoji-image", { method: "POST", body: form });
+      if (!r.ok) throw new Error(await readApiError(r));
+      const data = (await r.json()) as { settings: Settings };
+      setSettings(data.settings);
+      setInfo(t("whatsapp.emojiUploaded"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadingEmoji(false);
+    }
+  }
 
   async function saveSettings() {
     setSaving(true);
@@ -336,12 +357,28 @@ export function WhatsAppConnectionPage() {
             onChange={(e) => setSettings((s) => ({ ...s, company_name: e.target.value }))}
             placeholder={t("whatsapp.companyNamePlaceholder")}
           />
-          <TextField
-            label={t("whatsapp.emojiImageUrl")}
-            value={settings.emoji_image_url}
-            onChange={(e) => setSettings((s) => ({ ...s, emoji_image_url: e.target.value }))}
-            placeholder="https://example.com/emoji.png"
-          />
+          <div className="space-y-2">
+            <label className="block text-sm font-medium">{t("whatsapp.emojiImageUpload")}</label>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              disabled={uploadingEmoji}
+              className="block w-full text-sm file:me-3 file:rounded-lg file:border-0 file:bg-[hsl(var(--primary))] file:px-3 file:py-2 file:text-sm file:font-medium file:text-[hsl(var(--primary-foreground))]"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void uploadEmojiImage(file);
+                e.target.value = "";
+              }}
+            />
+            {uploadingEmoji ? <p className="text-xs opacity-60">{t("common.loading")}</p> : null}
+            {(settings.emoji_image_preview_url || settings.emoji_image_url) ? (
+              <img
+                src={settings.emoji_image_preview_url || settings.emoji_image_url}
+                alt=""
+                className="h-20 w-20 rounded-lg border border-[hsl(var(--border))] object-contain bg-white/5 p-1"
+              />
+            ) : null}
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

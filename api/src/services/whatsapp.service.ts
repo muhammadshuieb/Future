@@ -5,6 +5,11 @@ import { config } from "../config.js";
 import { hasColumn, hasTable } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
+import {
+  resolveEmojiPublicUrl,
+  resolveWahaEmojiFetchUrl,
+  saveWhatsAppEmojiImage,
+} from "../lib/whatsapp-assets.js";
 
 type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
 type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid" | "financial_report";
@@ -72,6 +77,8 @@ export type WhatsAppSettingsView = {
   usage_alert_thresholds: number[];
   company_name: string;
   emoji_image_url: string;
+  /** Browser-ready URL for preview (absolute when stored as relative path). */
+  emoji_image_preview_url: string;
   attach_emoji_image: boolean;
 };
 
@@ -303,6 +310,24 @@ async function ensureSchema(): Promise<void> {
         ),
         'SELECT 1',
         'ALTER TABLE whatsapp_templates MODIFY COLUMN template_key ENUM(''new_account'',''expiry_soon'',''payment_due'',''usage_threshold'',''invoice_paid'') NOT NULL'
+      )
+    );
+  `);
+  await pool.query(`PREPARE stmt FROM @sql`);
+  await pool.query(`EXECUTE stmt`);
+  await pool.query(`DEALLOCATE PREPARE stmt`);
+  await pool.query(`
+    SET @sql = (
+      SELECT IF(
+        EXISTS (
+          SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'whatsapp_message_logs'
+            AND COLUMN_NAME = 'template_key'
+            AND DATA_TYPE = 'enum'
+        ),
+        'ALTER TABLE whatsapp_message_logs MODIFY COLUMN template_key VARCHAR(64) NULL',
+        'SELECT 1'
       )
     );
   `);
@@ -551,7 +576,7 @@ async function deliverWhatsAppMessage(
   phone: string,
   text: string
 ): Promise<{ providerId: string | null }> {
-  const imageUrl = String(settings.emoji_image_url ?? "").trim();
+  const imageUrl = resolveWahaEmojiFetchUrl(settings.emoji_image_url);
   const attachEmoji = Boolean(Number(settings.attach_emoji_image ?? 0)) && imageUrl.length > 0;
   let lastId: string | null = null;
   if (attachEmoji) {
@@ -881,8 +906,24 @@ export async function getWhatsAppSettings(tenantId: string): Promise<WhatsAppSet
     usage_alert_thresholds: parseUsageThresholds(settings.usage_alert_thresholds),
     company_name: String(settings.company_name ?? ""),
     emoji_image_url: String(settings.emoji_image_url ?? ""),
+    emoji_image_preview_url: resolveEmojiPublicUrl(settings.emoji_image_url),
     attach_emoji_image: Boolean(Number(settings.attach_emoji_image ?? 0)),
   };
+}
+
+export async function uploadWhatsAppEmojiImage(
+  tenantId: string,
+  buffer: Buffer,
+  mimetype: string
+): Promise<WhatsAppSettingsView> {
+  await ensureSchema();
+  await ensureTenantDefaults(tenantId);
+  const relPath = await saveWhatsAppEmojiImage(tenantId, buffer, mimetype);
+  await pool.execute(
+    `UPDATE whatsapp_settings SET emoji_image_url = ?, attach_emoji_image = 1 WHERE tenant_id = ?`,
+    [relPath, tenantId]
+  );
+  return getWhatsAppSettings(tenantId);
 }
 
 export async function updateWhatsAppSettings(

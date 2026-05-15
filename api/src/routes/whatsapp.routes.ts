@@ -1,6 +1,9 @@
 import { Router } from "express";
+import multer from "multer";
+import fs from "fs";
 import { z } from "zod";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { resolveEmojiAssetFile } from "../lib/whatsapp-assets.js";
 import {
   applyProfessionalArabicTemplates,
   deleteWhatsAppLogs,
@@ -17,7 +20,39 @@ import {
   testWhatsAppConnection,
   updateWhatsAppSettings,
   updateWhatsAppTemplate,
+  uploadWhatsAppEmojiImage,
 } from "../services/whatsapp.service.js";
+
+const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Public asset route — WAHA fetches emoji images without auth. */
+export const whatsappAssetRoutes = Router();
+whatsappAssetRoutes.get("/assets/:tenantId/emoji.:ext", (req, res) => {
+  const tenantId = String(req.params.tenantId ?? "");
+  const ext = String(req.params.ext ?? "");
+  if (!uuidRe.test(tenantId)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const filePath = resolveEmojiAssetFile(tenantId, ext);
+  if (!filePath || !fs.existsSync(filePath)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: "not_found" });
+  });
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.mimetype);
+    if (ok) cb(null, true);
+    else cb(new Error("invalid_image_type"));
+  },
+});
 
 const router = Router();
 router.use(requireAuth);
@@ -81,6 +116,26 @@ router.put("/settings", async (req, res) => {
   } catch (e) {
     console.error("whatsapp save settings", e);
     res.status(500).json({ error: "whatsapp_settings_save_failed" });
+  }
+});
+
+router.post("/emoji-image", upload.single("image"), async (req, res) => {
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ error: "invalid_image" });
+    return;
+  }
+  try {
+    const settings = await uploadWhatsAppEmojiImage(req.auth!.tenantId, file.buffer, file.mimetype);
+    res.json({ settings });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("whatsapp emoji upload", e);
+    if (msg === "invalid_image_type") {
+      res.status(400).json({ error: "invalid_image_type" });
+      return;
+    }
+    res.status(500).json({ error: "whatsapp_emoji_upload_failed" });
   }
 });
 

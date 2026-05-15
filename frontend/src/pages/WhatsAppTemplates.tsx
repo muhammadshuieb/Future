@@ -40,8 +40,10 @@ export function WhatsAppTemplatesPage() {
     usage_alert_thresholds: [10, 20, 30, 50] as number[],
     company_name: "",
     emoji_image_url: "",
+    emoji_image_preview_url: "",
     attach_emoji_image: false,
   });
+  const [uploadingEmoji, setUploadingEmoji] = useState(false);
 
   function looksCorrupted(body: string): boolean {
     const qCount = (body.match(/\?/g) || []).length;
@@ -63,6 +65,7 @@ export function WhatsAppTemplatesPage() {
           settings: {
             company_name?: string;
             emoji_image_url?: string;
+            emoji_image_preview_url?: string;
             attach_emoji_image?: boolean;
             reminder_days?: number;
             message_interval_seconds?: number;
@@ -82,6 +85,7 @@ export function WhatsAppTemplatesPage() {
           usage_alert_thresholds: cfg.settings.usage_alert_thresholds ?? [10, 20, 30, 50],
           company_name: cfg.settings.company_name ?? "",
           emoji_image_url: cfg.settings.emoji_image_url ?? "",
+          emoji_image_preview_url: cfg.settings.emoji_image_preview_url ?? "",
           attach_emoji_image: Boolean(cfg.settings.attach_emoji_image),
         });
       }
@@ -132,6 +136,32 @@ export function WhatsAppTemplatesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function uploadEmojiImage(file: File) {
+    setUploadingEmoji(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const r = await apiFetch("/api/whatsapp/emoji-image", { method: "POST", body: form });
+      if (!r.ok) throw new Error(await readApiError(r));
+      const data = (await r.json()) as {
+        settings: { emoji_image_url?: string; emoji_image_preview_url?: string; attach_emoji_image?: boolean };
+      };
+      setWaSettings((s) => ({
+        ...s,
+        emoji_image_url: data.settings.emoji_image_url ?? "",
+        emoji_image_preview_url: data.settings.emoji_image_preview_url ?? "",
+        attach_emoji_image: Boolean(data.settings.attach_emoji_image),
+      }));
+      setInfo(t("whatsapp.emojiUploaded"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadingEmoji(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -229,12 +259,28 @@ export function WhatsAppTemplatesPage() {
           onChange={(e) => setWaSettings((s) => ({ ...s, company_name: e.target.value }))}
           placeholder={t("whatsapp.companyNamePlaceholder")}
         />
-        <TextField
-          label={t("whatsapp.emojiImageUrl")}
-          value={waSettings.emoji_image_url}
-          onChange={(e) => setWaSettings((s) => ({ ...s, emoji_image_url: e.target.value }))}
-          placeholder="https://example.com/emoji.png"
-        />
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">{t("whatsapp.emojiImageUpload")}</label>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            disabled={uploadingEmoji}
+            className="block w-full text-sm file:me-3 file:rounded-lg file:border-0 file:bg-[hsl(var(--primary))] file:px-3 file:py-2 file:text-sm file:font-medium file:text-[hsl(var(--primary-foreground))]"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void uploadEmojiImage(file);
+              e.target.value = "";
+            }}
+          />
+          {uploadingEmoji ? <p className="text-xs opacity-60">{t("common.loading")}</p> : null}
+          {(waSettings.emoji_image_preview_url || waSettings.emoji_image_url) ? (
+            <img
+              src={waSettings.emoji_image_preview_url || waSettings.emoji_image_url}
+              alt=""
+              className="h-20 w-20 rounded-lg border border-[hsl(var(--border))] object-contain bg-white/5 p-1"
+            />
+          ) : null}
+        </div>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
