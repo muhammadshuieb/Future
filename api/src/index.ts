@@ -47,6 +47,8 @@ import qoeRoutes from "./routes/qoe.routes.js";
 import resellersRoutes from "./routes/resellers.routes.js";
 import resellerPortalRoutes from "./routes/reseller-portal.routes.js";
 import radiusMonitorRoutes from "./routes/radius-monitor.routes.js";
+import rmCardsRoutes from "./routes/rm-cards.routes.js";
+import { ensureRmCardsTable } from "./services/rm-cards.service.js";
 import { metricsMiddleware } from "./middleware/metrics.middleware.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
 import {
@@ -251,6 +253,7 @@ app.use("/api/qoe", qoeRoutes);
 app.use("/api/resellers", resellersRoutes);
 app.use("/api/reseller-portal", resellerPortalRoutes);
 app.use("/api/radius-monitor", radiusMonitorRoutes);
+app.use("/api/rm-cards", rmCardsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
 // Must be declared AFTER all routes.
@@ -390,6 +393,11 @@ async function start() {
     await ensureDynamicSpeedTables(pool);
   } catch (error) {
     console.error("[bootstrap] dynamic speed schema ensure failed", error);
+  }
+  try {
+    await ensureRmCardsTable(pool);
+  } catch (error) {
+    console.error("[bootstrap] rm_cards schema ensure failed", error);
   }
   // From this point `server_logs` should exist — flush anything buffered.
   markDbReady();

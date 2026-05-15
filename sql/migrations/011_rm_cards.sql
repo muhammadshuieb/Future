@@ -1,0 +1,30 @@
+-- Prepaid recharge cards (MikroTik / hotspot style) for Future Radius admin UI.
+
+CREATE TABLE IF NOT EXISTS rm_cards (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tenant_id CHAR(36) NOT NULL,
+  series VARCHAR(64) NOT NULL,
+  cardnum VARCHAR(64) NOT NULL,
+  password VARCHAR(64) NOT NULL,
+  card_type TINYINT NOT NULL DEFAULT 0 COMMENT '0=classic 1=refill',
+  value DECIMAL(14,2) NOT NULL DEFAULT 0,
+  package_id CHAR(36) NULL,
+  expiration DATE NOT NULL,
+  generated_on DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  download_limit_mb INT NOT NULL DEFAULT 0,
+  upload_limit_mb INT NOT NULL DEFAULT 0,
+  total_limit_mb INT NOT NULL DEFAULT 0,
+  online_time_limit INT NOT NULL DEFAULT 0,
+  available_time_from_activation INT NOT NULL DEFAULT 0,
+  simultaneous_use INT NOT NULL DEFAULT 1,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  revoked TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_rm_cards_tenant_cardnum (tenant_id, cardnum),
+  KEY idx_rm_cards_tenant_series (tenant_id, series),
+  KEY idx_rm_cards_tenant_package (tenant_id, package_id),
+  KEY idx_rm_cards_tenant_expiration (tenant_id, expiration),
+  CONSTRAINT fk_rm_cards_package FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

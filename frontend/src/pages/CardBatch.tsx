@@ -135,7 +135,7 @@ export function CardBatchPage() {
         prefix,
         pin_length: Math.max(4, Math.min(16, Math.floor(pinLength) || 6)),
         password_length: Math.max(4, Math.min(8, Math.floor(passLength) || 6)),
-        service_id: Number.parseInt(String(packageId), 10) || 0,
+        package_id: packageId,
         download_limit_mb: Number(downLimit) || 0,
         upload_limit_mb: Number(upLimit) || 0,
         total_limit_mb: Number(totalLimit) || 0,
