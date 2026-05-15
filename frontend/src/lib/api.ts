@@ -180,11 +180,22 @@ export async function streamMaintenanceUpdateRun(
   return { ok: true };
 }
 
+/** True when the server body is an Express default HTML page (e.g. missing route on an older API build). */
+function looksLikeExpressHtmlErrorPage(raw: string): boolean {
+  const s = raw.trim();
+  if (/^<!doctype\s+html/i.test(s)) return true;
+  if (/<html[\s>]/i.test(s) && /<\/html>/i.test(s)) return true;
+  return false;
+}
+
 /** ترجمة أخطاء شائعة للواجهة العربية/الإنجليزية */
 export function formatStaffApiError(status: number, raw: string, t: (key: string) => string): string {
   if (status === 401) return t("api.error_401");
   if (status === 403) return t("api.error_403");
   const low = raw.toLowerCase();
+  if (looksLikeExpressHtmlErrorPage(raw) || /cannot\s+get\s+\//i.test(raw)) {
+    return t("api.error_api_outdated");
+  }
   if (low.includes("billing_tables_missing") || low.includes("invoices_table_missing")) {
     return t("api.error_billing_tables");
   }

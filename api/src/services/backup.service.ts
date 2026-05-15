@@ -290,6 +290,17 @@ async function ensureScheduleColumns(): Promise<void> {
   }
 }
 
+/** Ensures a settings row exists so schedule fields (e.g. last_scheduled_slot) persist across ticks. */
+async function ensureBackupRcloneSettingsRow(tenantId: string): Promise<void> {
+  await ensureBackupSchema();
+  await ensureScheduleColumns();
+  await pool.execute(
+    `INSERT INTO backup_rclone_settings (tenant_id, enabled) VALUES (?, 0)
+     ON DUPLICATE KEY UPDATE tenant_id = VALUES(tenant_id)`,
+    [tenantId]
+  );
+}
+
 async function gzipFile(inputPath: string, outputPath: string): Promise<void> {
   await pipeline(createReadStream(inputPath), createGzip({ level: 6 }), createWriteStream(outputPath));
 }
@@ -1062,9 +1073,21 @@ export async function deleteBackupRunsBulk(
   return { requested: uniq.length, deleted };
 }
 
+/** BullMQ repeat interval for `backup-scheduler` (same default used to widen slot matching). */
+export function getBackupSchedulerPollMs(): number {
+  const n = parseInt(process.env.BACKUP_SCHEDULER_POLL_MS?.trim() ?? "", 10);
+  return Number.isFinite(n) && n >= 300_000 ? n : 600_000;
+}
+
+function slotMatchWindowMinutes(): number {
+  const pollMin = Math.ceil(getBackupSchedulerPollMs() / 60_000);
+  return Math.min(15, Math.max(5, pollMin + 2));
+}
+
 export async function maybeRunScheduledBackup(tenantId: string, timeZone: string): Promise<void> {
   await ensureBackupSchema();
   await ensureScheduleColumns();
+  await ensureBackupRcloneSettingsRow(tenantId);
   const settings = await getRcloneSettings(tenantId);
   if (!settings.scheduleEnabled) return;
 
@@ -1077,12 +1100,13 @@ export async function maybeRunScheduledBackup(tenantId: string, timeZone: string
 
   const now = new Date();
   const { date, hm } = localDateAndHmInZone(now, timeZone);
-  const cur = hhmmToMinutes(hm);
+  const cur = hhmmToMinutes(normalizeHm(hm));
   if (cur < 0) return;
 
+  const win = slotMatchWindowMinutes();
   const matches = slots.filter((slot) => {
     const s = hhmmToMinutes(slot);
-    return s >= 0 && Math.abs(cur - s) <= 5;
+    return s >= 0 && Math.abs(cur - s) <= win;
   });
   if (matches.length === 0) return;
 
@@ -1090,10 +1114,16 @@ export async function maybeRunScheduledBackup(tenantId: string, timeZone: string
     const key = `${date}|${slot}`;
     if (settings.lastScheduledSlot === key) continue;
     await runDatabaseBackup({ tenantId, triggeredBy: "system" });
-    await pool.execute(
+    const [upd] = await pool.execute(
       `UPDATE backup_rclone_settings SET last_scheduled_slot = ? WHERE tenant_id = ?`,
       [key, tenantId]
     );
+    const affected = (upd as { affectedRows?: number }).affectedRows ?? 0;
+    if (affected === 0) {
+      console.warn(
+        `[backup] last_scheduled_slot not persisted for tenant ${tenantId}; check backup_rclone_settings row`
+      );
+    }
     return;
   }
 }

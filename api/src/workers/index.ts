@@ -24,6 +24,7 @@ import {
   mysqlPoolConnections,
 } from "../services/metrics.service.js";
 import { dispatchWorkerJob } from "./dispatch-worker-job.js";
+import { getBackupSchedulerPollMs } from "../services/backup.service.js";
 
 /**
  * Worker /metrics on WORKER_METRICS_PORT (default 9101).
@@ -163,7 +164,7 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await replaceRepeatablesByName("daily-backup");
   await replaceRepeatablesByName("backup-scheduler");
-  await add("backup-scheduler", 5 * 60 * 1000);
+  await add("backup-scheduler", getBackupSchedulerPollMs());
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
