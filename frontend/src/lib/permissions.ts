@@ -60,3 +60,19 @@ export function hasIspPermission(
   if (role === "admin") return true;
   return Boolean(permissions?.[key]);
 }
+
+export function hasMonitoringPermission(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined,
+  key: "monitoring:view" | "monitoring:manage" | "monitoring:acknowledge_alerts" | "monitoring:execute_router_actions"
+): boolean {
+  if (role === "admin") return true;
+  if (role === "manager") {
+    if (key === "monitoring:execute_router_actions") return Boolean(permissions?.[key]);
+    return permissions?.[key] !== false;
+  }
+  if (role === "accountant" || role === "viewer") {
+    return key === "monitoring:view" && Boolean(permissions?.["monitoring:view"]);
+  }
+  return false;
+}

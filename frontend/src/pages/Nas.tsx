@@ -41,6 +41,8 @@ export function NasPage() {
   const [mikrotikApiEnabled, setMikrotikApiEnabled] = useState(false);
   const [mikrotikApiUser, setMikrotikApiUser] = useState("");
   const [mikrotikApiPassword, setMikrotikApiPassword] = useState("");
+  const [apiTestLoading, setApiTestLoading] = useState<Record<string, boolean>>({});
+  const [apiTestResult, setApiTestResult] = useState<Record<string, { ok: boolean; message: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,6 +90,41 @@ export function NasPage() {
       }
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function testMikrotikApi(nasId: string) {
+    setApiTestLoading((prev) => ({ ...prev, [nasId]: true }));
+    setApiTestResult((prev) => {
+      const next = { ...prev };
+      delete next[nasId];
+      return next;
+    });
+    try {
+      const r = await apiFetch(`/api/nas/${nasId}/test-mikrotik-api`, { method: "POST" });
+      const j = (await r.json()) as { ok?: boolean; message?: string; host?: string };
+      if (r.ok) {
+        setApiTestResult((prev) => ({
+          ...prev,
+          [nasId]: {
+            ok: Boolean(j.ok),
+            message: j.ok ? t("nas.mikrotikApiTestOk") : String(j.message ?? t("nas.mikrotikApiTestFail")),
+          },
+        }));
+      } else {
+        const raw = await readApiError(r);
+        setApiTestResult((prev) => ({
+          ...prev,
+          [nasId]: { ok: false, message: formatStaffApiError(r.status, raw, t) },
+        }));
+      }
+    } catch (e) {
+      setApiTestResult((prev) => ({
+        ...prev,
+        [nasId]: { ok: false, message: e instanceof Error ? e.message : String(e) },
+      }));
+    } finally {
+      setApiTestLoading((prev) => ({ ...prev, [nasId]: false }));
     }
   }
 
@@ -309,6 +346,31 @@ export function NasPage() {
                 {t("nas.mikrotikApiEnabled")}: {Boolean(n.mikrotik_api_enabled) ? t("common.yes") : t("common.no")}
               </span>
             </div>
+            {Boolean(n.mikrotik_api_enabled) && canManage ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="px-3 py-1.5 text-xs"
+                  disabled={Boolean(apiTestLoading[String(n.id)])}
+                  onClick={() => void testMikrotikApi(String(n.id))}
+                >
+                  {apiTestLoading[String(n.id)] ? t("common.loading") : t("nas.mikrotikApiTest")}
+                </Button>
+                {apiTestResult[String(n.id)] ? (
+                  <span
+                    className={cn(
+                      "text-xs",
+                      apiTestResult[String(n.id)]?.ok
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-red-500"
+                    )}
+                  >
+                    {apiTestResult[String(n.id)]?.message}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[hsl(var(--border))]/40 pt-2">
               <span className="text-xs font-medium opacity-70">{t("nas.secret")}:</span>
               {canManage ? (
@@ -400,6 +462,8 @@ export function NasPage() {
             {t("nas.mikrotikApiEnabled")}
           </label>
           {mikrotikApiEnabled ? (
+            <>
+            <p className="text-[11px] leading-relaxed opacity-65">{t("nas.mikrotikApiHint")}</p>
             <div className="grid gap-4 sm:grid-cols-2">
               <TextField
                 label={t("nas.mikrotikApiUser")}
@@ -414,6 +478,7 @@ export function NasPage() {
                 hint={modal === "edit" ? t("nas.secretHint") : undefined}
               />
             </div>
+            </>
           ) : null}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => setModal(null)}>

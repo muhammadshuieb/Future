@@ -1,0 +1,172 @@
+-- Infrastructure monitoring, alerting, and NOC tables (idempotent / re-runnable).
+
+CREATE TABLE IF NOT EXISTS infrastructure_monitoring_settings (
+  tenant_id CHAR(36) NOT NULL PRIMARY KEY,
+  infrastructure_alerts_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  whatsapp_alerts_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  whatsapp_critical_only TINYINT(1) NOT NULL DEFAULT 0,
+  alert_cooldown_minutes INT NOT NULL DEFAULT 30,
+  router_offline_minutes INT NOT NULL DEFAULT 2,
+  quiet_hours_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  quiet_hours_start VARCHAR(8) NULL COMMENT 'HH:MM 24h',
+  quiet_hours_end VARCHAR(8) NULL COMMENT 'HH:MM 24h',
+  recovery_notifications_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  poll_interval_seconds INT NOT NULL DEFAULT 180,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  CONSTRAINT fk_infra_settings_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS infrastructure_thresholds (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  nas_device_id CHAR(36) NULL COMMENT 'NULL = tenant global default',
+  cpu_percent_max DECIMAL(5,2) NOT NULL DEFAULT 90.00,
+  ram_percent_max DECIMAL(5,2) NOT NULL DEFAULT 90.00,
+  temperature_c_max DECIMAL(5,2) NOT NULL DEFAULT 70.00,
+  voltage_v_min DECIMAL(6,3) NULL DEFAULT 11.500,
+  ppp_session_drop_percent DECIMAL(5,2) NOT NULL DEFAULT 50.00,
+  traffic_rx_mbps_spike DECIMAL(10,2) NULL,
+  traffic_tx_mbps_spike DECIMAL(10,2) NULL,
+  disk_percent_max DECIMAL(5,2) NOT NULL DEFAULT 90.00,
+  server_ram_percent_max DECIMAL(5,2) NOT NULL DEFAULT 90.00,
+  server_cpu_load_multiplier DECIMAL(4,2) NOT NULL DEFAULT 2.00,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uq_infra_threshold_scope (tenant_id, nas_device_id),
+  KEY idx_infra_threshold_tenant (tenant_id),
+  CONSTRAINT fk_infra_threshold_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_infra_threshold_nas FOREIGN KEY (nas_device_id) REFERENCES nas_devices(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS infrastructure_notification_targets (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  label VARCHAR(120) NOT NULL DEFAULT '',
+  phone VARCHAR(32) NOT NULL,
+  is_group TINYINT(1) NOT NULL DEFAULT 0,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  receive_critical TINYINT(1) NOT NULL DEFAULT 1,
+  receive_warning TINYINT(1) NOT NULL DEFAULT 1,
+  receive_info TINYINT(1) NOT NULL DEFAULT 0,
+  receive_recovery TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY idx_infra_notify_tenant (tenant_id, enabled),
+  CONSTRAINT fk_infra_notify_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS router_health_snapshots (
+  nas_device_id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  nas_name VARCHAR(160) NOT NULL DEFAULT '',
+  nas_ip VARCHAR(64) NOT NULL DEFAULT '',
+  health_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+  cpu_percent DECIMAL(5,2) NULL,
+  ram_percent DECIMAL(5,2) NULL,
+  board_temperature_c DECIMAL(5,2) NULL,
+  voltage_v DECIMAL(6,3) NULL,
+  voltage_supported TINYINT(1) NOT NULL DEFAULT 0,
+  uptime_seconds BIGINT NULL,
+  ppp_active_sessions INT NOT NULL DEFAULT 0,
+  hotspot_active_sessions INT NOT NULL DEFAULT 0,
+  interfaces_down INT NOT NULL DEFAULT 0,
+  traffic_rx_bps BIGINT NULL,
+  traffic_tx_bps BIGINT NULL,
+  internet_reachable TINYINT(1) NULL,
+  metrics_json JSON NULL,
+  last_sync_ok TINYINT(1) NOT NULL DEFAULT 0,
+  last_sync_at DATETIME(3) NULL,
+  last_sync_error VARCHAR(512) NULL,
+  last_seen_at DATETIME(3) NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY idx_router_health_tenant (tenant_id, health_status),
+  CONSTRAINT fk_router_health_nas FOREIGN KEY (nas_device_id) REFERENCES nas_devices(id) ON DELETE CASCADE,
+  CONSTRAINT fk_router_health_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS server_health_snapshots (
+  tenant_id CHAR(36) NOT NULL PRIMARY KEY,
+  health_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+  cpu_load_1m DECIMAL(8,3) NULL,
+  cpu_count INT NULL,
+  ram_percent DECIMAL(5,2) NULL,
+  disk_percent DECIMAL(5,2) NULL,
+  uptime_seconds BIGINT NULL,
+  mysql_ok TINYINT(1) NULL,
+  redis_ok TINYINT(1) NULL,
+  freeradius_ok TINYINT(1) NULL,
+  worker_ok TINYINT(1) NULL,
+  docker_json JSON NULL,
+  metrics_json JSON NULL,
+  last_sync_at DATETIME(3) NULL,
+  last_sync_error VARCHAR(512) NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  CONSTRAINT fk_server_health_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS infrastructure_alerts (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  nas_device_id CHAR(36) NULL,
+  alert_type VARCHAR(64) NOT NULL,
+  severity VARCHAR(16) NOT NULL DEFAULT 'warning',
+  status VARCHAR(16) NOT NULL DEFAULT 'firing',
+  title VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  metric_value VARCHAR(64) NULL,
+  threshold_value VARCHAR(64) NULL,
+  fingerprint VARCHAR(191) NOT NULL,
+  first_seen_at DATETIME(3) NOT NULL,
+  last_seen_at DATETIME(3) NOT NULL,
+  resolved_at DATETIME(3) NULL,
+  acknowledged_at DATETIME(3) NULL,
+  acknowledged_by CHAR(36) NULL,
+  notification_count INT NOT NULL DEFAULT 0,
+  last_notified_at DATETIME(3) NULL,
+  recovery_notified_at DATETIME(3) NULL,
+  failure_count INT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uq_infra_alert_fingerprint (tenant_id, fingerprint),
+  KEY idx_infra_alerts_tenant_status (tenant_id, status, severity),
+  KEY idx_infra_alerts_nas (nas_device_id, status),
+  CONSTRAINT fk_infra_alerts_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_infra_alerts_nas FOREIGN KEY (nas_device_id) REFERENCES nas_devices(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS infrastructure_alert_history (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  alert_id CHAR(36) NOT NULL,
+  tenant_id CHAR(36) NOT NULL,
+  event_type VARCHAR(32) NOT NULL COMMENT 'created|updated|notified|resolved|acknowledged|recovery_notified',
+  severity VARCHAR(16) NULL,
+  message TEXT NULL,
+  meta_json JSON NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_infra_alert_hist_alert (alert_id, created_at),
+  KEY idx_infra_alert_hist_tenant (tenant_id, created_at),
+  CONSTRAINT fk_infra_alert_hist_alert FOREIGN KEY (alert_id) REFERENCES infrastructure_alerts(id) ON DELETE CASCADE,
+  CONSTRAINT fk_infra_alert_hist_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS router_scheduled_actions (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  tenant_id CHAR(36) NOT NULL,
+  nas_device_id CHAR(36) NOT NULL,
+  action_type VARCHAR(64) NOT NULL COMMENT 'reboot|restart_interface|disable_interface|enable_interface',
+  payload_json JSON NULL,
+  scheduled_at DATETIME(3) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  requires_confirmation TINYINT(1) NOT NULL DEFAULT 1,
+  confirmed_at DATETIME(3) NULL,
+  confirmed_by CHAR(36) NULL,
+  executed_at DATETIME(3) NULL,
+  result_message VARCHAR(512) NULL,
+  created_by CHAR(36) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY idx_router_actions_due (status, scheduled_at),
+  KEY idx_router_actions_nas (nas_device_id, status),
+  CONSTRAINT fk_router_actions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_router_actions_nas FOREIGN KEY (nas_device_id) REFERENCES nas_devices(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

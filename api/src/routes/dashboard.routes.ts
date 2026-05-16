@@ -6,6 +6,9 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { getBackupAlert } from "../services/backup.service.js";
 import { getWhatsAppStatus } from "../services/whatsapp.service.js";
 import { AccountingService } from "../services/accounting.service.js";
+import { listRouterHealthSnapshots } from "../services/infrastructure/router-health-collector.service.js";
+import { getServerHealthSnapshot } from "../services/infrastructure/server-health-collector.service.js";
+import { listActiveAlerts } from "../services/infrastructure/infrastructure-alert-engine.service.js";
 import type { RowDataPacket } from "mysql2";
 
 function isMissingColumnError(e: unknown): boolean {
@@ -319,6 +322,39 @@ router.get("/summary", async (req, res) => {
     const alerts = buildOperationalAlerts(nas, backup, whatsapp, freeradius);
     const host = await buildHostSnapshot();
 
+    let monitoring = {
+      routers_offline: 0,
+      critical_alerts: 0,
+      warning_alerts: 0,
+      high_cpu_routers: 0,
+      temperature_warnings: 0,
+      low_voltage_routers: 0,
+      latest_alerts: [] as RowDataPacket[],
+      server_health_status: "unknown" as string,
+    };
+    try {
+      const routers = await listRouterHealthSnapshots(pool, t);
+      const infraAlerts = await listActiveAlerts(pool, t, 8);
+      const server = await getServerHealthSnapshot(pool, t);
+      const firing = infraAlerts.filter((a) => String(a.status) === "firing");
+      monitoring = {
+        routers_offline: routers.filter((r) => r.health_status === "offline" || !r.last_sync_ok).length,
+        critical_alerts: firing.filter((a) => String(a.severity) === "critical").length,
+        warning_alerts: firing.filter((a) => String(a.severity) === "warning").length,
+        high_cpu_routers: routers.filter((r) => r.cpu_percent != null && r.cpu_percent >= 80).length,
+        temperature_warnings: routers.filter(
+          (r) => r.board_temperature_c != null && r.board_temperature_c >= 65
+        ).length,
+        low_voltage_routers: routers.filter(
+          (r) => r.voltage_supported && r.voltage_v != null && r.voltage_v < 12
+        ).length,
+        latest_alerts: infraAlerts,
+        server_health_status: server?.health_status ?? "unknown",
+      };
+    } catch (e) {
+      console.warn("dashboard monitoring snapshot", e);
+    }
+
     res.json({
       total_subscribers,
       active_subscribers,
@@ -333,6 +369,7 @@ router.get("/summary", async (req, res) => {
       backup,
       whatsapp,
       host,
+      monitoring,
     });
   } catch (e) {
     console.error("dashboard /summary fatal", e);
@@ -367,6 +404,16 @@ router.get("/summary", async (req, res) => {
         auto_send_new: true,
         last_error: null,
         last_check_at: null,
+      },
+      monitoring: {
+        routers_offline: 0,
+        critical_alerts: 0,
+        warning_alerts: 0,
+        high_cpu_routers: 0,
+        temperature_warnings: 0,
+        low_voltage_routers: 0,
+        latest_alerts: [],
+        server_health_status: "unknown",
       },
       host: {
         hostname: "unknown",

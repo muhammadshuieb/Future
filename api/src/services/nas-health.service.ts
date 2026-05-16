@@ -3,9 +3,13 @@ import { promisify } from "util";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../db/schemaGuards.js";
-import { config } from "../config.js";
 import { CoaService } from "./coa.service.js";
 import { randomUUID } from "crypto";
+import {
+  nasRowHasMikrotikApi,
+  probeMikrotikRouterOsApi,
+  resolveMikrotikApiHost,
+} from "./mikrotik-api-probe.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +31,7 @@ export type NasHealthEvent = {
   online: boolean;
   ping_ok: boolean;
   radius_ok: boolean;
+  api_ok?: boolean;
   session_count: number;
 };
 
@@ -75,21 +80,40 @@ export class NasHealthService {
     const events: NasHealthEvent[] = [];
     const sessCol = col.has("session_count") ? ", session_count" : "";
     const statCol = col.has("online_status") ? ", online_status" : "";
+    const apiCols =
+      col.has("mikrotik_api_enabled") && col.has("mikrotik_api_user") && col.has("mikrotik_api_password")
+        ? ", mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password, wireguard_tunnel_ip"
+        : col.has("wireguard_tunnel_ip")
+          ? ", wireguard_tunnel_ip"
+          : "";
     const [servers] = await this.pool.query<RowDataPacket[]>(
-      `SELECT id, ip, name${sessCol}${statCol} FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
+      `SELECT id, ip, name${sessCol}${statCol}${apiCols} FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
       [tenantId]
     );
     for (const s of servers) {
       const id = s.id as string;
       const ip = s.ip as string;
       const name = s.name as string;
-      const pingOk = await pingHost(ip);
+      const pingTarget = resolveMikrotikApiHost(s) ?? ip;
+      const pingOk = await pingHost(pingTarget);
       let radiusOk = false;
       if (pingOk) {
         const probe = await this.coa.disconnectUserForTenant(`__health_${Date.now()}`, ip, tenantId);
         radiusOk = probe.ok;
       }
-      const online = pingOk && radiusOk;
+      let apiOk: boolean | undefined;
+      if (nasRowHasMikrotikApi(s)) {
+        const apiHost = resolveMikrotikApiHost(s);
+        const apiUser = String(s.mikrotik_api_user ?? "").trim();
+        const apiPass = String(s.mikrotik_api_password ?? "");
+        if (apiHost) {
+          const apiProbe = await probeMikrotikRouterOsApi(apiHost, apiUser, apiPass);
+          apiOk = apiProbe.ok;
+        } else {
+          apiOk = false;
+        }
+      }
+      const online = apiOk !== undefined ? apiOk : pingOk && radiusOk;
       const prev = col.has("online_status") ? String(s.online_status ?? "unknown") : "unknown";
       const nextStatus = online ? "online" : "offline";
       if (canWriteHealth) {
@@ -108,6 +132,7 @@ export class NasHealthService {
         online,
         ping_ok: pingOk,
         radius_ok: radiusOk,
+        api_ok: apiOk,
         session_count: sess,
       };
       events.push(ev);

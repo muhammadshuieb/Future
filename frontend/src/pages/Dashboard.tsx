@@ -88,6 +88,16 @@ type Summary = {
     memory_used_bytes: number;
     memory_used_percent: number;
   };
+  monitoring?: {
+    routers_offline: number;
+    critical_alerts: number;
+    warning_alerts: number;
+    high_cpu_routers: number;
+    temperature_warnings: number;
+    low_voltage_routers: number;
+    server_health_status: string;
+    latest_alerts: { title: string; severity: string; status: string }[];
+  };
 };
 
 type Tone = "blue" | "amber" | "green" | "violet" | "emerald" | "rose" | "cyan" | "indigo";
@@ -538,6 +548,36 @@ export function DashboardPage() {
                 </div>
               </div>
             </Card>
+
+            {summary.monitoring ? (
+              <Card delay={0.08} variant="subtle" className="border-[hsl(var(--border))]/70 !p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-teal-500/10 ring-1 ring-teal-500/20">
+                      <Activity className="h-4 w-4 text-teal-600" />
+                    </div>
+                    <div className="text-xs font-semibold">{t("dash.monitoringTitle")}</div>
+                  </div>
+                  <Link to="/monitoring" className="text-[10px] font-medium text-[hsl(var(--primary))] hover:underline">
+                    {t("dash.monitoringLink")}
+                  </Link>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                  <div className="rounded-lg bg-red-500/10 py-2 ring-1 ring-red-500/15">
+                    <div className="text-lg font-bold tabular-nums text-red-600">{summary.monitoring.critical_alerts}</div>
+                    <div className="opacity-55">{t("monitoring.criticalAlerts")}</div>
+                  </div>
+                  <div className="rounded-lg bg-amber-500/10 py-2 ring-1 ring-amber-500/15">
+                    <div className="text-lg font-bold tabular-nums text-amber-700">{summary.monitoring.warning_alerts}</div>
+                    <div className="opacity-55">{t("monitoring.warningAlerts")}</div>
+                  </div>
+                  <div className="rounded-lg bg-[hsl(var(--muted))]/40 py-2">
+                    <div className="text-lg font-bold tabular-nums">{summary.monitoring.routers_offline}</div>
+                    <div className="opacity-55">{t("monitoring.offlineRouters")}</div>
+                  </div>
+                </div>
+              </Card>
+            ) : null}
 
             <ServiceCard
               title={t("dash.freeradiusTitle")}

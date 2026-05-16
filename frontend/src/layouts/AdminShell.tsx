@@ -240,6 +240,7 @@ export function AdminShell() {
           { to: "/maintenance", labelKey: "nav.backups", icon: HardDrive, tone: "orange" },
           { to: "/maintenance/updates", labelKey: "nav.updates", icon: ArrowUpCircle, tone: "emerald" },
           { to: "/wireguard", labelKey: "nav.wireguard", icon: KeyRound, tone: "sky" },
+          { to: "/monitoring", labelKey: "nav.monitoring", icon: Radio, tone: "teal" },
           { to: "/system-health", labelKey: "nav.systemHealth", icon: Activity, tone: "rose" },
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },

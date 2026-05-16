@@ -27,6 +27,12 @@ import {
   defaultSpeedProfilePermissionsAllOn,
   normalizeSpeedProfilePermissions,
 } from "../lib/speed-profile-permissions.js";
+import {
+  defaultMonitoringPermissionsAllOn,
+  defaultMonitoringPermissionsManager,
+  defaultMonitoringPermissionsViewer,
+  normalizeMonitoringPermissions,
+} from "../lib/monitoring-permissions.js";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
 import { requireAuth, type JwtPayload, type Role } from "../middleware/auth.js";
 
@@ -133,17 +139,20 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
             ...defaultManagerPermissions(),
             ...defaultSpeedProfilePermissionsAllOn(),
             ...defaultIspPermissionsAllOn(),
+            ...defaultMonitoringPermissionsAllOn(),
             ...userOverride,
           };
         } else if (role === "manager") {
           permissions = {
             ...(await managerJwtPermissions(String(user.tenant_id), user)),
             ...normalizeIspPermissions(userOverride, defaultIspPermissionsManager()),
+            ...normalizeMonitoringPermissions(userOverride, defaultMonitoringPermissionsManager()),
           };
         } else if (role === "viewer") {
           permissions = {
             ...(await viewerJwtPermissions(String(user.tenant_id), user)),
             ...normalizeIspPermissions(userOverride, defaultIspPermissionsViewer()),
+            ...normalizeMonitoringPermissions(userOverride, defaultMonitoringPermissionsViewer()),
           };
         } else if (role === "accountant") {
           permissions = {
@@ -152,6 +161,7 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
               ...userOverride,
             }),
             ...normalizeIspPermissions(userOverride, defaultIspPermissionsAccountant()),
+            ...normalizeMonitoringPermissions(userOverride, defaultMonitoringPermissionsViewer()),
           };
         }
         const walletBalance = Number(user.wallet_balance ?? 0);

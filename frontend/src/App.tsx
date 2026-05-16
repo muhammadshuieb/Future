@@ -59,6 +59,9 @@ const OnlineUsersPage = lazy(() => import("./pages/OnlineUsers").then((m) => ({ 
 const ObservabilityPage = lazy(() =>
   import("./pages/Observability").then((m) => ({ default: m.ObservabilityPage }))
 );
+const InfrastructureMonitoringPage = lazy(() =>
+  import("./pages/InfrastructureMonitoring").then((m) => ({ default: m.InfrastructureMonitoringPage }))
+);
 const SystemHealthPage = lazy(() =>
   import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealthPage }))
 );
@@ -155,6 +158,7 @@ function AppRoutes() {
           <Route path="nas" element={<NasPage />} />
           <Route path="accounting" element={<AccountingPage />} />
           <Route path="observability" element={<ObservabilityPage />} />
+          <Route path="monitoring" element={<InfrastructureMonitoringPage />} />
           <Route path="system-health" element={<SystemHealthPage />} />
           <Route path="server-logs" element={<ServerLogsPage />} />
           <Route path="encoding-health" element={<EncodingHealthPage />} />

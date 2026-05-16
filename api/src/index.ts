@@ -49,6 +49,7 @@ import qoeRoutes from "./routes/qoe.routes.js";
 import resellersRoutes from "./routes/resellers.routes.js";
 import resellerPortalRoutes from "./routes/reseller-portal.routes.js";
 import radiusMonitorRoutes from "./routes/radius-monitor.routes.js";
+import infrastructureMonitoringRoutes from "./routes/infrastructure-monitoring.routes.js";
 import rmCardsRoutes from "./routes/rm-cards.routes.js";
 import { ensureRmCardsTable } from "./services/rm-cards.service.js";
 import { metricsMiddleware } from "./middleware/metrics.middleware.js";
@@ -257,6 +258,7 @@ app.use("/api/qoe", qoeRoutes);
 app.use("/api/resellers", resellersRoutes);
 app.use("/api/reseller-portal", resellerPortalRoutes);
 app.use("/api/radius-monitor", radiusMonitorRoutes);
+app.use("/api/infrastructure-monitoring", infrastructureMonitoringRoutes);
 app.use("/api/rm-cards", rmCardsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.

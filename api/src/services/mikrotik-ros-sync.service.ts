@@ -5,6 +5,7 @@ import { hasTable } from "../db/schemaGuards.js";
 import { log } from "./logger.service.js";
 import { logRouterCommand } from "./router-command-log.service.js";
 import { routerApiFailuresTotal } from "./metrics.service.js";
+import { resolveMikrotikApiHost } from "./mikrotik-api-probe.js";
 
 async function ensureSessionCacheTable(pool: Pool): Promise<void> {
   await pool.query(`
@@ -17,15 +18,6 @@ async function ensureSessionCacheTable(pool: Pool): Promise<void> {
       KEY idx_mikrotik_session_cache_last_seen (last_seen)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
-}
-
-function apiHost(row: RowDataPacket): string | null {
-  const tunnel = String(row.wireguard_tunnel_ip ?? "").trim();
-  const pub = String(row.ip ?? "").trim();
-  const host = tunnel || pub;
-  if (!host) return null;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;
-  return null;
 }
 
 /**
@@ -45,7 +37,7 @@ export async function syncMikrotikSessionsFromNasTable(pool: Pool): Promise<void
   );
 
   for (const row of rows) {
-    const host = apiHost(row);
+    const host = resolveMikrotikApiHost(row);
     const user = String(row.mikrotik_api_user ?? "").trim();
     const password = String(row.mikrotik_api_password ?? "");
     const nasId = String(row.id ?? "");

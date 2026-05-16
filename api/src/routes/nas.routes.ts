@@ -6,6 +6,11 @@ import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { denyAccountant, denyViewerWrites } from "../middleware/capabilities.js";
 import { RadiusSyncService } from "../services/radius-sync.service.js";
+import {
+  nasRowHasMikrotikApi,
+  probeMikrotikRouterOsApi,
+  resolveMikrotikApiHost,
+} from "../services/mikrotik-api-probe.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
@@ -128,6 +133,36 @@ router.delete("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcc
     String(rows[0].ip),
   ]);
   res.json({ ok: true });
+});
+
+router.post("/:id/test-mikrotik-api", requireRole("admin", "manager"), denyAccountant, async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password
+     FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
+    [req.params.id, req.auth!.tenantId]
+  );
+  const row = rows[0];
+  if (!row) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (!nasRowHasMikrotikApi(row)) {
+    res.status(400).json({ error: "mikrotik_api_not_configured" });
+    return;
+  }
+  const host = resolveMikrotikApiHost(row);
+  if (!host) {
+    res.status(400).json({ error: "invalid_api_host" });
+    return;
+  }
+  const user = String(row.mikrotik_api_user ?? "").trim();
+  const password = String(row.mikrotik_api_password ?? "");
+  const result = await probeMikrotikRouterOsApi(host, user, password);
+  res.json({
+    ok: result.ok,
+    host: result.host,
+    message: result.message,
+  });
 });
 
 router.get("/:id/secret", requireRole("admin", "manager"), denyAccountant, async (req, res) => {

@@ -25,6 +25,7 @@ import {
 } from "../services/metrics.service.js";
 import { dispatchWorkerJob } from "./dispatch-worker-job.js";
 import { getBackupSchedulerPollMs } from "../services/backup.service.js";
+import { startDiskMonitor } from "../services/disk-monitor.service.js";
 
 /**
  * Worker /metrics on WORKER_METRICS_PORT (default 9101).
@@ -181,6 +182,11 @@ async function bootstrapRepeatables() {
   await addCron("prune-radpostauth", "0 3 1 * *");
   await add("qoe-cycle", 5 * 60 * 1000);
   await add("radius-monitor-cycle", 60 * 1000);
+  const infraMs = Math.max(
+    60_000,
+    parseInt(process.env.INFRASTRUCTURE_MONITOR_MS ?? "180000", 10) || 180_000
+  );
+  await add("infrastructure-monitor-cycle", infraMs);
 }
 
 async function main() {
@@ -197,6 +203,7 @@ async function main() {
     console.error("[worker] dynamic speed schema ensure failed", error);
   }
   markDbReady();
+  startDiskMonitor();
   log.info("worker boot", {}, "bootstrap");
 
   const mikrotikSyncMs = Math.max(0, parseInt(process.env.MIKROTIK_API_SYNC_MS ?? "0", 10) || 0);
