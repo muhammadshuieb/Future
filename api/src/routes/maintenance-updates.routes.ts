@@ -197,11 +197,30 @@ async function resolveComposeCommand(cfg: ReturnType<typeof getUpdateConfig>): P
   if (cfg.composeBin) {
     if (cfg.composeBin === "docker-compose") return { cmd: "docker-compose", baseArgs: [] };
     if (cfg.composeBin === "docker") return { cmd: "docker", baseArgs: ["compose"] };
+    // Allow full paths, e.g. /usr/libexec/docker/cli-plugins/docker-compose
+    if (cfg.composeBin.includes("compose")) {
+      return { cmd: cfg.composeBin, baseArgs: [] };
+    }
+    return { cmd: cfg.composeBin, baseArgs: [] };
   }
+  // Prefer Compose v2 plugin — v1 breaks on `docker-compose up --force-recreate` with modern Engine.
   if (await commandExists("docker", ["compose", "version"], cfg.composeDir)) {
     return { cmd: "docker", baseArgs: ["compose"] };
   }
+  const composePluginCandidates = [
+    "/usr/libexec/docker/cli-plugins/docker-compose",
+    "/usr/local/lib/docker/cli-plugins/docker-compose",
+  ];
+  for (const plugin of composePluginCandidates) {
+    if (await commandExists(plugin, ["version"], cfg.composeDir)) {
+      return { cmd: plugin, baseArgs: [] };
+    }
+  }
   if (await commandExists("docker-compose", ["version"], cfg.composeDir)) {
+    emitProgress(
+      "output",
+      "Warning: using legacy docker-compose v1; targeted updates use --no-deps. Install Compose v2 or set APP_UPDATE_COMPOSE_BIN=docker."
+    );
     return { cmd: "docker-compose", baseArgs: [] };
   }
   throw new Error("compose_binary_not_found");
@@ -272,7 +291,21 @@ function isDockerPortBindConflict(message: string): boolean {
   );
 }
 
+/** docker-compose 1.29.x + modern Docker Engine: recreate reads removed image field ContainerConfig */
+function isDockerComposeContainerConfigError(message: string): boolean {
+  const low = message.toLowerCase();
+  return low.includes("containerconfig") || low.includes("keyerror: 'containerconfig'");
+}
+
 function summarizeUpdateError(message: string): string {
+  if (isDockerComposeContainerConfigError(message)) {
+    return [
+      "Docker Compose v1 (docker-compose) failed while recreating dependency containers (mysql/redis).",
+      "Routine updates should only rebuild api, worker, web with --no-deps.",
+      "On the host: set APP_UPDATE_COMPOSE_BIN=docker (Compose v2) or upgrade the API image, then retry.",
+      "Emergency manual deploy: docker compose -p future-radius up -d --build --no-deps api worker web",
+    ].join("\n");
+  }
   if (isDockerPortBindConflict(message)) {
     const ports = extractDockerBindPorts(message);
     const list = ports.length ? ports.join(", ") : "3306, 3001";
@@ -550,7 +583,8 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
       const targeted = cfg.composeUpServices.length > 0;
       const upTail: string[] = ["up", "-d", "--build"];
       if (targeted) {
-        upTail.push("--force-recreate", ...cfg.composeUpServices);
+        // Do not recreate mysql/redis/freeradius; --force-recreate on compose v1 triggers ContainerConfig errors.
+        upTail.push("--no-deps", ...cfg.composeUpServices);
       } else if (cfg.composeRemoveOrphans) {
         upTail.push("--remove-orphans");
       }
@@ -578,6 +612,23 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
           break;
         } catch (upErr) {
           const msg = upErr instanceof Error ? upErr.message : String(upErr);
+          if (isDockerComposeContainerConfigError(msg) && compose.cmd === "docker-compose" && targeted) {
+            const v2 = await commandExists("docker", ["compose", "version"], cfg.composeDir);
+            if (v2) {
+              emitProgress(
+                "output",
+                "ContainerConfig error from docker-compose v1; retrying with docker compose (v2) and --no-deps..."
+              );
+              const v2Args = [...composeLeadArgs({ cmd: "docker", baseArgs: ["compose"] }, cfg), ...upTail];
+              await withTimeout(
+                runCommand("docker", v2Args, cfg.composeDir, true),
+                cfg.composeBuildTimeoutMs,
+                "docker-compose-v2-fallback"
+              );
+              composeSuccess = true;
+              break;
+            }
+          }
           const canRecycle =
             cfg.composeRetryRecycleOnPortConflict &&
             isDockerPortBindConflict(msg) &&

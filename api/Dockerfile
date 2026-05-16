@@ -4,7 +4,7 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ iputils-ping curl default-mysql-client rclone git docker.io docker-compose freeradius-utils \
+  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ iputils-ping curl default-mysql-client rclone git docker.io docker-compose-plugin freeradius-utils \
   && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
