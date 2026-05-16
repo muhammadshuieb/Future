@@ -90,7 +90,10 @@ function getUpdateConfig() {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => /^[a-zA-Z0-9_-]+$/.test(s));
-  const composeProjectName = process.env.APP_UPDATE_COMPOSE_PROJECT_NAME?.trim() || "";
+  const composeProjectName =
+    process.env.APP_UPDATE_COMPOSE_PROJECT_NAME?.trim() ||
+    process.env.COMPOSE_PROJECT_NAME?.trim() ||
+    "future";
   const composeRecycleMaxPasses = Math.min(
     5,
     Math.max(1, Number.parseInt(process.env.APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES ?? "2", 10) || 2)
@@ -303,7 +306,7 @@ function summarizeUpdateError(message: string): string {
       "Docker Compose v1 (docker-compose) failed while recreating dependency containers (mysql/redis).",
       "Routine updates should only rebuild api, worker, web with --no-deps.",
       "On the host: set APP_UPDATE_COMPOSE_BIN=docker (Compose v2) or upgrade the API image, then retry.",
-      "Emergency manual deploy: docker compose -p future-radius up -d --build --no-deps api worker web",
+      "Emergency manual deploy: docker compose -p future up -d --build --no-deps api worker web",
     ].join("\n");
   }
   if (isDockerPortBindConflict(message)) {
@@ -326,8 +329,8 @@ function portConflictHints(ports: string[]): string[] {
   return [
     `تعارض منافذ على المضيف (${list}). غالباً حاوية أخرى أو نسخة ثانية من نفس المشروع، أو MySQL مثبت على النظام يستخدم 3306.`,
     `Host port conflict (${list}). Another container, a second stack, or host mysqld may already bind these ports.`,
-    `إن كان هناك مشروعان Compose مختلفان الاسم على نفس المضيف، عيّن APP_UPDATE_COMPOSE_PROJECT_NAME ليطابق بادئة الحاويات (مثل future-radius من future-radius_mysql_1).`,
-    `If two Compose stacks exist on the host, set APP_UPDATE_COMPOSE_PROJECT_NAME to match container prefixes (e.g. future-radius from future-radius_mysql_1).`,
+    `إن كان هناك مشروعان Compose على نفس المضيف، عيّن APP_UPDATE_COMPOSE_PROJECT_NAME=future ليطابق future-api-1 (لا تستخدم -p future-radius).`,
+    `If two Compose stacks exist on the host, set APP_UPDATE_COMPOSE_PROJECT_NAME=future to match future-api-1 (avoid -p future-radius duplicate stack).`,
     `التحديث يعيد المحاولة بعد إيقاف/إزالة حاويات mysql وwaha (افتراضياً مرّتان مع إزالة أقوى في الثانية؛ volumes تبقى). APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES و APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE.`,
     `Updates recycle mysql,waha then retries compose up (default 2 passes; second pass uses kill if needed). Tune APP_UPDATE_COMPOSE_RECYCLE_MAX_PASSES / APP_UPDATE_COMPOSE_KILL_BEFORE_RECYCLE.`,
     `على الخادم: docker ps --format "table {{.Names}}\\t{{.Ports}}" ثم أوقف الحاوية التي تعرض 3306 أو 3001 (docker stop <name>).`,
@@ -592,11 +595,12 @@ async function runUpdateProcess(cfg: ReturnType<typeof getUpdateConfig>) {
       const serviceHint = targeted ? cfg.composeUpServices.join(", ") : "all services";
 
       emitProgress("step", { msg: `$ ${formatComposeShellLine(compose, cfg, upTail)}`, step: 4 });
+      const projectLabel = cfg.composeProjectName ? `-p ${cfg.composeProjectName}` : "";
       emitProgress(
         "output",
         targeted
-          ? `Compose targets (mysql/waha left running): ${serviceHint}`
-          : `Compose targets: ${serviceHint}`
+          ? `Compose ${projectLabel} targets (infra unchanged): ${serviceHint}`
+          : `Compose ${projectLabel} targets: ${serviceHint}`
       );
       steps.push(`docker compose ${upTail.join(" ")}`);
 
@@ -802,6 +806,7 @@ router.get("/updates/status", async (_req, res) => {
       remoteCommitDate: state.remoteCommitDate ?? null,
       updateInProgress,
       composeUpServices: cfg.composeUpServices.length > 0 ? cfg.composeUpServices : null,
+      composeProjectName: cfg.composeProjectName || null,
       lastError: err
         ? { timestamp: err.timestamp || state.lastRunAt || "", message: err.message.slice(0, 4000) }
         : null,
