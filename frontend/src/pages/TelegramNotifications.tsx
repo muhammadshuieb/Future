@@ -194,9 +194,13 @@ export function TelegramNotificationsPage() {
     setSendingReport(true);
     setMessage(null);
     setError(null);
+    const controller = new AbortController();
+    let timer = 0;
+    timer = window.setTimeout(() => controller.abort(), 60_000);
     try {
       const r = await apiFetch("/api/infrastructure-monitoring/telegram/send-status-now", {
         method: "POST",
+        signal: controller.signal,
       });
       const j = (await r.json()) as {
         ok?: boolean;
@@ -219,8 +223,13 @@ export function TelegramNotificationsPage() {
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (e instanceof Error && e.name === "AbortError") {
+        setError(t("telegram.sendTimeout"));
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
+      window.clearTimeout(timer);
       setSendingReport(false);
     }
   }
@@ -405,7 +414,7 @@ export function TelegramNotificationsPage() {
               <Button
                 type="button"
                 onClick={() => void sendStatusNow()}
-                disabled={sendingReport || !telegram?.configured || !statusReportsEnabled}
+                disabled={sendingReport || !telegram?.configured}
               >
                 {sendingReport ? t("common.loading") : t("telegram.sendStatusNow")}
               </Button>

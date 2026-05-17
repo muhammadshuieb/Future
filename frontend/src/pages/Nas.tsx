@@ -198,8 +198,13 @@ export function NasPage() {
 
   async function loadMikrotikInterfaces(nasId: string) {
     setInterfacesLoading(true);
+    const controller = new AbortController();
+    let timer = 0;
+    timer = window.setTimeout(() => controller.abort(), 20_000);
     try {
-      const r = await apiFetch(`/api/nas/${nasId}/mikrotik-interfaces`);
+      const r = await apiFetch(`/api/nas/${nasId}/mikrotik-interfaces`, {
+        signal: controller.signal,
+      });
       if (r.ok) {
         const j = (await r.json()) as { interfaces?: { name: string; type: string }[] };
         setInterfaceOptions(j.interfaces ?? []);
@@ -208,8 +213,13 @@ export function NasPage() {
         setFormError(formatStaffApiError(r.status, raw, t));
       }
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : String(e));
+      if (e instanceof Error && e.name === "AbortError") {
+        setFormError(t("nas.loadInterfacesTimeout"));
+      } else {
+        setFormError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
+      window.clearTimeout(timer);
       setInterfacesLoading(false);
     }
   }

@@ -17,8 +17,16 @@ import {
   parseRosUptimeSeconds,
   parseRouterOsVersion,
   safeApiClose,
+  withTimeout,
   type RosRow,
 } from "../mikrotik-routeros-compat.js";
+
+export type RouterCollectOptions = {
+  /** Skip /ping (often blocks 10–30s on RouterOS). */
+  skipPing?: boolean;
+  skipHotspot?: boolean;
+  apiTimeoutMs?: number;
+};
 import { logRouterCommand } from "../router-command-log.service.js";
 import { log } from "../logger.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
@@ -28,12 +36,13 @@ async function collectFromRouter(
   user: string,
   password: string,
   port: number,
-  trafficMonitorInterface: string | null
+  trafficMonitorInterface: string | null,
+  collectOpts: RouterCollectOptions = {}
 ): Promise<{
   metrics: Omit<RouterHealthSnapshot, "nas_device_id" | "tenant_id" | "nas_name" | "nas_ip">;
   raw: Record<string, unknown>;
 }> {
-  const api = createRouterOsApi(host, user, password, port, 12_000);
+  const api = createRouterOsApi(host, user, password, port, collectOpts.apiTimeoutMs ?? 12_000);
   const trafficIface = trafficMonitorInterface?.trim() || null;
   const raw: Record<string, unknown> = {};
   try {
@@ -100,21 +109,30 @@ async function collectFromRouter(
     }
 
     let hotspotCount = 0;
-    try {
-      const hs = (await api.write("/ip/hotspot/active/print")) as RosRow[];
-      hotspotCount = hs.length;
-      raw.hotspot_count = hotspotCount;
-    } catch {
-      raw.hotspot = "unsupported_or_error";
+    if (!collectOpts.skipHotspot) {
+      try {
+        const hs = (await api.write("/ip/hotspot/active/print")) as RosRow[];
+        hotspotCount = hs.length;
+        raw.hotspot_count = hotspotCount;
+      } catch {
+        raw.hotspot = "unsupported_or_error";
+      }
     }
 
     let internetReachable: boolean | null = null;
-    try {
-      const ping = (await api.write("/ping", ["=address=8.8.8.8", "=count=2"])) as RosRow[];
-      raw.ping = ping;
-      internetReachable = parsePingInternetReachable(ping);
-    } catch {
-      internetReachable = null;
+    if (!collectOpts.skipPing) {
+      try {
+        const ping = (await withTimeout(
+          api.write("/ping", ["=address=8.8.8.8", "=count=1"]) as Promise<RosRow[]>,
+          5_000,
+          "ping_timeout"
+        )) as RosRow[];
+        raw.ping = ping;
+        internetReachable = parsePingInternetReachable(ping);
+      } catch {
+        raw.ping = "skipped_or_timeout";
+        internetReachable = null;
+      }
     }
 
     await api.close();
@@ -176,10 +194,17 @@ async function collectFromRouter(
   }
 }
 
+const FAST_COLLECT: RouterCollectOptions = {
+  skipPing: true,
+  skipHotspot: true,
+  apiTimeoutMs: 10_000,
+};
+
 export async function collectRouterHealthForTenant(
   pool: Pool,
   tenantId: string,
-  prevById: Map<string, RouterHealthSnapshot> = new Map()
+  prevById: Map<string, RouterHealthSnapshot> = new Map(),
+  collectOpts: RouterCollectOptions = {}
 ): Promise<RouterHealthSnapshot[]> {
   if (!(await hasTable(pool, "nas_devices")) || !(await hasTable(pool, "router_health_snapshots"))) {
     return [];
@@ -260,7 +285,14 @@ export async function collectRouterHealthForTenant(
         const trafficIface = row.traffic_monitor_interface != null
           ? String(row.traffic_monitor_interface).trim() || null
           : null;
-        const { metrics, raw } = await collectFromRouter(host, user, password, port, trafficIface);
+        const { metrics, raw } = await collectFromRouter(
+          host,
+          user,
+          password,
+          port,
+          trafficIface,
+          collectOpts
+        );
         const prev = prevById.get(nasId);
         if (metrics.traffic_rx_bps != null && metrics.traffic_tx_bps != null) {
           const period = computeTrafficPeriodMb(
@@ -435,7 +467,19 @@ export async function prepareRoutersForStatusReport(
   let routers = await listRouterHealthSnapshots(pool, tenantId);
   if (routers.length === 0 && collectIfEmpty) {
     const prev = new Map(routers.map((r) => [r.nas_device_id, r]));
-    await collectRouterHealthForTenant(pool, tenantId, prev);
+    try {
+      await withTimeout(
+        collectRouterHealthForTenant(pool, tenantId, prev, FAST_COLLECT),
+        22_000,
+        "collect_timeout"
+      );
+    } catch (err) {
+      log.warn(
+        `prepare_status_report_collect_timeout tenant=${tenantId} ${String(err)}`,
+        {},
+        "telegram"
+      );
+    }
     routers = await listRouterHealthSnapshots(pool, tenantId);
   }
 
