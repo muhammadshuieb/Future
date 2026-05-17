@@ -168,7 +168,7 @@ export function WhatsAppTemplatesPage() {
           api_key: waSettings.api_key || "",
           reminder_days: waSettings.reminder_days,
           message_interval_seconds: waSettings.message_interval_seconds,
-          auto_send_new: waSettings.auto_send_new,
+          auto_send_new: true,
           usage_alert_thresholds: waSettings.usage_alert_thresholds,
           company_name: waSettings.company_name,
         }),

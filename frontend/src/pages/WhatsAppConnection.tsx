@@ -176,6 +176,7 @@ export function WhatsAppConnectionPage() {
         method: "PUT",
         body: JSON.stringify({
           ...settings,
+          auto_send_new: true,
           enabled: settings.enabled,
           waha_url: "",
           session_name: "default",
@@ -243,24 +244,15 @@ export function WhatsAppConnectionPage() {
         <div className="text-sm">
           {t("whatsapp.status")}: <span className={status?.connected ? "text-emerald-400" : "text-amber-300"}>{statusText}</span>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={settings.enabled}
-              onChange={(e) => setSettings((s) => ({ ...s, enabled: e.target.checked }))}
-            />
-            {t("whatsapp.enabled")}
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={settings.auto_send_new}
-              onChange={(e) => setSettings((s) => ({ ...s, auto_send_new: e.target.checked }))}
-            />
-            {t("whatsapp.autoNew")}
-          </label>
-        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.enabled}
+            onChange={(e) => setSettings((s) => ({ ...s, enabled: e.target.checked }))}
+          />
+          {t("whatsapp.enabled")}
+        </label>
+        <p className="text-xs opacity-70">{t("whatsapp.autoNewAlways")}</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField
             type="number"

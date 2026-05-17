@@ -94,17 +94,24 @@ router.get("/settings", requireRole("admin", "manager"), requireMonitoringManage
   const whatsapp = await getWhatsAppInfraConfig(pool, tenantId);
   const {
     getWorkerHeartbeatAgeMs,
-    isTelegramReportSchedulerEnabled,
+    isInfraReportSchedulerEnabled,
+    getInfraReportSchedulerStatus,
   } = await import("../services/infrastructure/telegram-status-report-scheduler.service.js");
   const workerAgeMs = await getWorkerHeartbeatAgeMs();
+  const scheduler = getInfraReportSchedulerStatus();
   res.json({
     settings,
     thresholds,
     targets,
     telegram,
     whatsapp,
+    infra_scheduler: {
+      ...scheduler,
+      worker_alive: workerAgeMs != null && workerAgeMs < 90_000,
+      worker_last_heartbeat_age_ms: workerAgeMs,
+    },
     telegram_scheduler: {
-      api_scheduler_enabled: isTelegramReportSchedulerEnabled(),
+      api_scheduler_enabled: scheduler.api_scheduler_enabled,
       worker_alive: workerAgeMs != null && workerAgeMs < 90_000,
       worker_last_heartbeat_age_ms: workerAgeMs,
     },

@@ -821,7 +821,7 @@ export async function updateWhatsAppSettings(
       (input.api_key ?? "").trim() || null,
       input.reminder_days,
       input.message_interval_seconds,
-      input.auto_send_new ? 1 : 0,
+      1,
       parseUsageThresholds(input.usage_alert_thresholds.join(",")).join(","),
       (input.company_name ?? "").trim().slice(0, 128),
       tenantId,
@@ -1250,7 +1250,7 @@ export async function sendNewSubscriberWhatsApp(input: {
   expirationDate: Date | string | null;
 }): Promise<void> {
   const settings = await getSettingsRow(input.tenantId);
-  if (!settings.enabled || !settings.auto_send_new) return;
+  if (!settings.enabled) return;
   const normalized = normalizePhone(input.phone ?? "");
   if (!normalized) return;
   if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) return;
@@ -1855,7 +1855,7 @@ export async function sendOperationalAlertWhatsApp(
   tenantId: string,
   phoneOverride: string | null,
   message: string,
-  options?: { preferSessionOwner?: boolean }
+  options?: { preferSessionOwner?: boolean; skipMessageInterval?: boolean }
 ): Promise<{ sent: boolean; reason?: string; phone?: string | null }> {
   const settings = await getSettingsRow(tenantId);
   if (!settings.enabled) return { sent: false, reason: "whatsapp_disabled" };
@@ -1866,7 +1866,9 @@ export async function sendOperationalAlertWhatsApp(
   }
   if (!target) return { sent: false, reason: "missing_target_phone" };
   try {
-    await enforceMessageInterval(tenantId, settings);
+    if (!options?.skipMessageInterval) {
+      await enforceMessageInterval(tenantId, settings);
+    }
     const result = await sendWahaMessage(settings, target, message);
     await insertMessageLog({
       tenantId,

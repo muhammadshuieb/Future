@@ -28,6 +28,7 @@ async function dispatchWhatsAppStatusReport(
   for (const body of messages) {
     const send = await sendOperationalAlertWhatsApp(tenantId, null, body, {
       preferSessionOwner: true,
+      skipMessageInterval: true,
     });
     if (!send.sent) {
       return { ok: false, error: "whatsapp_send_failed", detail: send.reason };
@@ -78,7 +79,18 @@ export async function maybeSendWhatsAppStatusReport(
   const intervalMin = Math.max(1, Math.min(1440, Number(r.whatsapp_status_interval_minutes ?? 5)));
   const lastAt = r.whatsapp_last_status_report_at ? new Date(String(r.whatsapp_last_status_report_at)) : null;
   const elapsedMs = lastAt ? Date.now() - lastAt.getTime() : Infinity;
-  if (elapsedMs < intervalMin * 60_000) return false;
+  const dueMs = intervalMin * 60_000;
+  if (elapsedMs < dueMs) return false;
+
+  const wa = await getWhatsAppStatus(tenantId);
+  if (!wa.enabled || !wa.configured || !wa.connected) {
+    log.warn(
+      `whatsapp_status_report_skip_wa_offline tenant=${tenantId} enabled=${wa.enabled} connected=${wa.connected}`,
+      {},
+      "whatsapp"
+    );
+    return false;
+  }
 
   const freshCollect =
     options.freshCollect ?? (await shouldFreshCollectForReport(pool, tenantId));

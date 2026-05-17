@@ -186,8 +186,50 @@ export async function testWhatsAppInfraConnection(
   pool: Pool,
   tenantId: string
 ): Promise<{ ok: boolean; config: WhatsAppInfraConfigPublic }> {
-  const msg = "✅ Future Radius — اختبار إشعارات مراقبة البنية عبر WhatsApp ناجح.";
-  const send = await sendOperationalAlertWhatsApp(tenantId, null, msg, { preferSessionOwner: true });
+  const { formatAlertWhatsAppMessage } = await import("./infrastructure-whatsapp-notify.service.js");
+  const sample = formatAlertWhatsAppMessage(
+    {
+      alert_type: "low_voltage",
+      severity: "critical",
+      nas_device_id: null,
+      nas_name: "Router-1",
+      title: "انخفاض الجهد — Router-1 (اختبار)",
+      message: "الجهد 10.5V أقل من 11.5V — رسالة اختبار للتنسيق",
+      metric_value: "10.5",
+      threshold_value: "11.5",
+      fingerprint: "test",
+    },
+    {
+      nas_device_id: "test",
+      tenant_id: tenantId,
+      nas_name: "Router-1",
+      nas_ip: "192.168.88.1",
+      health_status: "online",
+      cpu_percent: 45,
+      ram_percent: 60,
+      board_temperature_c: 42,
+      voltage_v: 10.5,
+      voltage_supported: true,
+      uptime_seconds: 86400,
+      ppp_active_sessions: 12,
+      hotspot_active_sessions: 0,
+      interfaces_down: 0,
+      traffic_rx_bps: null,
+      traffic_tx_bps: null,
+      traffic_rx_mb: null,
+      traffic_tx_mb: null,
+      traffic_rx_mbps: null,
+      traffic_tx_mbps: null,
+      traffic_monitor_interface: null,
+      internet_reachable: true,
+      last_sync_ok: true,
+      last_sync_at: new Date().toISOString(),
+      last_sync_error: null,
+      last_seen_at: null,
+    },
+    null
+  );
+  const send = await sendOperationalAlertWhatsApp(tenantId, null, sample, { preferSessionOwner: true });
   const config = await getWhatsAppInfraConfig(pool, tenantId);
   return {
     ok: send.sent,

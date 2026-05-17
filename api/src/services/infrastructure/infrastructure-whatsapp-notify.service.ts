@@ -3,20 +3,60 @@ import { sendOperationalAlertWhatsApp } from "../whatsapp.service.js";
 import { isInQuietHours, getMonitoringSettings } from "./infrastructure-settings.service.js";
 import type { AlertSeverity } from "./infrastructure-types.js";
 import type { EvaluatedAlert } from "./infrastructure-alert-engine.service.js";
+import { getAlertGuidance } from "./infrastructure-alert-guidance.service.js";
 import {
   formatAlertTelegramMessage,
   formatRecoveryTelegramMessage,
 } from "./infrastructure-telegram-notify.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import type { ServerHealthSnapshot } from "./server-health-collector.service.js";
+import { formatInfraDateTime } from "./infrastructure-status-report-format.service.js";
 
-/** Same layout/order as Telegram instant alerts. */
+const SEP = "━━━━━━━━━━━━━━━━";
+
+/** WhatsApp alert with problem, severity, maintenance, and resolution steps. */
 export function formatAlertWhatsAppMessage(
   ev: EvaluatedAlert,
   snap?: RouterHealthSnapshot | null,
   serverSnap?: ServerHealthSnapshot | null
 ): string {
-  return formatAlertTelegramMessage(ev, snap, serverSnap);
+  const guidance = getAlertGuidance(ev.alert_type, ev.severity);
+  const icon =
+    ev.severity === "critical" ? "🚨 تنبيه حرج" : ev.severity === "warning" ? "⚠️ تنبيه" : "ℹ️ تنبيه";
+  const targetLines: string[] =
+    ev.nas_name != null
+      ? [`📍 ${ev.nas_name}`, ...(snap?.nas_ip ? [`IP: ${snap.nas_ip}`] : [])]
+      : ["📍 سيرفر Future Radius"];
+
+  const lines: string[] = [
+    `${icon} — Future Radius`,
+    SEP,
+    ...targetLines,
+    "",
+    "📋 المشكلة:",
+    ev.title,
+    ev.message,
+    "",
+    `🔴 درجة الخطورة: ${guidance.severityLabel}`,
+    "",
+    `🔧 يحتاج تدخل صيانة: ${guidance.maintenanceText}`,
+    "",
+    "✅ كيفية الحل:",
+    ...guidance.resolutionSteps.map((s, i) => `${i + 1}. ${s}`),
+  ];
+
+  const metricsTail = formatAlertTelegramMessage(ev, snap, serverSnap)
+    .split("\n")
+    .filter((l) => l.startsWith("⏱") || l.startsWith("🌡") || l.startsWith("⚡") || l.startsWith("CPU") || l.startsWith("RAM") || l.startsWith("PPP") || l.startsWith("📡") || l.startsWith("   "));
+  if (metricsTail.length > 0) {
+    lines.push("", ...metricsTail);
+  }
+
+  if (ev.threshold_value) {
+    lines.push(`العتبة: ${ev.threshold_value}`);
+  }
+  lines.push(`الوقت: ${formatInfraDateTime()}`);
+  return lines.filter((l) => l !== "").join("\n");
 }
 
 export function formatRecoveryWhatsAppMessage(ev: EvaluatedAlert): string {

@@ -265,15 +265,8 @@ export function WhatsAppPage() {
             />
             {t("whatsapp.enabled")}
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={settings.auto_send_new}
-              onChange={(e) => setSettings((s) => ({ ...s, auto_send_new: e.target.checked }))}
-            />
-            {t("whatsapp.autoNew")}
-          </label>
         </div>
+        <p className="text-xs opacity-70">{t("whatsapp.autoNewAlways")}</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField
             label={t("whatsapp.wahaUrl")}

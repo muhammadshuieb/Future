@@ -39,6 +39,7 @@ import {
   Braces,
   Zap,
   CreditCard,
+  Bell,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -260,6 +261,7 @@ export function AdminShell() {
       : []),
   ];
   const whatsappNav: NavItem[] = [
+    { to: "/whatsapp/server-alerts", labelKey: "nav.whatsappServerAlerts", icon: Bell, tone: "amber" },
     { to: "/whatsapp/connection", labelKey: "nav.whatsappConnection", icon: Link2, tone: "green" },
     { to: "/whatsapp/templates", labelKey: "nav.whatsappTemplates", icon: FileText, tone: "indigo" },
     { to: "/whatsapp/broadcast", labelKey: "nav.whatsappBroadcast", icon: Send, tone: "pink" },
