@@ -133,7 +133,7 @@ router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage
       status_interval_minutes: parsed.data.status_interval_minutes,
     });
     const settings = await getMonitoringSettings(pool, req.auth!.tenantId);
-    res.json({ telegram, settings });
+    res.json({ telegram, settings, notification_ok: telegram.last_test_ok !== false });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === "telegram_bot_token_required" || msg === "telegram_chat_id_required") {

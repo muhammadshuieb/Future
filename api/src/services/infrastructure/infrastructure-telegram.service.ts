@@ -132,8 +132,54 @@ export async function saveTelegramConfig(
     vals
   );
 
-  const test = await testTelegramConnection(pool, tenantId);
-  return test.config;
+  if (col.has("telegram_last_status_report_at") && statusEnabled) {
+    await pool.execute(
+      `UPDATE infrastructure_monitoring_settings SET telegram_last_status_report_at = NULL WHERE tenant_id = ?`,
+      [tenantId]
+    );
+  }
+
+  const confirmation = await sendTelegramSaveConfirmation(pool, tenantId, statusInterval, statusEnabled);
+  return confirmation.config;
+}
+
+/** After save — confirms link works and explains automatic schedule (not a generic API test). */
+export async function sendTelegramSaveConfirmation(
+  pool: Pool,
+  tenantId: string,
+  intervalMinutes: number,
+  statusReportsEnabled: boolean
+): Promise<{ ok: boolean; config: TelegramConfigPublic }> {
+  const creds = await getTelegramCredentialsLoose(pool, tenantId);
+  if (!creds) {
+    const config = await getTelegramConfig(pool, tenantId);
+    return { ok: false, config };
+  }
+
+  const lines = [
+    "✅ تم حفظ إعدادات Telegram",
+    "",
+    "النظام يعمل والاتصال ناجح.",
+    "",
+    statusReportsEnabled
+      ? `📊 تقارير الراوترات: تلقائياً كل ${intervalMinutes} دقيقة.`
+      : "📊 التقارير الدورية: غير مفعّلة.",
+    "⚠️ تنبيهات فورية: جهد، CPU، RAM، قرص — عند تجاوز العتبات.",
+    "",
+    statusReportsEnabled
+      ? `أول تقرير تلقائي خلال ${intervalMinutes} دقيقة (أو أقل).`
+      : "فعّل «التقارير الدورية» لاستلام تقارير مجدولة.",
+  ];
+
+  const send = await sendTelegramMessage(creds.botToken, creds.chatId, lines.join("\n"));
+  const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
+  if (col.has("telegram_last_test_ok")) {
+    await pool.execute(
+      `UPDATE infrastructure_monitoring_settings SET telegram_last_test_ok = ?, telegram_last_error = ? WHERE tenant_id = ?`,
+      [send.ok ? 1 : 0, send.ok ? null : (send.error ?? "failed").slice(0, 512), tenantId]
+    );
+  }
+  return { ok: send.ok, config: await getTelegramConfig(pool, tenantId) };
 }
 
 export async function sendTelegramMessage(

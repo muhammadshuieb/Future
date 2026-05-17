@@ -36,6 +36,7 @@ import {
 import { runQoeCycle, runRadiusMonitorCycle, recordCoaEvent } from "./enterprise-analytics.worker.js";
 import { log } from "../services/logger.service.js";
 import { runInfrastructureMonitorCycle } from "../services/infrastructure/infrastructure-monitor-cycle.service.js";
+import { runTelegramStatusReportsDue } from "../services/infrastructure/infrastructure-telegram-status-report.service.js";
 
 export type WorkerDispatchContext = {
   pool: Pool;
@@ -256,6 +257,9 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
       break;
     case "infrastructure-monitor-cycle":
       await runInfrastructureMonitorCycle(pool, tenantId);
+      break;
+    case "telegram-status-report-tick":
+      await runTelegramStatusReportsDue(pool);
       break;
     case QueueJobNames.WAHA_SEND_INVOICE_RECEIPT: {
       const payload = job.data as WahaInvoiceReceiptJobData;

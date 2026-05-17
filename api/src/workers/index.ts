@@ -187,6 +187,8 @@ async function bootstrapRepeatables() {
     parseInt(process.env.INFRASTRUCTURE_MONITOR_MS ?? "180000", 10) || 180_000
   );
   await add("infrastructure-monitor-cycle", infraMs);
+  await replaceRepeatablesByName("telegram-status-report-tick");
+  await add("telegram-status-report-tick", everyMin);
 }
 
 async function main() {

@@ -117,10 +117,17 @@ export function TelegramNotificationsPage() {
         setError(formatStaffApiError(r.status, raw, t));
         return;
       }
-      const j = (await r.json()) as { telegram: TelegramConfig };
+      const j = (await r.json()) as { telegram: TelegramConfig; notification_ok?: boolean };
       setTelegram(j.telegram);
       setBotToken("");
-      setMessage(t("telegram.saved"));
+      const min = j.telegram?.status_interval_minutes ?? statusIntervalMinutes;
+      if (j.notification_ok === false) {
+        setError(j.telegram?.last_error ?? t("telegram.testFail"));
+      } else if (statusReportsEnabled) {
+        setMessage(`${t("telegram.saved")}. ${t("telegram.savedSchedule").replace("{{min}}", String(min))}`);
+      } else {
+        setMessage(`${t("telegram.saved")}. ${t("telegram.savedNoReports")}`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

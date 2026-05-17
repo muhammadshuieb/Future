@@ -141,7 +141,11 @@ async function dispatchStatusReport(
   return { ok: true };
 }
 
-export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string): Promise<boolean> {
+export async function maybeSendTelegramStatusReport(
+  pool: Pool,
+  tenantId: string,
+  options: { freshCollect?: boolean } = {}
+): Promise<boolean> {
   const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
   if (!col.has("telegram_status_interval_minutes")) return false;
 
@@ -164,12 +168,37 @@ export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string
   const creds = await getTelegramCredentials(pool, tenantId);
   if (!creds) return false;
 
-  const result = await dispatchStatusReport(pool, tenantId, creds, true);
+  const freshCollect = options.freshCollect ?? false;
+  const result = await dispatchStatusReport(pool, tenantId, creds, freshCollect);
   if (!result.ok) {
     log.warn(`telegram_status_report_failed tenant=${tenantId} ${result.detail}`, {}, "telegram");
     return false;
   }
+  log.info(`telegram_status_report_sent tenant=${tenantId}`, {}, "telegram");
   return true;
+}
+
+/** Worker tick — check all tenants due for a scheduled status report (every ~60s). */
+export async function runTelegramStatusReportsDue(pool: Pool): Promise<void> {
+  const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
+  if (!col.has("telegram_status_interval_minutes")) return;
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT tenant_id FROM infrastructure_monitoring_settings
+     WHERE COALESCE(telegram_status_reports_enabled, 0) = 1
+       AND COALESCE(telegram_alerts_enabled, 0) = 1
+       AND telegram_chat_id IS NOT NULL AND TRIM(telegram_chat_id) <> ''
+       AND telegram_bot_token_encrypted IS NOT NULL`
+  );
+
+  for (const row of rows) {
+    const tenantId = String(row.tenant_id);
+    try {
+      await maybeSendTelegramStatusReport(pool, tenantId, { freshCollect: true });
+    } catch (err) {
+      log.warn(`telegram_status_report_tick_failed tenant=${tenantId} ${String(err)}`, {}, "telegram");
+    }
+  }
 }
 
 /** Manual send — fresh collect with instant Mbps, one message per router. */

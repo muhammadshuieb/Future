@@ -26,7 +26,7 @@ export async function runInfrastructureMonitorCycle(pool: Pool, tenantId: string
     log.warn(`router_scheduled_actions_failed ${String(e)}`, {}, "infra-monitor");
   });
 
-  await maybeSendTelegramStatusReport(pool, tenantId).catch((e) => {
+  await maybeSendTelegramStatusReport(pool, tenantId, { freshCollect: false }).catch((e) => {
     log.warn(`telegram_status_report_failed ${String(e)}`, {}, "infra-monitor");
   });
 
