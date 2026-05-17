@@ -35,8 +35,14 @@ export type RouterHealthSnapshot = {
   ppp_active_sessions: number;
   hotspot_active_sessions: number;
   interfaces_down: number;
+  /** Cumulative rx-byte counter from RouterOS (legacy column name). */
   traffic_rx_bps: number | null;
+  /** Cumulative tx-byte counter from RouterOS (legacy column name). */
   traffic_tx_bps: number | null;
+  /** MB downloaded since previous poll. */
+  traffic_rx_mb: number | null;
+  /** MB uploaded since previous poll. */
+  traffic_tx_mb: number | null;
   traffic_monitor_interface: string | null;
   internet_reachable: boolean | null;
   last_sync_ok: boolean;

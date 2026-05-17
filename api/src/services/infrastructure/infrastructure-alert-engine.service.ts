@@ -72,8 +72,8 @@ export function evaluateRouterAlerts(
       severity: snap.cpu_percent >= thresholds.cpu_percent_max + 5 ? "critical" : "warning",
       nas_device_id: snap.nas_device_id,
       nas_name: name,
-      title: `ارتفاع استخدام المعالج — ${name}`,
-      message: `CPU: ${snap.cpu_percent}%`,
+      title: `ارتفاع المعالج — ${name}`,
+      message: `استخدام CPU: ${snap.cpu_percent}% (الحد ${thresholds.cpu_percent_max}%)`,
       metric_value: `${snap.cpu_percent}`,
       threshold_value: `${thresholds.cpu_percent_max}`,
       fingerprint: fp([snap.tenant_id, snap.nas_device_id, "high_cpu"]),
@@ -86,8 +86,8 @@ export function evaluateRouterAlerts(
       severity: snap.ram_percent >= thresholds.ram_percent_max + 5 ? "critical" : "warning",
       nas_device_id: snap.nas_device_id,
       nas_name: name,
-      title: `ارتفاع استخدام الذاكرة — ${name}`,
-      message: `RAM: ${snap.ram_percent}%`,
+      title: `ارتفاع الذاكرة — ${name}`,
+      message: `استخدام RAM: ${snap.ram_percent}% (الحد ${thresholds.ram_percent_max}%)`,
       metric_value: `${snap.ram_percent}`,
       threshold_value: `${thresholds.ram_percent_max}`,
       fingerprint: fp([snap.tenant_id, snap.nas_device_id, "high_ram"]),
@@ -120,7 +120,7 @@ export function evaluateRouterAlerts(
       nas_device_id: snap.nas_device_id,
       nas_name: name,
       title: `انخفاض الجهد — ${name}`,
-      message: `الجهد: ${snap.voltage_v}V`,
+      message: `الجهد ${snap.voltage_v}V أقل من ${thresholds.voltage_v_min}V`,
       metric_value: `${snap.voltage_v}`,
       threshold_value: `${thresholds.voltage_v_min}`,
       fingerprint: fp([snap.tenant_id, snap.nas_device_id, "low_voltage"]),
@@ -187,7 +187,7 @@ export function evaluateServerAlerts(
       nas_device_id: null,
       nas_name: null,
       title: "ارتفاع ذاكرة السيرفر",
-      message: `RAM: ${snap.ram_percent}%`,
+      message: `استخدام RAM: ${snap.ram_percent}% (الحد ${thresholds.server_ram_percent_max}%)`,
       metric_value: `${snap.ram_percent}`,
       threshold_value: `${thresholds.server_ram_percent_max}`,
       fingerprint: fp([tenantId, null, "high_server_ram"]),
@@ -204,8 +204,8 @@ export function evaluateServerAlerts(
       severity: "warning",
       nas_device_id: null,
       nas_name: null,
-      title: "ارتفاع حمل السيرفر",
-      message: `Load: ${snap.cpu_load_1m} (CPUs: ${snap.cpu_count})`,
+      title: "ارتفاع معالج السيرفر",
+      message: `حمل CPU: ${snap.cpu_load_1m} — أنوية: ${snap.cpu_count} (الحد ×${thresholds.server_cpu_load_multiplier})`,
       metric_value: `${snap.cpu_load_1m}`,
       threshold_value: `${thresholds.server_cpu_load_multiplier}x`,
       fingerprint: fp([tenantId, null, "high_server_cpu"]),
@@ -217,8 +217,8 @@ export function evaluateServerAlerts(
       severity: "critical",
       nas_device_id: null,
       nas_name: null,
-      title: "مساحة القرص منخفضة",
-      message: `الاستخدام: ${snap.disk_percent}%`,
+      title: "القرص ممتلئ تقريباً",
+      message: `استخدام القرص: ${snap.disk_percent}% (الحد ${thresholds.disk_percent_max}%)`,
       metric_value: `${snap.disk_percent}`,
       threshold_value: `${thresholds.disk_percent_max}`,
       fingerprint: fp([tenantId, null, "disk_almost_full"]),
@@ -304,6 +304,7 @@ async function dispatchAlertNotifications(
   severity: AlertSeverity,
   ev: EvaluatedAlert,
   snap: RouterHealthSnapshot | null | undefined,
+  serverSnap: ServerHealthSnapshot | null | undefined,
   isRecovery: boolean,
   settings: MonitoringSettings
 ): Promise<boolean> {
@@ -317,7 +318,7 @@ async function dispatchAlertNotifications(
     if (await dispatchInfrastructureWhatsApp(pool, tenantId, "info", body, true)) anySent = true;
   }
   if (!isRecovery && shouldNotifyTelegram(settings)) {
-    const body = formatAlertTelegramMessage(ev, snap);
+    const body = formatAlertTelegramMessage(ev, snap, serverSnap);
     if (await dispatchInfrastructureTelegram(pool, tenantId, severity, body, false)) anySent = true;
   }
   if (isRecovery && settings.recovery_notifications_enabled && shouldNotifyTelegram(settings)) {
@@ -332,7 +333,8 @@ export async function upsertInfrastructureAlerts(
   tenantId: string,
   evaluated: EvaluatedAlert[],
   settings: MonitoringSettings,
-  routerSnapsById: Map<string, RouterHealthSnapshot> = new Map()
+  routerSnapsById: Map<string, RouterHealthSnapshot> = new Map(),
+  serverSnap: ServerHealthSnapshot | null = null
 ): Promise<void> {
   if (!(await hasTable(pool, "infrastructure_alerts"))) return;
 
@@ -356,7 +358,16 @@ export async function upsertInfrastructureAlerts(
       );
       if (canNotify(settings, ev.severity, lastNotified)) {
         const snap = ev.nas_device_id ? routerSnapsById.get(ev.nas_device_id) ?? null : null;
-        const sent = await dispatchAlertNotifications(pool, tenantId, ev.severity, ev, snap, false, settings);
+        const sent = await dispatchAlertNotifications(
+          pool,
+          tenantId,
+          ev.severity,
+          ev,
+          snap,
+          serverSnap,
+          false,
+          settings
+        );
         if (sent) {
           await pool.execute(
             `UPDATE infrastructure_alerts SET notification_count = notification_count + 1, last_notified_at = NOW(3) WHERE id = ?`,
@@ -393,7 +404,16 @@ export async function upsertInfrastructureAlerts(
     await recordHistory(pool, alertId, tenantId, "created", ev.severity, ev.message);
     if (canNotify(settings, ev.severity, null)) {
       const snap = ev.nas_device_id ? routerSnapsById.get(ev.nas_device_id) ?? null : null;
-      const sent = await dispatchAlertNotifications(pool, tenantId, ev.severity, ev, snap, false, settings);
+      const sent = await dispatchAlertNotifications(
+        pool,
+        tenantId,
+        ev.severity,
+        ev,
+        snap,
+        serverSnap,
+        false,
+        settings
+      );
       if (sent) {
         await pool.execute(
           `UPDATE infrastructure_alerts SET notification_count = 1, last_notified_at = NOW(3) WHERE id = ?`,
@@ -427,7 +447,16 @@ export async function upsertInfrastructureAlerts(
         fingerprint,
       };
       const snap = recoveryEv.nas_device_id ? routerSnapsById.get(recoveryEv.nas_device_id) ?? null : null;
-      const sent = await dispatchAlertNotifications(pool, tenantId, "info", recoveryEv, snap, true, settings);
+      const sent = await dispatchAlertNotifications(
+        pool,
+        tenantId,
+        "info",
+        recoveryEv,
+        snap,
+        serverSnap,
+        true,
+        settings
+      );
       if (sent) {
         await pool.execute(`UPDATE infrastructure_alerts SET recovery_notified_at = NOW(3) WHERE id = ?`, [alertId]);
         await recordHistory(pool, alertId, tenantId, "recovery_notified", "info", recoveryEv.message);
@@ -495,7 +524,7 @@ export async function runAlertEvaluationCycle(
   const routerSnapsById = new Map<string, RouterHealthSnapshot>();
   for (const s of routerSnaps) routerSnapsById.set(s.nas_device_id, s);
 
-  await upsertInfrastructureAlerts(pool, tenantId, evaluated, settings, routerSnapsById);
+  await upsertInfrastructureAlerts(pool, tenantId, evaluated, settings, routerSnapsById, serverSnap);
 }
 
 export async function listActiveAlerts(pool: Pool, tenantId: string, limit = 50): Promise<RowDataPacket[]> {

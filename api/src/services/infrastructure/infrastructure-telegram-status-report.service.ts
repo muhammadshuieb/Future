@@ -4,20 +4,13 @@ import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
 import { listRouterHealthSnapshots } from "./router-health-collector.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import { formatUptime } from "./infrastructure-telegram-notify.service.js";
+import { formatTrafficMbLine } from "./traffic-metrics.util.js";
 import {
   getTelegramCredentials,
   getTelegramCredentialsLoose,
   sendTelegramMessage,
 } from "./infrastructure-telegram.service.js";
 import { log } from "../logger.service.js";
-
-function formatBytes(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n) || n <= 0) return "—";
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${n} B`;
-}
 
 function routerBlock(snap: RouterHealthSnapshot): string {
   const online = snap.last_sync_ok && snap.health_status === "online";
@@ -41,11 +34,8 @@ function routerBlock(snap: RouterHealthSnapshot): string {
     if (snap.interfaces_down > 0) {
       lines.push(`⚠️ واجهات متوقفة: ${snap.interfaces_down}`);
     }
-    const ifaceLabel = snap.traffic_monitor_interface
-      ? ` (${snap.traffic_monitor_interface})`
-      : "";
     lines.push(
-      `📡 Traffic${ifaceLabel} RX: ${formatBytes(snap.traffic_rx_bps)} | TX: ${formatBytes(snap.traffic_tx_bps)}`
+      formatTrafficMbLine(snap.traffic_rx_mb, snap.traffic_tx_mb, snap.traffic_monitor_interface)
     );
   }
   return lines.join("\n");

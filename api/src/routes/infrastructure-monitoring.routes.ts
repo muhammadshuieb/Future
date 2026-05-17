@@ -176,10 +176,10 @@ router.post("/telegram/test", requireRole("admin", "manager"), requireMonitoring
 });
 
 const thresholdBody = z.object({
-  cpu_percent_max: z.number().optional(),
-  ram_percent_max: z.number().optional(),
-  temperature_c_max: z.number().optional(),
-  voltage_v_min: z.number().nullable().optional(),
+  cpu_percent_max: z.number().min(1).max(100).optional(),
+  ram_percent_max: z.number().min(1).max(100).optional(),
+  temperature_c_max: z.number().min(1).max(120).optional(),
+  voltage_v_min: z.number().min(0.1).max(48).nullable().optional(),
   ppp_session_drop_percent: z.number().optional(),
   traffic_rx_mbps_spike: z.number().nullable().optional(),
   traffic_tx_mbps_spike: z.number().nullable().optional(),

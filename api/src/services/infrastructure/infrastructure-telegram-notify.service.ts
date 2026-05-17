@@ -2,6 +2,8 @@ import type { Pool } from "mysql2/promise";
 import { isInQuietHours, getMonitoringSettings } from "./infrastructure-settings.service.js";
 import type { AlertSeverity, RouterHealthSnapshot } from "./infrastructure-types.js";
 import type { EvaluatedAlert } from "./infrastructure-alert-engine.service.js";
+import type { ServerHealthSnapshot } from "./server-health-collector.service.js";
+import { formatTrafficMbLine } from "./traffic-metrics.util.js";
 import { getTelegramCredentials, sendTelegramMessage } from "./infrastructure-telegram.service.js";
 
 function nowAr(): string {
@@ -18,7 +20,7 @@ export function formatUptime(seconds: number | null | undefined): string {
   return `${minutes}د`;
 }
 
-function metricsBlock(snap: RouterHealthSnapshot | null | undefined): string[] {
+function routerMetricsBlock(snap: RouterHealthSnapshot | null | undefined): string[] {
   if (!snap) return [];
   const lines: string[] = [];
   lines.push(`⏱ Uptime: ${formatUptime(snap.uptime_seconds)}`);
@@ -31,23 +33,52 @@ function metricsBlock(snap: RouterHealthSnapshot | null | undefined): string[] {
   if (snap.cpu_percent != null) lines.push(`CPU: ${snap.cpu_percent}%`);
   if (snap.ram_percent != null) lines.push(`RAM: ${snap.ram_percent}%`);
   if (snap.ppp_active_sessions > 0) lines.push(`PPP: ${snap.ppp_active_sessions}`);
+  if (snap.traffic_rx_mb != null || snap.traffic_tx_mb != null) {
+    lines.push(formatTrafficMbLine(snap.traffic_rx_mb, snap.traffic_tx_mb, snap.traffic_monitor_interface));
+  }
   return lines;
 }
 
+function serverMetricsBlock(snap: ServerHealthSnapshot | null | undefined): string[] {
+  if (!snap) return [];
+  const lines: string[] = [];
+  if (snap.ram_percent != null) lines.push(`RAM السيرفر: ${snap.ram_percent}%`);
+  if (snap.disk_percent != null) lines.push(`القرص: ${snap.disk_percent}%`);
+  if (snap.cpu_load_1m != null && snap.cpu_count != null) {
+    lines.push(`حمل CPU: ${snap.cpu_load_1m} / ${snap.cpu_count} أنوية`);
+  }
+  return lines;
+}
+
+const SERVER_ALERT_TYPES = new Set([
+  "server_down",
+  "high_server_cpu",
+  "high_server_ram",
+  "disk_almost_full",
+  "service_down",
+  "radius_down",
+]);
+
 export function formatAlertTelegramMessage(
   ev: EvaluatedAlert,
-  snap: RouterHealthSnapshot | null | undefined
+  snap: RouterHealthSnapshot | null | undefined,
+  serverSnap?: ServerHealthSnapshot | null
 ): string {
   const icon = ev.severity === "critical" ? "🚨 تنبيه حرج" : ev.severity === "warning" ? "⚠️ تنبيه" : "ℹ️ تنبيه";
-  const server = ev.nas_name ? `الراوتر: ${ev.nas_name}` : "Future Radius";
-  const ip = snap?.nas_ip ? `IP: ${snap.nas_ip}` : null;
+  const isServer = SERVER_ALERT_TYPES.has(ev.alert_type);
+  const server = isServer
+    ? "سيرفر Future Radius"
+    : ev.nas_name
+      ? `الراوتر: ${ev.nas_name}`
+      : "Future Radius";
+  const ip = !isServer && snap?.nas_ip ? `IP: ${snap.nas_ip}` : null;
   const lines = [
     icon,
     server,
     ip,
     `المشكلة: ${ev.title}`,
     ev.message,
-    ...metricsBlock(snap),
+    ...(isServer ? serverMetricsBlock(serverSnap) : routerMetricsBlock(snap)),
     ev.threshold_value ? `العتبة: ${ev.threshold_value}` : null,
     `الوقت: ${nowAr()}`,
   ].filter(Boolean) as string[];
@@ -56,7 +87,7 @@ export function formatAlertTelegramMessage(
 
 export function formatRecoveryTelegramMessage(ev: EvaluatedAlert): string {
   const name = ev.nas_name ?? "Future Radius";
-  return [`✅ تم حل المشكلة`, `السيرفر ${name} عاد للعمل بشكل طبيعي.`, `الوقت: ${nowAr()}`].join("\n");
+  return [`✅ تم حل المشكلة`, `${name} عاد للعمل بشكل طبيعي.`, `الوقت: ${nowAr()}`].join("\n");
 }
 
 export async function dispatchInfrastructureTelegram(

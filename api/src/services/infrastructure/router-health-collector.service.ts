@@ -1,6 +1,7 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { hasTable } from "../../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
+import { computeTrafficPeriodMb } from "./traffic-metrics.util.js";
 import {
   resolveMikrotikApiHost,
   resolveMikrotikApiPort,
@@ -131,8 +132,10 @@ async function collectFromRouter(
         ppp_active_sessions: pppCount,
         hotspot_active_sessions: hotspotCount,
         interfaces_down: interfacesDown,
-        traffic_rx_bps: ifaceTraffic.rx > 0 ? ifaceTraffic.rx : null,
-        traffic_tx_bps: ifaceTraffic.tx > 0 ? ifaceTraffic.tx : null,
+        traffic_rx_bps: ifaceTraffic.rx,
+        traffic_tx_bps: ifaceTraffic.tx,
+        traffic_rx_mb: null,
+        traffic_tx_mb: null,
         traffic_monitor_interface: trafficIface,
         internet_reachable: internetReachable,
         last_sync_ok: true,
@@ -159,6 +162,8 @@ async function collectFromRouter(
         interfaces_down: 0,
         traffic_rx_bps: null,
         traffic_tx_bps: null,
+        traffic_rx_mb: null,
+        traffic_tx_mb: null,
         traffic_monitor_interface: trafficIface,
         internet_reachable: null,
         last_sync_ok: false,
@@ -171,7 +176,11 @@ async function collectFromRouter(
   }
 }
 
-export async function collectRouterHealthForTenant(pool: Pool, tenantId: string): Promise<RouterHealthSnapshot[]> {
+export async function collectRouterHealthForTenant(
+  pool: Pool,
+  tenantId: string,
+  prevById: Map<string, RouterHealthSnapshot> = new Map()
+): Promise<RouterHealthSnapshot[]> {
   if (!(await hasTable(pool, "nas_devices")) || !(await hasTable(pool, "router_health_snapshots"))) {
     return [];
   }
@@ -205,6 +214,8 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
         interfaces_down: 0,
         traffic_rx_bps: null,
         traffic_tx_bps: null,
+        traffic_rx_mb: null,
+        traffic_tx_mb: null,
         traffic_monitor_interface: null,
         internet_reachable: null,
         last_sync_ok: false,
@@ -234,6 +245,8 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
           interfaces_down: 0,
           traffic_rx_bps: null,
           traffic_tx_bps: null,
+          traffic_rx_mb: null,
+          traffic_tx_mb: null,
           traffic_monitor_interface: null,
           internet_reachable: null,
           last_sync_ok: false,
@@ -248,6 +261,18 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
           ? String(row.traffic_monitor_interface).trim() || null
           : null;
         const { metrics, raw } = await collectFromRouter(host, user, password, port, trafficIface);
+        const prev = prevById.get(nasId);
+        if (metrics.traffic_rx_bps != null && metrics.traffic_tx_bps != null) {
+          const period = computeTrafficPeriodMb(
+            metrics.traffic_rx_bps,
+            metrics.traffic_tx_bps,
+            prev?.traffic_rx_bps,
+            prev?.traffic_tx_bps,
+            prev?.last_sync_at
+          );
+          metrics.traffic_rx_mb = period.rxMb;
+          metrics.traffic_tx_mb = period.txMb;
+        }
         await logRouterCommand(pool, {
           tenantId,
           routerId: nasId,
@@ -269,47 +294,80 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
           nas_ip: nasIp,
           ...metrics,
         };
-        await pool.execute(
-          `INSERT INTO router_health_snapshots
-            (nas_device_id, tenant_id, nas_name, nas_ip, health_status, cpu_percent, ram_percent,
-             board_temperature_c, voltage_v, voltage_supported, uptime_seconds, ppp_active_sessions,
-             hotspot_active_sessions, interfaces_down, traffic_rx_bps, traffic_tx_bps, internet_reachable,
-             metrics_json, last_sync_ok, last_sync_at, last_sync_error, last_seen_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), ?, NOW(3))
-           ON DUPLICATE KEY UPDATE
-             nas_name = VALUES(nas_name), nas_ip = VALUES(nas_ip), health_status = VALUES(health_status),
-             cpu_percent = VALUES(cpu_percent), ram_percent = VALUES(ram_percent),
-             board_temperature_c = VALUES(board_temperature_c), voltage_v = VALUES(voltage_v),
-             voltage_supported = VALUES(voltage_supported), uptime_seconds = VALUES(uptime_seconds),
-             ppp_active_sessions = VALUES(ppp_active_sessions), hotspot_active_sessions = VALUES(hotspot_active_sessions),
-             interfaces_down = VALUES(interfaces_down), traffic_rx_bps = VALUES(traffic_rx_bps),
-             traffic_tx_bps = VALUES(traffic_tx_bps), internet_reachable = VALUES(internet_reachable),
-             metrics_json = VALUES(metrics_json), last_sync_ok = VALUES(last_sync_ok),
-             last_sync_at = VALUES(last_sync_at), last_sync_error = VALUES(last_sync_error),
-             last_seen_at = VALUES(last_seen_at)`,
-          [
-            nasId,
-            tenantId,
-            nasName,
-            nasIp,
-            snapshot.health_status,
-            snapshot.cpu_percent,
-            snapshot.ram_percent,
-            snapshot.board_temperature_c,
-            snapshot.voltage_v,
-            snapshot.voltage_supported ? 1 : 0,
-            snapshot.uptime_seconds,
-            snapshot.ppp_active_sessions,
-            snapshot.hotspot_active_sessions,
-            snapshot.interfaces_down,
-            snapshot.traffic_rx_bps,
-            snapshot.traffic_tx_bps,
-            snapshot.internet_reachable,
-            JSON.stringify(raw),
-            snapshot.last_sync_ok ? 1 : 0,
-            snapshot.last_sync_error,
-          ]
-        );
+        const snapCols = await getTableColumns(pool, "router_health_snapshots");
+        const rowParams = [
+          nasId,
+          tenantId,
+          nasName,
+          nasIp,
+          snapshot.health_status,
+          snapshot.cpu_percent,
+          snapshot.ram_percent,
+          snapshot.board_temperature_c,
+          snapshot.voltage_v,
+          snapshot.voltage_supported ? 1 : 0,
+          snapshot.uptime_seconds,
+          snapshot.ppp_active_sessions,
+          snapshot.hotspot_active_sessions,
+          snapshot.interfaces_down,
+          snapshot.traffic_rx_bps,
+          snapshot.traffic_tx_bps,
+          snapshot.internet_reachable,
+          JSON.stringify(raw),
+          snapshot.last_sync_ok ? 1 : 0,
+          snapshot.last_sync_error,
+        ] as const;
+        if (snapCols.has("traffic_rx_mb_period")) {
+          await pool.execute(
+            `INSERT INTO router_health_snapshots
+              (nas_device_id, tenant_id, nas_name, nas_ip, health_status, cpu_percent, ram_percent,
+               board_temperature_c, voltage_v, voltage_supported, uptime_seconds, ppp_active_sessions,
+               hotspot_active_sessions, interfaces_down, traffic_rx_bps, traffic_tx_bps,
+               traffic_rx_mb_period, traffic_tx_mb_period, internet_reachable,
+               metrics_json, last_sync_ok, last_sync_at, last_sync_error, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), ?, NOW(3))
+             ON DUPLICATE KEY UPDATE
+               nas_name = VALUES(nas_name), nas_ip = VALUES(nas_ip), health_status = VALUES(health_status),
+               cpu_percent = VALUES(cpu_percent), ram_percent = VALUES(ram_percent),
+               board_temperature_c = VALUES(board_temperature_c), voltage_v = VALUES(voltage_v),
+               voltage_supported = VALUES(voltage_supported), uptime_seconds = VALUES(uptime_seconds),
+               ppp_active_sessions = VALUES(ppp_active_sessions),
+               hotspot_active_sessions = VALUES(hotspot_active_sessions),
+               interfaces_down = VALUES(interfaces_down), traffic_rx_bps = VALUES(traffic_rx_bps),
+               traffic_tx_bps = VALUES(traffic_tx_bps),
+               traffic_rx_mb_period = VALUES(traffic_rx_mb_period),
+               traffic_tx_mb_period = VALUES(traffic_tx_mb_period),
+               internet_reachable = VALUES(internet_reachable),
+               metrics_json = VALUES(metrics_json), last_sync_ok = VALUES(last_sync_ok),
+               last_sync_at = NOW(3), last_sync_error = VALUES(last_sync_error), last_seen_at = NOW(3)`,
+            [
+              ...rowParams.slice(0, 16),
+              snapshot.traffic_rx_mb,
+              snapshot.traffic_tx_mb,
+              ...rowParams.slice(16),
+            ]
+          );
+        } else {
+          await pool.execute(
+            `INSERT INTO router_health_snapshots
+              (nas_device_id, tenant_id, nas_name, nas_ip, health_status, cpu_percent, ram_percent,
+               board_temperature_c, voltage_v, voltage_supported, uptime_seconds, ppp_active_sessions,
+               hotspot_active_sessions, interfaces_down, traffic_rx_bps, traffic_tx_bps, internet_reachable,
+               metrics_json, last_sync_ok, last_sync_at, last_sync_error, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), ?, NOW(3))
+             ON DUPLICATE KEY UPDATE
+               nas_name = VALUES(nas_name), nas_ip = VALUES(nas_ip), health_status = VALUES(health_status),
+               cpu_percent = VALUES(cpu_percent), ram_percent = VALUES(ram_percent),
+               board_temperature_c = VALUES(board_temperature_c), voltage_v = VALUES(voltage_v),
+               voltage_supported = VALUES(voltage_supported), uptime_seconds = VALUES(uptime_seconds),
+               ppp_active_sessions = VALUES(ppp_active_sessions), hotspot_active_sessions = VALUES(hotspot_active_sessions),
+               interfaces_down = VALUES(interfaces_down), traffic_rx_bps = VALUES(traffic_rx_bps),
+               traffic_tx_bps = VALUES(traffic_tx_bps), internet_reachable = VALUES(internet_reachable),
+               metrics_json = VALUES(metrics_json), last_sync_ok = VALUES(last_sync_ok),
+               last_sync_at = NOW(3), last_sync_error = VALUES(last_sync_error), last_seen_at = NOW(3)`,
+            [...rowParams]
+          );
+        }
         out.push(snapshot);
         continue;
       }
@@ -354,6 +412,14 @@ export async function listRouterHealthSnapshots(pool: Pool, tenantId: string): P
     interfaces_down: Number(r.interfaces_down ?? 0),
     traffic_rx_bps: r.traffic_rx_bps != null ? Number(r.traffic_rx_bps) : null,
     traffic_tx_bps: r.traffic_tx_bps != null ? Number(r.traffic_tx_bps) : null,
+    traffic_rx_mb:
+      r.traffic_rx_mb_period != null
+        ? Number(r.traffic_rx_mb_period)
+        : null,
+    traffic_tx_mb:
+      r.traffic_tx_mb_period != null
+        ? Number(r.traffic_tx_mb_period)
+        : null,
     traffic_monitor_interface:
       r.traffic_monitor_interface != null ? String(r.traffic_monitor_interface) : null,
     internet_reachable: r.internet_reachable != null ? Boolean(r.internet_reachable) : null,

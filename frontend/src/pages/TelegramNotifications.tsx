@@ -21,6 +21,13 @@ type TelegramConfig = {
   last_error: string | null;
 };
 
+type AlertThresholds = {
+  voltage_v_min: number | null;
+  cpu_percent_max: number;
+  ram_percent_max: number;
+  disk_percent_max: number;
+};
+
 export function TelegramNotificationsPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -38,6 +45,11 @@ export function TelegramNotificationsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [sendingReport, setSendingReport] = useState(false);
+  const [savingThresholds, setSavingThresholds] = useState(false);
+  const [voltageMin, setVoltageMin] = useState("11.5");
+  const [cpuMax, setCpuMax] = useState("90");
+  const [ramMax, setRamMax] = useState("90");
+  const [diskMax, setDiskMax] = useState("90");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,12 +62,20 @@ export function TelegramNotificationsPage() {
     try {
       const r = await apiFetch("/api/infrastructure-monitoring/settings");
       if (r.ok) {
-        const j = (await r.json()) as { telegram?: TelegramConfig };
+        const j = (await r.json()) as { telegram?: TelegramConfig; thresholds?: AlertThresholds };
         if (j.telegram) {
           setTelegram(j.telegram);
           setChatId(j.telegram.chat_id ?? "");
           setStatusReportsEnabled(j.telegram.status_reports_enabled ?? true);
           setStatusIntervalMinutes(j.telegram.status_interval_minutes ?? 5);
+        }
+        if (j.thresholds) {
+          setVoltageMin(
+            j.thresholds.voltage_v_min != null ? String(j.thresholds.voltage_v_min) : "11.5"
+          );
+          setCpuMax(String(j.thresholds.cpu_percent_max ?? 90));
+          setRamMax(String(j.thresholds.ram_percent_max ?? 90));
+          setDiskMax(String(j.thresholds.disk_percent_max ?? 90));
         }
       }
     } finally {
@@ -125,6 +145,48 @@ export function TelegramNotificationsPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function saveThresholds() {
+    setSavingThresholds(true);
+    setMessage(null);
+    setError(null);
+    const v = parseFloat(voltageMin.replace(",", "."));
+    const cpu = parseInt(cpuMax, 10);
+    const ram = parseInt(ramMax, 10);
+    const disk = parseInt(diskMax, 10);
+    if (!Number.isFinite(v) || v <= 0 || v > 48) {
+      setError(t("telegram.thresholdVoltage"));
+      setSavingThresholds(false);
+      return;
+    }
+    if (!Number.isFinite(cpu) || cpu < 1 || cpu > 100) {
+      setError(t("telegram.thresholdCpu"));
+      setSavingThresholds(false);
+      return;
+    }
+    try {
+      const r = await apiFetch("/api/infrastructure-monitoring/thresholds/global", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voltage_v_min: v,
+          cpu_percent_max: cpu,
+          ram_percent_max: Number.isFinite(ram) ? ram : 90,
+          disk_percent_max: Number.isFinite(disk) ? disk : 90,
+        }),
+      });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setError(formatStaffApiError(r.status, raw, t));
+        return;
+      }
+      setMessage(t("telegram.thresholdsSaved"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingThresholds(false);
     }
   }
 
@@ -229,6 +291,75 @@ export function TelegramNotificationsPage() {
                 </span>
               ) : null}
             </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <AlertCircle className="h-4 w-4 text-amber-500" />
+              {t("telegram.instantAlertsTitle")}
+            </div>
+            <p className="mt-2 text-xs opacity-70">{t("telegram.instantAlertsHint")}</p>
+
+            <p className="mt-4 text-xs font-semibold opacity-90">{t("telegram.thresholdsTitle")}</p>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <TextField
+                label={t("telegram.thresholdVoltage")}
+                type="number"
+                step="0.1"
+                min={0.1}
+                max={48}
+                value={voltageMin}
+                onChange={(e) => setVoltageMin(e.target.value)}
+                hint={t("telegram.thresholdVoltageHint")}
+              />
+              <TextField
+                label={t("telegram.thresholdCpu")}
+                type="number"
+                min={1}
+                max={100}
+                value={cpuMax}
+                onChange={(e) => setCpuMax(e.target.value)}
+                hint={t("telegram.thresholdCpuHint")}
+              />
+              <TextField
+                label={t("telegram.thresholdRam")}
+                type="number"
+                min={1}
+                max={100}
+                value={ramMax}
+                onChange={(e) => setRamMax(e.target.value)}
+                hint={t("telegram.thresholdRamHint")}
+              />
+              <TextField
+                label={t("telegram.thresholdDisk")}
+                type="number"
+                min={1}
+                max={100}
+                value={diskMax}
+                onChange={(e) => setDiskMax(e.target.value)}
+                hint={t("telegram.thresholdDiskHint")}
+              />
+            </div>
+
+            <div className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void saveThresholds()}
+                disabled={savingThresholds}
+              >
+                {savingThresholds ? t("common.loading") : t("telegram.saveThresholds")}
+              </Button>
+            </div>
+
+            <ul className="mt-4 list-inside list-disc space-y-1 text-xs opacity-80">
+              <li>{t("telegram.alertVoltage")}</li>
+              <li>{t("telegram.alertRouterCpu")}</li>
+              <li>{t("telegram.alertRouterRam")}</li>
+              <li>{t("telegram.alertServerDisk")}</li>
+              <li>{t("telegram.alertServerRam")}</li>
+              <li>{t("telegram.alertServerCpu")}</li>
+            </ul>
           </Card>
 
           <Card className="p-5">
