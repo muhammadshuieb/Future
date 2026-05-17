@@ -10,7 +10,7 @@ import type { RowDataPacket } from "mysql2";
 import { createGzip } from "zlib";
 import { pool } from "../db/pool.js";
 import { config } from "../config.js";
-import { getSystemSettings } from "./system-settings.service.js";
+import { getSystemSettings, resolveAppTimezone } from "./system-settings.service.js";
 import { resolveWhatsAppSessionOwnerPhone, sendOperationalAlertWhatsApp } from "./whatsapp.service.js";
 
 type BackupStatus = "running" | "success" | "failed";
@@ -707,7 +707,7 @@ export async function getRcloneStatus(tenantId: string): Promise<RcloneStatus> {
     schedule_mode: settings.scheduleMode,
     schedule_time_1: settings.scheduleTime1,
     schedule_time_2: settings.scheduleTime2,
-    schedule_timezone: config.appTimezone,
+    schedule_timezone: await resolveAppTimezone(tenantId),
     retention_days: settings.retentionDays,
   };
 }

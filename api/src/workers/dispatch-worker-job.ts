@@ -212,7 +212,7 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
       await generateMonthlyInvoices(pool);
       break;
     case "backup-scheduler":
-      await maybeRunScheduledBackup(tenantId, config.appTimezone);
+      await maybeRunScheduledBackup(tenantId, (await getSystemSettings(tenantId)).app_timezone);
       break;
     case "whatsapp-expiry-reminders":
       await sendExpiryReminders(tenantId);

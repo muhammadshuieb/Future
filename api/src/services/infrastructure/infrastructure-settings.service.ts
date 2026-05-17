@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { hasTable } from "../../db/schemaGuards.js";
+import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
 import {
   DEFAULT_MONITORING_SETTINGS,
   type MonitoringSettings,
@@ -30,10 +30,19 @@ export async function getMonitoringSettings(
     return { ...DEFAULT_MONITORING_SETTINGS };
   }
   const r = rows[0];
+  const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
+  const hasTelegram = col.has("telegram_chat_id");
+  const chatId = hasTelegram && r.telegram_chat_id != null ? String(r.telegram_chat_id).trim() : "";
+  const hasToken =
+    hasTelegram &&
+    r.telegram_bot_token_encrypted != null &&
+    (r.telegram_bot_token_encrypted as Buffer)?.length > 0;
   return {
     infrastructure_alerts_enabled: Boolean(r.infrastructure_alerts_enabled ?? 1),
     whatsapp_alerts_enabled: Boolean(r.whatsapp_alerts_enabled ?? 1),
     whatsapp_critical_only: Boolean(r.whatsapp_critical_only ?? 0),
+    telegram_configured: Boolean(hasTelegram && chatId && hasToken),
+    telegram_alerts_enabled: Boolean(hasTelegram && (r.telegram_alerts_enabled ?? 0)),
     alert_cooldown_minutes: Math.max(5, Number(r.alert_cooldown_minutes ?? 30)),
     router_offline_minutes: Math.max(1, Number(r.router_offline_minutes ?? 2)),
     quiet_hours_enabled: Boolean(r.quiet_hours_enabled ?? 0),

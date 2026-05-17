@@ -6,6 +6,7 @@ import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { useI18n } from "../context/LocaleContext";
+import { COMMON_APP_TIMEZONES } from "../lib/app-timezones";
 
 type SystemSettings = {
   critical_alert_enabled: boolean;
@@ -23,6 +24,7 @@ type SystemSettings = {
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
   billing_currency: "USD" | "SYP" | "TRY";
+  app_timezone: string;
   subscription_license_note: string;
   accountant_contact_phone: string;
 };
@@ -50,6 +52,7 @@ export function SettingsPage() {
     disconnect_on_activation: true,
     disconnect_on_update: true,
     billing_currency: "USD",
+    app_timezone: "Asia/Riyadh",
     subscription_license_note: "",
     accountant_contact_phone: "",
   });
@@ -264,6 +267,32 @@ export function SettingsPage() {
           ))}
         </select>
         <p className="text-[11px] opacity-60">{t("settings.adminSessionTimeoutHint")}</p>
+      </Card>
+
+      <Card className="space-y-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <ShieldCheck className="h-4 w-4 text-sky-500" />
+          {t("settings.timezone")}
+        </div>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">{t("settings.timezoneHint")}</p>
+        <label className="text-sm font-medium">{t("settings.timezoneLabel")}</label>
+        <select
+          className="w-full max-w-md rounded-xl border border-[hsl(var(--border))] bg-transparent px-3 py-2.5 text-sm"
+          value={settings.app_timezone || "Asia/Riyadh"}
+          onChange={(e) => setSettings((p) => ({ ...p, app_timezone: e.target.value }))}
+        >
+          {COMMON_APP_TIMEZONES.map((tz) => (
+            <option key={tz.id} value={tz.id}>
+              {tz.offsetLabel} — {tz.id}
+            </option>
+          ))}
+        </select>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={save} disabled={saving || loading}>
+            <Save className="h-4 w-4" />
+            {saving ? t("common.loading") : t("common.save")}
+          </Button>
+        </div>
       </Card>
 
       <Card className="space-y-4">

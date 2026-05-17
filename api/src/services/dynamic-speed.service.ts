@@ -3,6 +3,7 @@ import type { RowDataPacket } from "mysql2";
 import { randomUUID } from "crypto";
 import { hasTable } from "../db/schemaGuards.js";
 import { config } from "../config.js";
+import { resolveAppTimezone } from "./system-settings.service.js";
 import { CoaService } from "./coa.service.js";
 import { enqueueCoaDisconnect } from "./task-queue.service.js";
 
@@ -58,9 +59,9 @@ function timeToMinutes(raw: string): number {
   return h * 60 + m;
 }
 
-function zonedNowParts(now: Date): { day: number; minutes: number } {
+function zonedNowParts(now: Date, timeZone: string): { day: number; minutes: number } {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: config.appTimezone,
+    timeZone,
     weekday: "short",
     hour: "2-digit",
     minute: "2-digit",
@@ -84,9 +85,9 @@ function zonedNowParts(now: Date): { day: number; minutes: number } {
   };
 }
 
-function scheduleMatchesNow(row: RowDataPacket, now: Date): boolean {
+function scheduleMatchesNow(row: RowDataPacket, now: Date, timeZone: string): boolean {
   const days = new Set(parseDays(row.days_of_week));
-  const zoned = zonedNowParts(now);
+  const zoned = zonedNowParts(now, timeZone);
   const minute = zoned.minutes;
   const start = timeToMinutes(String(row.start_time ?? "00:00"));
   const end = timeToMinutes(String(row.end_time ?? "00:00"));
@@ -207,6 +208,7 @@ export async function deleteSpeedSchedule(pool: Pool, tenantId: string, id: stri
 }
 
 async function getPackageTargets(pool: Pool, tenantId: string, now: Date): Promise<PackageTarget[]> {
+  const timeZone = await resolveAppTimezone(tenantId);
   const [schedules] = await pool.query<RowDataPacket[]>(
     `SELECT id, package_id, rate_limit, days_of_week, start_time, end_time, priority, disconnect_fallback
      FROM package_speed_schedules
@@ -218,7 +220,7 @@ async function getPackageTargets(pool: Pool, tenantId: string, now: Date): Promi
   for (const row of schedules) {
     const packageId = String(row.package_id ?? "");
     if (!packageId || activeByPackage.has(packageId)) continue;
-    if (scheduleMatchesNow(row, now)) activeByPackage.set(packageId, row);
+    if (scheduleMatchesNow(row, now, timeZone)) activeByPackage.set(packageId, row);
   }
 
   if (await hasTable(pool, "packages")) {

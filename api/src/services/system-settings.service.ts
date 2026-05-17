@@ -1,6 +1,8 @@
 ﻿import type { RowDataPacket } from "mysql2";
+import { config } from "../config.js";
 import { pool } from "../db/pool.js";
 import { getTableColumns } from "../db/schemaGuards.js";
+import { normalizeAppTimezone } from "../lib/app-timezone.js";
 import { encryptSecret, tryDecryptSecret } from "./crypto.service.js";
 
 export type SystemSettingsView = {
@@ -25,6 +27,7 @@ export type SystemSettingsView = {
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
   billing_currency: "USD" | "SYP" | "TRY";
+  app_timezone: string;
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -91,6 +94,19 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
   } catch {
     /* column exists */
   }
+  try {
+    await pool.query(
+      `ALTER TABLE system_settings ADD COLUMN app_timezone VARCHAR(64) DEFAULT NULL`
+    );
+  } catch {
+    /* column exists */
+  }
+}
+
+/** Tenant timezone from settings, falling back to APP_TIMEZONE env. */
+export async function resolveAppTimezone(tenantId: string): Promise<string> {
+  const settings = await getSystemSettings(tenantId);
+  return settings.app_timezone;
 }
 
 function normalizePhone(raw: string | null | undefined): string {
@@ -152,6 +168,9 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     billing_currency: col.has("billing_currency")
       ? normalizeRmCurrency(row.billing_currency)
       : "USD",
+    app_timezone: col.has("app_timezone")
+      ? normalizeAppTimezone(row.app_timezone, config.appTimezone)
+      : config.appTimezone,
     subscription_license_note: col.has("subscription_license_note")
       ? String(row.subscription_license_note ?? "")
       : "",
@@ -211,6 +230,7 @@ export type SystemSettingsInput = {
   disconnect_on_activation: boolean;
   disconnect_on_update: boolean;
   billing_currency: "USD" | "SYP" | "TRY";
+  app_timezone: string;
   subscription_license_note: string;
   accountant_contact_phone: string;
   wireguard_vpn_enabled: boolean;
@@ -280,6 +300,10 @@ export async function updateSystemSettings(
   if (col.has("billing_currency")) {
     baseSets.push("billing_currency = ?");
     baseVals.push(normalizeRmCurrency(input.billing_currency));
+  }
+  if (col.has("app_timezone")) {
+    baseSets.push("app_timezone = ?");
+    baseVals.push(normalizeAppTimezone(input.app_timezone, config.appTimezone));
   }
   if (col.has("subscription_license_note")) {
     baseSets.push("subscription_license_note = ?");

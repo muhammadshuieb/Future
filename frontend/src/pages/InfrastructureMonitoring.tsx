@@ -10,10 +10,12 @@ import {
   Zap,
   CheckCircle2,
   Bell,
+  Send,
 } from "lucide-react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import { TextField } from "../components/ui/TextField";
 import { useI18n } from "../context/LocaleContext";
 import { cn } from "../lib/utils";
 import { hasMonitoringPermission } from "../lib/permissions";
@@ -29,6 +31,7 @@ type RouterRow = {
   board_temperature_c: number | null;
   voltage_v: number | null;
   voltage_supported: boolean;
+  uptime_seconds: number | null;
   ppp_active_sessions: number;
   last_sync_ok: boolean;
   last_sync_error: string | null;
@@ -43,6 +46,14 @@ type AlertRow = {
   message: string;
   nas_name_resolved?: string;
   last_seen_at: string;
+};
+
+type TelegramConfig = {
+  configured: boolean;
+  chat_id: string | null;
+  alerts_enabled: boolean;
+  last_test_ok: boolean | null;
+  last_error: string | null;
 };
 
 type Overview = {
@@ -70,6 +81,16 @@ function severityClass(sev: string): string {
   return "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300";
 }
 
+function formatUptime(seconds: number | null | undefined): string {
+  if (seconds == null || seconds <= 0) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export function InfrastructureMonitoringPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -79,6 +100,14 @@ export function InfrastructureMonitoringPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+
+  const [telegram, setTelegram] = useState<TelegramConfig | null>(null);
+  const [botToken, setBotToken] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [tgSaving, setTgSaving] = useState(false);
+  const [tgTesting, setTgTesting] = useState(false);
+  const [tgMessage, setTgMessage] = useState<string | null>(null);
+  const [tgError, setTgError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -90,11 +119,23 @@ export function InfrastructureMonitoringPage() {
     }
   }, []);
 
+  const loadTelegram = useCallback(async () => {
+    if (!canManage) return;
+    const r = await apiFetch("/api/infrastructure-monitoring/settings");
+    if (!r.ok) return;
+    const j = (await r.json()) as { telegram?: TelegramConfig };
+    if (j.telegram) {
+      setTelegram(j.telegram);
+      setChatId(j.telegram.chat_id ?? "");
+    }
+  }, [canManage]);
+
   useEffect(() => {
     void load();
+    void loadTelegram();
     const id = setInterval(() => void load(), 60_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, loadTelegram]);
 
   async function runCycle() {
     setRunning(true);
@@ -109,6 +150,58 @@ export function InfrastructureMonitoringPage() {
   async function acknowledge(id: string) {
     await apiFetch(`/api/infrastructure-monitoring/alerts/${id}/acknowledge`, { method: "POST" });
     await load();
+  }
+
+  async function saveTelegram() {
+    setTgSaving(true);
+    setTgMessage(null);
+    setTgError(null);
+    try {
+      const body: { chat_id: string; bot_token?: string } = { chat_id: chatId.trim() };
+      if (botToken.trim()) body.bot_token = botToken.trim();
+      else if (!telegram?.configured) {
+        setTgError(t("monitoring.telegramBotToken"));
+        return;
+      }
+      const r = await apiFetch("/api/infrastructure-monitoring/telegram", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setTgError(formatStaffApiError(r.status, raw, t));
+        return;
+      }
+      const j = (await r.json()) as { telegram: TelegramConfig };
+      setTelegram(j.telegram);
+      setBotToken("");
+      setTgMessage(t("monitoring.telegramConfigured"));
+    } catch (e) {
+      setTgError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgSaving(false);
+    }
+  }
+
+  async function testTelegram() {
+    setTgTesting(true);
+    setTgMessage(null);
+    setTgError(null);
+    try {
+      const r = await apiFetch("/api/infrastructure-monitoring/telegram/test", { method: "POST" });
+      const j = (await r.json()) as { ok?: boolean; telegram?: TelegramConfig; error?: string };
+      if (j.telegram) setTelegram(j.telegram);
+      if (r.ok && j.ok) {
+        setTgMessage(t("monitoring.telegramTestOk"));
+      } else {
+        setTgError(j.error ?? j.telegram?.last_error ?? t("monitoring.telegramTestFail"));
+      }
+    } catch (e) {
+      setTgError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgTesting(false);
+    }
   }
 
   const summary = data?.summary;
@@ -132,6 +225,52 @@ export function InfrastructureMonitoringPage() {
           ) : null}
         </div>
       </div>
+
+      {canManage ? (
+        <Card className="p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Send className="h-4 w-4 text-[hsl(var(--primary))]" />
+            {t("monitoring.telegramTitle")}
+          </div>
+          <p className="mt-2 text-xs opacity-70">{t("monitoring.telegramHint")}</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <TextField
+              label={t("monitoring.telegramBotToken")}
+              type="password"
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+              placeholder={telegram?.configured ? t("monitoring.tokenKeepBlank") : "123456:ABC..."}
+              autoComplete="off"
+            />
+            <TextField
+              label={t("monitoring.telegramChatId")}
+              value={chatId}
+              onChange={(e) => setChatId(e.target.value)}
+              placeholder="-1001234567890"
+            />
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button type="button" onClick={() => void saveTelegram()} disabled={tgSaving || !chatId.trim()}>
+              {tgSaving ? t("common.loading") : t("monitoring.telegramSave")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void testTelegram()}
+              disabled={tgTesting || !telegram?.configured}
+            >
+              {tgTesting ? t("common.loading") : t("monitoring.telegramTest")}
+            </Button>
+            {telegram?.configured ? (
+              <span className="text-xs text-emerald-600 dark:text-emerald-400">{t("monitoring.telegramConfigured")}</span>
+            ) : (
+              <span className="text-xs opacity-60">{t("monitoring.telegramNotConfigured")}</span>
+            )}
+          </div>
+          {tgMessage ? <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">{tgMessage}</p> : null}
+          {tgError ? <p className="mt-2 text-xs text-red-500">{tgError}</p> : null}
+        </Card>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {[
@@ -191,6 +330,9 @@ export function InfrastructureMonitoringPage() {
                   <span className="font-mono opacity-70">{r.nas_ip}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-3 opacity-80">
+                  <span>
+                    {t("monitoring.uptime")} {formatUptime(r.uptime_seconds)}
+                  </span>
                   <span>CPU {r.cpu_percent ?? "—"}%</span>
                   <span>RAM {r.ram_percent ?? "—"}%</span>
                   <span>

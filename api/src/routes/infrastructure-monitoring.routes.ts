@@ -27,6 +27,11 @@ import {
   confirmRouterAction,
 } from "../services/infrastructure/router-actions.service.js";
 import { runInfrastructureMonitorCycle } from "../services/infrastructure/infrastructure-monitor-cycle.service.js";
+import {
+  getTelegramConfig,
+  saveTelegramConfig,
+  testTelegramConnection,
+} from "../services/infrastructure/infrastructure-telegram.service.js";
 import type { RowDataPacket } from "mysql2";
 import { hasTable } from "../db/schemaGuards.js";
 
@@ -76,10 +81,12 @@ router.get("/overview", requireRole("admin", "manager", "accountant", "viewer"),
 });
 
 router.get("/settings", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
-  const settings = await getMonitoringSettings(pool, req.auth!.tenantId);
-  const thresholds = await getGlobalThresholds(pool, req.auth!.tenantId);
-  const targets = await listNotificationTargets(pool, req.auth!.tenantId);
-  res.json({ settings, thresholds, targets });
+  const tenantId = req.auth!.tenantId;
+  const settings = await getMonitoringSettings(pool, tenantId);
+  const thresholds = await getGlobalThresholds(pool, tenantId);
+  const targets = await listNotificationTargets(pool, tenantId);
+  const telegram = await getTelegramConfig(pool, tenantId);
+  res.json({ settings, thresholds, targets, telegram });
 });
 
 const settingsBody = z.object({
@@ -103,6 +110,47 @@ router.put("/settings", requireRole("admin", "manager"), requireMonitoringManage
   }
   const settings = await updateMonitoringSettings(pool, req.auth!.tenantId, parsed.data);
   res.json({ settings });
+});
+
+const telegramBody = z.object({
+  bot_token: z.string().min(20).optional(),
+  chat_id: z.string().min(1),
+});
+
+router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const parsed = telegramBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const telegram = await saveTelegramConfig(pool, req.auth!.tenantId, {
+      bot_token: parsed.data.bot_token,
+      chat_id: parsed.data.chat_id,
+    });
+    const settings = await getMonitoringSettings(pool, req.auth!.tenantId);
+    res.json({ telegram, settings });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "telegram_bot_token_required" || msg === "telegram_chat_id_required") {
+      res.status(400).json({ error: msg });
+      return;
+    }
+    if (msg === "telegram_schema_missing") {
+      res.status(503).json({ error: "migration_required" });
+      return;
+    }
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/telegram/test", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const result = await testTelegramConnection(pool, req.auth!.tenantId);
+  if (!result.ok) {
+    res.status(400).json({ ok: false, telegram: result.config, error: result.config.last_error ?? "test_failed" });
+    return;
+  }
+  res.json({ ok: true, telegram: result.config });
 });
 
 const thresholdBody = z.object({

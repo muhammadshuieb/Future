@@ -20,6 +20,11 @@ import {
   formatAlertWhatsAppMessage,
   formatRecoveryWhatsAppMessage,
 } from "./infrastructure-whatsapp-notify.service.js";
+import {
+  dispatchInfrastructureTelegram,
+  formatAlertTelegramMessage,
+  formatRecoveryTelegramMessage,
+} from "./infrastructure-telegram-notify.service.js";
 
 export type EvaluatedAlert = {
   alert_type: InfrastructureAlertType;
@@ -277,18 +282,57 @@ function canNotify(
   severity: AlertSeverity,
   lastNotifiedAt: Date | null
 ): boolean {
-  if (!settings.infrastructure_alerts_enabled || !settings.whatsapp_alerts_enabled) return false;
-  if (settings.whatsapp_critical_only && severity !== "critical") return false;
+  if (!settings.infrastructure_alerts_enabled) return false;
   if (!lastNotifiedAt) return true;
   const cooldownMs = settings.alert_cooldown_minutes * 60_000;
   return Date.now() - lastNotifiedAt.getTime() >= cooldownMs;
+}
+
+function shouldNotifyWhatsApp(settings: MonitoringSettings, severity: AlertSeverity): boolean {
+  if (!settings.whatsapp_alerts_enabled) return false;
+  if (settings.whatsapp_critical_only && severity !== "critical") return false;
+  return true;
+}
+
+function shouldNotifyTelegram(settings: MonitoringSettings): boolean {
+  return settings.telegram_configured && settings.telegram_alerts_enabled;
+}
+
+async function dispatchAlertNotifications(
+  pool: Pool,
+  tenantId: string,
+  severity: AlertSeverity,
+  ev: EvaluatedAlert,
+  snap: RouterHealthSnapshot | null | undefined,
+  isRecovery: boolean,
+  settings: MonitoringSettings
+): Promise<boolean> {
+  let anySent = false;
+  if (!isRecovery && shouldNotifyWhatsApp(settings, severity)) {
+    const body = formatAlertWhatsAppMessage(ev);
+    if (await dispatchInfrastructureWhatsApp(pool, tenantId, severity, body, false)) anySent = true;
+  }
+  if (isRecovery && settings.recovery_notifications_enabled && settings.whatsapp_alerts_enabled) {
+    const body = formatRecoveryWhatsAppMessage(ev);
+    if (await dispatchInfrastructureWhatsApp(pool, tenantId, "info", body, true)) anySent = true;
+  }
+  if (!isRecovery && shouldNotifyTelegram(settings)) {
+    const body = formatAlertTelegramMessage(ev, snap);
+    if (await dispatchInfrastructureTelegram(pool, tenantId, severity, body, false)) anySent = true;
+  }
+  if (isRecovery && settings.recovery_notifications_enabled && shouldNotifyTelegram(settings)) {
+    const body = formatRecoveryTelegramMessage(ev);
+    if (await dispatchInfrastructureTelegram(pool, tenantId, "info", body, true)) anySent = true;
+  }
+  return anySent;
 }
 
 export async function upsertInfrastructureAlerts(
   pool: Pool,
   tenantId: string,
   evaluated: EvaluatedAlert[],
-  settings: MonitoringSettings
+  settings: MonitoringSettings,
+  routerSnapsById: Map<string, RouterHealthSnapshot> = new Map()
 ): Promise<void> {
   if (!(await hasTable(pool, "infrastructure_alerts"))) return;
 
@@ -311,14 +355,16 @@ export async function upsertInfrastructureAlerts(
         [failureCount, ev.severity, ev.message, ev.metric_value, ev.threshold_value, alertId]
       );
       if (canNotify(settings, ev.severity, lastNotified)) {
-        const body = formatAlertWhatsAppMessage(ev);
-        const sent = await dispatchInfrastructureWhatsApp(pool, tenantId, ev.severity, body, false);
+        const snap = ev.nas_device_id ? routerSnapsById.get(ev.nas_device_id) ?? null : null;
+        const sent = await dispatchAlertNotifications(pool, tenantId, ev.severity, ev, snap, false, settings);
         if (sent) {
           await pool.execute(
             `UPDATE infrastructure_alerts SET notification_count = notification_count + 1, last_notified_at = NOW(3) WHERE id = ?`,
             [alertId]
           );
-          await recordHistory(pool, alertId, tenantId, "notified", ev.severity, body, { channel: "whatsapp" });
+          await recordHistory(pool, alertId, tenantId, "notified", ev.severity, ev.message, {
+            channel: "multi",
+          });
         }
       }
       await recordHistory(pool, alertId, tenantId, "updated", ev.severity, ev.message);
@@ -346,14 +392,14 @@ export async function upsertInfrastructureAlerts(
     );
     await recordHistory(pool, alertId, tenantId, "created", ev.severity, ev.message);
     if (canNotify(settings, ev.severity, null)) {
-      const body = formatAlertWhatsAppMessage(ev);
-      const sent = await dispatchInfrastructureWhatsApp(pool, tenantId, ev.severity, body, false);
+      const snap = ev.nas_device_id ? routerSnapsById.get(ev.nas_device_id) ?? null : null;
+      const sent = await dispatchAlertNotifications(pool, tenantId, ev.severity, ev, snap, false, settings);
       if (sent) {
         await pool.execute(
           `UPDATE infrastructure_alerts SET notification_count = 1, last_notified_at = NOW(3) WHERE id = ?`,
           [alertId]
         );
-        await recordHistory(pool, alertId, tenantId, "notified", ev.severity, body, { channel: "whatsapp" });
+        await recordHistory(pool, alertId, tenantId, "notified", ev.severity, ev.message, { channel: "multi" });
       }
     }
   }
@@ -369,7 +415,7 @@ export async function upsertInfrastructureAlerts(
     await recordHistory(pool, alertId, tenantId, "resolved", String(row.severity), "تم حل المشكلة");
 
     if (settings.recovery_notifications_enabled) {
-      const recoveryBody = formatRecoveryWhatsAppMessage({
+      const recoveryEv: EvaluatedAlert = {
         alert_type: String(row.alert_type) as InfrastructureAlertType,
         severity: String(row.severity) as AlertSeverity,
         nas_device_id: row.nas_device_id != null ? String(row.nas_device_id) : null,
@@ -379,11 +425,12 @@ export async function upsertInfrastructureAlerts(
         metric_value: null,
         threshold_value: null,
         fingerprint,
-      });
-      const sent = await dispatchInfrastructureWhatsApp(pool, tenantId, "info", recoveryBody, true);
+      };
+      const snap = recoveryEv.nas_device_id ? routerSnapsById.get(recoveryEv.nas_device_id) ?? null : null;
+      const sent = await dispatchAlertNotifications(pool, tenantId, "info", recoveryEv, snap, true, settings);
       if (sent) {
         await pool.execute(`UPDATE infrastructure_alerts SET recovery_notified_at = NOW(3) WHERE id = ?`, [alertId]);
-        await recordHistory(pool, alertId, tenantId, "recovery_notified", "info", recoveryBody);
+        await recordHistory(pool, alertId, tenantId, "recovery_notified", "info", recoveryEv.message);
       }
     }
   }
@@ -445,7 +492,10 @@ export async function runAlertEvaluationCycle(
   evaluated.push(...evaluateServerAlerts(serverSnap, globalThresholds, tenantId));
   evaluated.push(...(await ingestExternalAlerts(pool, tenantId)));
 
-  await upsertInfrastructureAlerts(pool, tenantId, evaluated, settings);
+  const routerSnapsById = new Map<string, RouterHealthSnapshot>();
+  for (const s of routerSnaps) routerSnapsById.set(s.nas_device_id, s);
+
+  await upsertInfrastructureAlerts(pool, tenantId, evaluated, settings, routerSnapsById);
 }
 
 export async function listActiveAlerts(pool: Pool, tenantId: string, limit = 50): Promise<RowDataPacket[]> {

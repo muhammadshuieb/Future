@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { routePolicy } from "../middleware/policy.js";
+import { isValidIanaTimezone } from "../lib/app-timezone.js";
 import { getSystemSettings, updateSystemSettings, type SystemSettingsInput } from "../services/system-settings.service.js";
 import {
   resolveWhatsAppSessionOwnerPhone,
@@ -44,6 +45,7 @@ const bodySchema = z.object({
   disconnect_on_activation: z.boolean().optional(),
   disconnect_on_update: z.boolean().optional(),
   billing_currency: z.enum(["USD", "SYP", "TRY"]).optional(),
+  app_timezone: z.string().max(64).optional(),
   subscription_license_note: z.string().max(512).optional(),
   accountant_contact_phone: z.string().max(32).optional(),
   wireguard_vpn_enabled: z.boolean().optional(),
@@ -60,6 +62,13 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  if (
+    parsed.data.app_timezone !== undefined &&
+    !isValidIanaTimezone(parsed.data.app_timezone)
+  ) {
+    res.status(400).json({ error: "invalid_timezone" });
     return;
   }
   try {
@@ -83,6 +92,7 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
       backup_alert_use_session_owner:
         parsed.data.backup_alert_use_session_owner ?? cur.backup_alert_use_session_owner,
       billing_currency: parsed.data.billing_currency ?? cur.billing_currency,
+      app_timezone: parsed.data.app_timezone ?? cur.app_timezone,
       subscription_license_note: parsed.data.subscription_license_note ?? cur.subscription_license_note,
       accountant_contact_phone: parsed.data.accountant_contact_phone ?? cur.accountant_contact_phone,
       wireguard_vpn_enabled: parsed.data.wireguard_vpn_enabled ?? cur.wireguard_vpn_enabled,

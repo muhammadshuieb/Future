@@ -61,6 +61,8 @@ export type MonitoringSettings = {
   infrastructure_alerts_enabled: boolean;
   whatsapp_alerts_enabled: boolean;
   whatsapp_critical_only: boolean;
+  telegram_configured: boolean;
+  telegram_alerts_enabled: boolean;
   alert_cooldown_minutes: number;
   router_offline_minutes: number;
   quiet_hours_enabled: boolean;
@@ -87,6 +89,8 @@ export const DEFAULT_MONITORING_SETTINGS: MonitoringSettings = {
   infrastructure_alerts_enabled: true,
   whatsapp_alerts_enabled: true,
   whatsapp_critical_only: false,
+  telegram_configured: false,
+  telegram_alerts_enabled: false,
   alert_cooldown_minutes: 30,
   router_offline_minutes: 2,
   quiet_hours_enabled: false,
