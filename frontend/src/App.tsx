@@ -62,6 +62,9 @@ const ObservabilityPage = lazy(() =>
 const InfrastructureMonitoringPage = lazy(() =>
   import("./pages/InfrastructureMonitoring").then((m) => ({ default: m.InfrastructureMonitoringPage }))
 );
+const TelegramNotificationsPage = lazy(() =>
+  import("./pages/TelegramNotifications").then((m) => ({ default: m.TelegramNotificationsPage }))
+);
 const SystemHealthPage = lazy(() =>
   import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealthPage }))
 );
@@ -184,6 +187,8 @@ function AppRoutes() {
           <Route path="whatsapp/templates" element={<WhatsAppTemplatesPage />} />
           <Route path="whatsapp/broadcast" element={<WhatsAppBroadcastPage />} />
           <Route path="whatsapp/logs" element={<WhatsAppLogsPage />} />
+          <Route path="notifications" element={<Navigate to="/notifications/telegram" replace />} />
+          <Route path="notifications/telegram" element={<TelegramNotificationsPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
