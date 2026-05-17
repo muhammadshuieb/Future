@@ -1,7 +1,11 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
-import { computeTrafficPeriodMb } from "./traffic-metrics.util.js";
+import {
+  bytesDeltaToMbps,
+  computeTrafficPeriodMb,
+  sleep,
+} from "./traffic-metrics.util.js";
 import {
   resolveMikrotikApiHost,
   resolveMikrotikApiPort,
@@ -21,15 +25,55 @@ import {
   type RosRow,
 } from "../mikrotik-routeros-compat.js";
 
+import { logRouterCommand } from "../router-command-log.service.js";
+import { log } from "../logger.service.js";
+import type { RouterHealthSnapshot } from "./infrastructure-types.js";
+import type { RouterOSAPI } from "node-routeros";
+
 export type RouterCollectOptions = {
   /** Skip /ping (often blocks 10–30s on RouterOS). */
   skipPing?: boolean;
   skipHotspot?: boolean;
   apiTimeoutMs?: number;
+  /** Sample interface counters twice to compute instant Mbps. */
+  measureInstantTraffic?: boolean;
+  trafficSampleMs?: number;
 };
-import { logRouterCommand } from "../router-command-log.service.js";
-import { log } from "../logger.service.js";
-import type { RouterHealthSnapshot } from "./infrastructure-types.js";
+
+function extractIfaceBytes(ifaces: RosRow[], trafficIface: string | null): { rx: number; tx: number } {
+  let rx = 0;
+  let tx = 0;
+  for (const iface of ifaces) {
+    const ifaceName = String(iface.name ?? "");
+    const type = String(iface.type ?? "");
+    if (trafficIface) {
+      if (ifaceName !== trafficIface) continue;
+      return {
+        rx: parseRosNumber(iface["rx-byte"]) ?? 0,
+        tx: parseRosNumber(iface["tx-byte"]) ?? 0,
+      };
+    }
+    if (type !== "loopback") {
+      rx += parseRosNumber(iface["rx-byte"]) ?? 0;
+      tx += parseRosNumber(iface["tx-byte"]) ?? 0;
+    }
+  }
+  return { rx, tx };
+}
+
+async function measureInstantInterfaceMbps(
+  api: RouterOSAPI,
+  trafficIface: string | null,
+  sampleMs: number
+): Promise<{ rxMbps: number; txMbps: number }> {
+  const ifaces1 = (await api.write("/interface/print")) as RosRow[];
+  const b1 = extractIfaceBytes(ifaces1, trafficIface);
+  await sleep(sampleMs);
+  const ifaces2 = (await api.write("/interface/print")) as RosRow[];
+  const b2 = extractIfaceBytes(ifaces2, trafficIface);
+  const elapsedSec = sampleMs / 1000;
+  return bytesDeltaToMbps(b2.rx - b1.rx, b2.tx - b1.tx, elapsedSec);
+}
 
 async function collectFromRouter(
   host: string,
@@ -99,6 +143,21 @@ async function collectFromRouter(
       raw.interfaces_error = String(e);
     }
 
+    let trafficRxMbps: number | null = null;
+    let trafficTxMbps: number | null = null;
+    if (collectOpts.measureInstantTraffic) {
+      try {
+        const sampleMs = Math.max(1000, Math.min(5000, collectOpts.trafficSampleMs ?? 2000));
+        const rates = await measureInstantInterfaceMbps(api, trafficIface, sampleMs);
+        trafficRxMbps = rates.rxMbps;
+        trafficTxMbps = rates.txMbps;
+        raw.traffic_instant_mbps = rates;
+        raw.traffic_sample_ms = sampleMs;
+      } catch (e) {
+        raw.traffic_instant_error = String(e);
+      }
+    }
+
     let pppCount = 0;
     try {
       const ppp = (await api.write("/ppp/active/print")) as RosRow[];
@@ -154,6 +213,8 @@ async function collectFromRouter(
         traffic_tx_bps: ifaceTraffic.tx,
         traffic_rx_mb: null,
         traffic_tx_mb: null,
+        traffic_rx_mbps: trafficRxMbps,
+        traffic_tx_mbps: trafficTxMbps,
         traffic_monitor_interface: trafficIface,
         internet_reachable: internetReachable,
         last_sync_ok: true,
@@ -182,6 +243,8 @@ async function collectFromRouter(
         traffic_tx_bps: null,
         traffic_rx_mb: null,
         traffic_tx_mb: null,
+        traffic_rx_mbps: null,
+        traffic_tx_mbps: null,
         traffic_monitor_interface: trafficIface,
         internet_reachable: null,
         last_sync_ok: false,
@@ -197,7 +260,9 @@ async function collectFromRouter(
 const FAST_COLLECT: RouterCollectOptions = {
   skipPing: true,
   skipHotspot: true,
-  apiTimeoutMs: 10_000,
+  apiTimeoutMs: 12_000,
+  measureInstantTraffic: true,
+  trafficSampleMs: 2000,
 };
 
 export async function collectRouterHealthForTenant(
@@ -241,6 +306,8 @@ export async function collectRouterHealthForTenant(
         traffic_tx_bps: null,
         traffic_rx_mb: null,
         traffic_tx_mb: null,
+        traffic_rx_mbps: null,
+        traffic_tx_mbps: null,
         traffic_monitor_interface: null,
         internet_reachable: null,
         last_sync_ok: false,
@@ -272,6 +339,8 @@ export async function collectRouterHealthForTenant(
           traffic_tx_bps: null,
           traffic_rx_mb: null,
           traffic_tx_mb: null,
+          traffic_rx_mbps: null,
+          traffic_tx_mbps: null,
           traffic_monitor_interface: null,
           internet_reachable: null,
           last_sync_ok: false,
@@ -349,7 +418,41 @@ export async function collectRouterHealthForTenant(
           snapshot.last_sync_ok ? 1 : 0,
           snapshot.last_sync_error,
         ] as const;
-        if (snapCols.has("traffic_rx_mb_period")) {
+        if (snapCols.has("traffic_rx_mbps")) {
+          await pool.execute(
+            `INSERT INTO router_health_snapshots
+              (nas_device_id, tenant_id, nas_name, nas_ip, health_status, cpu_percent, ram_percent,
+               board_temperature_c, voltage_v, voltage_supported, uptime_seconds, ppp_active_sessions,
+               hotspot_active_sessions, interfaces_down, traffic_rx_bps, traffic_tx_bps,
+               traffic_rx_mb_period, traffic_tx_mb_period, traffic_rx_mbps, traffic_tx_mbps,
+               internet_reachable, metrics_json, last_sync_ok, last_sync_at, last_sync_error, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), ?, NOW(3))
+             ON DUPLICATE KEY UPDATE
+               nas_name = VALUES(nas_name), nas_ip = VALUES(nas_ip), health_status = VALUES(health_status),
+               cpu_percent = VALUES(cpu_percent), ram_percent = VALUES(ram_percent),
+               board_temperature_c = VALUES(board_temperature_c), voltage_v = VALUES(voltage_v),
+               voltage_supported = VALUES(voltage_supported), uptime_seconds = VALUES(uptime_seconds),
+               ppp_active_sessions = VALUES(ppp_active_sessions),
+               hotspot_active_sessions = VALUES(hotspot_active_sessions),
+               interfaces_down = VALUES(interfaces_down), traffic_rx_bps = VALUES(traffic_rx_bps),
+               traffic_tx_bps = VALUES(traffic_tx_bps),
+               traffic_rx_mb_period = VALUES(traffic_rx_mb_period),
+               traffic_tx_mb_period = VALUES(traffic_tx_mb_period),
+               traffic_rx_mbps = VALUES(traffic_rx_mbps),
+               traffic_tx_mbps = VALUES(traffic_tx_mbps),
+               internet_reachable = VALUES(internet_reachable),
+               metrics_json = VALUES(metrics_json), last_sync_ok = VALUES(last_sync_ok),
+               last_sync_at = NOW(3), last_sync_error = VALUES(last_sync_error), last_seen_at = NOW(3)`,
+            [
+              ...rowParams.slice(0, 16),
+              snapshot.traffic_rx_mb,
+              snapshot.traffic_tx_mb,
+              snapshot.traffic_rx_mbps,
+              snapshot.traffic_tx_mbps,
+              ...rowParams.slice(16),
+            ]
+          );
+        } else if (snapCols.has("traffic_rx_mb_period")) {
           await pool.execute(
             `INSERT INTO router_health_snapshots
               (nas_device_id, tenant_id, nas_name, nas_ip, health_status, cpu_percent, ram_percent,
@@ -424,12 +527,21 @@ export type StatusReportRouterPrep = {
   mikrotik_api_count: number;
 };
 
-/** Load snapshots for Telegram report; collect from routers first when table is empty. */
+export type PrepareRoutersOptions = {
+  /** Collect when snapshot table has no rows. */
+  collectIfEmpty?: boolean;
+  /** Always re-collect with instant Mbps (Telegram send time). */
+  freshCollect?: boolean;
+};
+
+/** Load snapshots for Telegram; optional fresh collect with instant line speed. */
 export async function prepareRoutersForStatusReport(
   pool: Pool,
   tenantId: string,
-  collectIfEmpty = true
+  options: PrepareRoutersOptions = {}
 ): Promise<StatusReportRouterPrep> {
+  const collectIfEmpty = options.collectIfEmpty ?? true;
+  const freshCollect = options.freshCollect ?? false;
   if (!(await hasTable(pool, "nas_devices"))) {
     return { routers: [], issue: "no_active_nas", active_nas_count: 0, mikrotik_api_count: 0 };
   }
@@ -465,12 +577,15 @@ export async function prepareRoutersForStatusReport(
   }
 
   let routers = await listRouterHealthSnapshots(pool, tenantId);
-  if (routers.length === 0 && collectIfEmpty) {
+  const shouldCollect =
+    freshCollect || (routers.length === 0 && collectIfEmpty);
+  if (shouldCollect) {
     const prev = new Map(routers.map((r) => [r.nas_device_id, r]));
+    const timeoutMs = Math.min(120_000, 20_000 + activeNasCount * 18_000);
     try {
       await withTimeout(
         collectRouterHealthForTenant(pool, tenantId, prev, FAST_COLLECT),
-        22_000,
+        timeoutMs,
         "collect_timeout"
       );
     } catch (err) {
@@ -525,6 +640,8 @@ export async function listRouterHealthSnapshots(pool: Pool, tenantId: string): P
       r.traffic_tx_mb_period != null
         ? Number(r.traffic_tx_mb_period)
         : null,
+    traffic_rx_mbps: r.traffic_rx_mbps != null ? Number(r.traffic_rx_mbps) : null,
+    traffic_tx_mbps: r.traffic_tx_mbps != null ? Number(r.traffic_tx_mbps) : null,
     traffic_monitor_interface:
       r.traffic_monitor_interface != null ? String(r.traffic_monitor_interface) : null,
     internet_reachable: r.internet_reachable != null ? Boolean(r.internet_reachable) : null,

@@ -28,6 +28,8 @@ function baseRouter(overrides: Partial<RouterHealthSnapshot>): RouterHealthSnaps
     traffic_tx_bps: null,
     traffic_rx_mb: null,
     traffic_tx_mb: null,
+    traffic_rx_mbps: null,
+    traffic_tx_mbps: null,
     traffic_monitor_interface: null,
     internet_reachable: true,
     last_sync_ok: true,

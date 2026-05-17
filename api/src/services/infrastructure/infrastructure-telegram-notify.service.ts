@@ -4,10 +4,23 @@ import type { AlertSeverity, RouterHealthSnapshot } from "./infrastructure-types
 import type { EvaluatedAlert } from "./infrastructure-alert-engine.service.js";
 import type { ServerHealthSnapshot } from "./server-health-collector.service.js";
 import { formatTrafficSection } from "./traffic-metrics.util.js";
+import { config } from "../../config.js";
 import { getTelegramCredentials, sendTelegramMessage } from "./infrastructure-telegram.service.js";
 
-function nowAr(): string {
-  return new Date().toLocaleString("ar-SY", { hour: "2-digit", minute: "2-digit", hour12: false });
+/** mm/dd/yyyy HH:mm in app timezone (for Telegram messages). */
+export function formatTelegramDateTime(date: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: config.appTimezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  return `${get("month")}/${get("day")}/${get("year")} ${get("hour")}:${get("minute")}`;
 }
 
 export function formatUptime(seconds: number | null | undefined): string {
@@ -80,14 +93,14 @@ export function formatAlertTelegramMessage(
     ev.message,
     ...(isServer ? serverMetricsBlock(serverSnap) : routerMetricsBlock(snap)),
     ev.threshold_value ? `العتبة: ${ev.threshold_value}` : null,
-    `الوقت: ${nowAr()}`,
+    `الوقت: ${formatTelegramDateTime()}`,
   ].filter(Boolean) as string[];
   return lines.join("\n");
 }
 
 export function formatRecoveryTelegramMessage(ev: EvaluatedAlert): string {
   const name = ev.nas_name ?? "Future Radius";
-  return [`✅ تم حل المشكلة`, `${name} عاد للعمل بشكل طبيعي.`, `الوقت: ${nowAr()}`].join("\n");
+  return [`✅ تم حل المشكلة`, `${name} عاد للعمل بشكل طبيعي.`, `الوقت: ${formatTelegramDateTime()}`].join("\n");
 }
 
 export async function dispatchInfrastructureTelegram(

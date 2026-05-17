@@ -12,7 +12,13 @@ export async function runInfrastructureMonitorCycle(pool: Pool, tenantId: string
   const prevMap = new Map<string, RouterHealthSnapshot>();
   for (const s of prevSnaps) prevMap.set(s.nas_device_id, s);
 
-  const routerSnaps = await collectRouterHealthForTenant(pool, tenantId, prevMap);
+  const routerSnaps = await collectRouterHealthForTenant(pool, tenantId, prevMap, {
+    skipPing: true,
+    skipHotspot: true,
+    measureInstantTraffic: true,
+    trafficSampleMs: 2000,
+    apiTimeoutMs: 12_000,
+  });
   const serverSnap = await collectServerHealth(pool, tenantId);
 
   await runAlertEvaluationCycle(pool, tenantId, routerSnaps, prevMap, serverSnap);

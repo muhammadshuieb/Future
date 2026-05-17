@@ -39,10 +39,14 @@ export type RouterHealthSnapshot = {
   traffic_rx_bps: number | null;
   /** Cumulative tx-byte counter from RouterOS (legacy column name). */
   traffic_tx_bps: number | null;
-  /** MB downloaded since previous poll. */
+  /** MB downloaded since previous poll (interval). */
   traffic_rx_mb: number | null;
-  /** MB uploaded since previous poll. */
+  /** MB uploaded since previous poll (interval). */
   traffic_tx_mb: number | null;
+  /** Instant download speed Mbps at collect time. */
+  traffic_rx_mbps: number | null;
+  /** Instant upload speed Mbps at collect time. */
+  traffic_tx_mbps: number | null;
   traffic_monitor_interface: string | null;
   internet_reachable: boolean | null;
   last_sync_ok: boolean;

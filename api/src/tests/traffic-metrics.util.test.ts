@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  bytesDeltaToMbps,
   computeTrafficPeriodMb,
-  formatBytesAsMbGb,
   formatTrafficSection,
 } from "../services/infrastructure/traffic-metrics.util.js";
 import type { RouterHealthSnapshot } from "../services/infrastructure/infrastructure-types.js";
@@ -21,31 +21,21 @@ describe("traffic-metrics.util", () => {
     assert.equal(r.txMb, 2);
   });
 
-  it("formats cumulative bytes when period missing", () => {
-    const s = formatBytesAsMbGb(50 * 1024 * 1024);
-    assert.match(s, /MB/);
+  it("bytesDeltaToMbps computes line rate", () => {
+    const r = bytesDeltaToMbps(125_000_000, 25_000_000, 2);
+    assert.ok(r.rxMbps > 400);
+    assert.ok(r.txMbps > 80);
   });
 
-  it("formatTrafficSection shows period when available", () => {
+  it("formatTrafficSection shows instant Mbps", () => {
     const snap = {
-      traffic_rx_mb: 12.5,
-      traffic_tx_mb: 3.2,
-      traffic_monitor_interface: "ether1",
+      traffic_rx_mbps: 450.5,
+      traffic_tx_mbps: 120.3,
+      traffic_monitor_interface: "sfp-sfpplus1",
     } as RouterHealthSnapshot;
     const lines = formatTrafficSection(snap);
-    assert.ok(lines.some((l) => l.includes("12.5") || l.includes("MB")));
-    assert.ok(lines.some((l) => l.includes("ether1")));
-  });
-
-  it("formatTrafficSection shows cumulative when no period", () => {
-    const snap = {
-      traffic_rx_mb: null,
-      traffic_tx_mb: null,
-      traffic_rx_bps: 100 * 1024 * 1024,
-      traffic_tx_bps: 20 * 1024 * 1024,
-      traffic_monitor_interface: "sfp1",
-    } as RouterHealthSnapshot;
-    const lines = formatTrafficSection(snap);
-    assert.ok(lines.some((l) => l.includes("إجمالي")));
+    assert.ok(lines.some((l) => l.includes("450.5") && l.includes("Mbps")));
+    assert.ok(lines.some((l) => l.includes("السحب الآن")));
+    assert.ok(lines.some((l) => l.includes("sfp-sfpplus1")));
   });
 });

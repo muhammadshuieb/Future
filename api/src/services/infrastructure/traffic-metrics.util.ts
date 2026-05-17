@@ -1,6 +1,24 @@
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 
-/** Cumulative interface byte counters from RouterOS (stored in traffic_rx_bps / traffic_tx_bps columns). */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Bytes transferred over elapsed seconds → megabits per second. */
+export function bytesDeltaToMbps(
+  rxDelta: number,
+  txDelta: number,
+  elapsedSec: number
+): { rxMbps: number; txMbps: number } {
+  if (elapsedSec <= 0 || !Number.isFinite(elapsedSec)) {
+    return { rxMbps: 0, txMbps: 0 };
+  }
+  const toMbps = (delta: number) =>
+    Math.max(0, Math.round(((Math.max(0, delta) * 8) / elapsedSec / 1_000_000) * 100) / 100);
+  return { rxMbps: toMbps(rxDelta), txMbps: toMbps(txDelta) };
+}
+
+/** @deprecated interval MB between polls — not used in Telegram instant reports */
 export function computeTrafficPeriodMb(
   currentRxBytes: number,
   currentTxBytes: number,
@@ -25,61 +43,24 @@ export function computeTrafficPeriodMb(
   return { rxMb: toMb(rxDelta), txMb: toMb(txDelta) };
 }
 
-export function formatBytesAsMbGb(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
+function formatMbps(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  if (v >= 1000) return `${(v / 1000).toFixed(2)} Gbps`;
+  return `${v} Mbps`;
 }
 
-function formatMbValue(mb: number | null | undefined): string {
-  if (mb == null || !Number.isFinite(mb)) return "—";
-  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-  return `${mb} MB`;
-}
-
-/** Traffic section for Telegram — period delta when available, else cumulative counters. */
+/** Instant line speed at message time (not cumulative). */
 export function formatTrafficSection(snap: RouterHealthSnapshot): string[] {
   const iface = snap.traffic_monitor_interface?.trim();
   const title = iface ? `📡 الترافيك · ${iface}` : "📡 الترافيك";
 
-  const hasPeriod =
-    snap.traffic_rx_mb != null ||
-    snap.traffic_tx_mb != null ||
-    (snap.traffic_rx_mb === 0 && snap.traffic_tx_mb === 0);
-
-  if (hasPeriod) {
+  if (snap.traffic_rx_mbps != null || snap.traffic_tx_mbps != null) {
     return [
       title,
-      `   ⬇️ تحميل: ${formatMbValue(snap.traffic_rx_mb)}`,
-      `   ⬆️ رفع: ${formatMbValue(snap.traffic_tx_mb)}`,
-      `   ⏱ منذ آخر فحص`,
+      `   ⬇️ السحب الآن: ${formatMbps(snap.traffic_rx_mbps)}`,
+      `   ⬆️ الرفع الآن: ${formatMbps(snap.traffic_tx_mbps)}`,
     ];
   }
 
-  const rxBytes = snap.traffic_rx_bps;
-  const txBytes = snap.traffic_tx_bps;
-  if (rxBytes != null || txBytes != null) {
-    return [
-      title,
-      `   ⬇️ تحميل (إجمالي): ${formatBytesAsMbGb(rxBytes)}`,
-      `   ⬆️ رفع (إجمالي): ${formatBytesAsMbGb(txBytes)}`,
-      `   ℹ️ الفرق بين الفحوصات يظهر من التقرير التالي`,
-    ];
-  }
-
-  return [title, "   ⬇️ تحميل: —", "   ⬆️ رفع: —"];
-}
-
-/** @deprecated use formatTrafficSection */
-export function formatTrafficMbLine(
-  rxMb: number | null | undefined,
-  txMb: number | null | undefined,
-  ifaceLabel?: string | null
-): string {
-  const suffix = ifaceLabel ? ` (${ifaceLabel})` : "";
-  const down = rxMb != null && Number.isFinite(rxMb) ? `${rxMb} MB` : "—";
-  const up = txMb != null && Number.isFinite(txMb) ? `${txMb} MB` : "—";
-  return `⬇️ تحميل${suffix}: ${down} | ⬆️ رفع: ${up}`;
+  return [title, "   ⬇️ السحب الآن: —", "   ⬆️ الرفع الآن: —"];
 }

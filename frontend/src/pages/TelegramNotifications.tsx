@@ -196,7 +196,7 @@ export function TelegramNotificationsPage() {
     setError(null);
     const controller = new AbortController();
     let timer = 0;
-    timer = window.setTimeout(() => controller.abort(), 60_000);
+    timer = window.setTimeout(() => controller.abort(), 120_000);
     try {
       const r = await apiFetch("/api/infrastructure-monitoring/telegram/send-status-now", {
         method: "POST",
