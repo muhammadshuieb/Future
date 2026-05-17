@@ -1851,6 +1851,7 @@ export async function resolveWhatsAppSessionOwnerPhone(tenantId: string): Promis
   return getSessionOwnerPhoneFromRuntime(settings);
 }
 
+/** Server/infrastructure alerts — sent via WAHA, not written to whatsapp_message_logs. */
 export async function sendOperationalAlertWhatsApp(
   tenantId: string,
   phoneOverride: string | null,
@@ -1869,31 +1870,11 @@ export async function sendOperationalAlertWhatsApp(
     if (!options?.skipMessageInterval) {
       await enforceMessageInterval(tenantId, settings);
     }
-    const result = await sendWahaMessage(settings, target, message);
-    await insertMessageLog({
-      tenantId,
-      subscriberId: null,
-      phone: target,
-      templateKey: null,
-      messageBody: message,
-      status: "sent",
-      providerMessageId: result.providerId,
-      errorMessage: null,
-    });
+    await sendWahaMessage(settings, target, message);
     await setLastCheck(tenantId, true, null);
     return { sent: true, phone: target };
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
-    await insertMessageLog({
-      tenantId,
-      subscriberId: null,
-      phone: target,
-      templateKey: null,
-      messageBody: message,
-      status: "failed",
-      providerMessageId: null,
-      errorMessage: err.slice(0, 4000),
-    });
     await setLastCheck(tenantId, false, err.slice(0, 4000));
     return { sent: false, reason: err.slice(0, 400), phone: target };
   }

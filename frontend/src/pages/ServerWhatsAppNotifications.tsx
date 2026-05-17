@@ -5,7 +5,6 @@ import {
   AlertCircle,
   Clock,
   MessageCircle,
-  Bell,
   Wrench,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -371,17 +370,6 @@ export function ServerWhatsAppNotificationsPage() {
                 {sendingReport ? t("common.loading") : t("infraWa.sendNow")}
               </Button>
             </div>
-          </Card>
-
-          <Card className="p-5 border-amber-500/20 bg-amber-500/5">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Bell className="h-4 w-4 text-amber-500" />
-              {t("serverWa.criticalFormatTitle")}
-            </div>
-            <p className="mt-2 text-xs opacity-80">{t("serverWa.criticalFormatHint")}</p>
-            <pre className="mt-4 whitespace-pre-wrap rounded-lg bg-black/20 p-3 text-[11px] leading-relaxed opacity-90">
-              {t("serverWa.criticalFormatExample")}
-            </pre>
           </Card>
 
           <Card className="p-5">

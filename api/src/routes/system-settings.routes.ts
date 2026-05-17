@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { routePolicy } from "../middleware/policy.js";
 import { isValidIanaTimezone } from "../lib/app-timezone.js";
 import { getSystemSettings, updateSystemSettings, type SystemSettingsInput } from "../services/system-settings.service.js";
+import { syncBackupScheduleCronJobs } from "../services/backup-schedule-jobs.service.js";
 import {
   resolveWhatsAppSessionOwnerPhone,
   sendOperationalAlertWhatsApp,
@@ -105,7 +106,11 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
       wireguard_server_public_key: parsed.data.wireguard_server_public_key ?? cur.wireguard_server_public_key,
       wireguard_server_private_key: parsed.data.wireguard_server_private_key,
     };
-    const settings = await updateSystemSettings(req.auth!.tenantId, next);
+    const tenantId = req.auth!.tenantId;
+    const settings = await updateSystemSettings(tenantId, next);
+    if (parsed.data.app_timezone !== undefined && parsed.data.app_timezone !== cur.app_timezone) {
+      await syncBackupScheduleCronJobs(tenantId);
+    }
     res.json({ settings });
   } catch (e) {
     console.error("system settings put", e);

@@ -5,7 +5,9 @@ import type { RowDataPacket } from "mysql2";
 import { config } from "../config.js";
 import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
-import { maybeRunScheduledBackup } from "../services/backup.service.js";
+import { runScheduledBackupAtSlot } from "../services/backup.service.js";
+import { BACKUP_SCHEDULED_JOB } from "../services/backup-schedule-jobs.service.js";
+import { resolveAppTimezone } from "../services/system-settings.service.js";
 import {
   sendOperationalAlertWhatsApp,
   resolveWhatsAppSessionOwnerPhone,
@@ -213,9 +215,12 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
     case "generate-invoices":
       await generateMonthlyInvoices(pool);
       break;
-    case "backup-scheduler":
-      await maybeRunScheduledBackup(tenantId, (await getSystemSettings(tenantId)).app_timezone);
+    case BACKUP_SCHEDULED_JOB: {
+      const slot = typeof job.data?.slot === "string" ? job.data.slot : "";
+      if (!slot) break;
+      await runScheduledBackupAtSlot(tenantId, slot, await resolveAppTimezone(tenantId));
       break;
+    }
     case "whatsapp-expiry-reminders":
       await sendExpiryReminders(tenantId);
       break;

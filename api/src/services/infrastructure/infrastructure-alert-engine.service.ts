@@ -260,23 +260,6 @@ export function evaluateServerAlerts(
   return alerts;
 }
 
-async function recordHistory(
-  pool: Pool,
-  alertId: string,
-  tenantId: string,
-  eventType: string,
-  severity: string | null,
-  message: string | null,
-  meta?: Record<string, unknown>
-): Promise<void> {
-  if (!(await hasTable(pool, "infrastructure_alert_history"))) return;
-  await pool.execute(
-    `INSERT INTO infrastructure_alert_history (id, alert_id, tenant_id, event_type, severity, message, meta_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [randomUUID(), alertId, tenantId, eventType, severity, message, meta ? JSON.stringify(meta) : null]
-  );
-}
-
 function canNotify(
   settings: MonitoringSettings,
   severity: AlertSeverity,
@@ -338,6 +321,11 @@ export async function upsertInfrastructureAlerts(
 ): Promise<void> {
   if (!(await hasTable(pool, "infrastructure_alerts"))) return;
 
+  await pool.execute(
+    `DELETE FROM infrastructure_alerts WHERE tenant_id = ? AND status = 'resolved'`,
+    [tenantId]
+  );
+
   const firingFps = new Set(evaluated.map((e) => e.fingerprint));
   const [existing] = await pool.query<RowDataPacket[]>(
     `SELECT * FROM infrastructure_alerts WHERE tenant_id = ? AND status = 'firing'`,
@@ -373,12 +361,8 @@ export async function upsertInfrastructureAlerts(
             `UPDATE infrastructure_alerts SET notification_count = notification_count + 1, last_notified_at = NOW(3) WHERE id = ?`,
             [alertId]
           );
-          await recordHistory(pool, alertId, tenantId, "notified", ev.severity, ev.message, {
-            channel: "multi",
-          });
         }
       }
-      await recordHistory(pool, alertId, tenantId, "updated", ev.severity, ev.message);
       continue;
     }
 
@@ -401,7 +385,6 @@ export async function upsertInfrastructureAlerts(
         ev.fingerprint,
       ]
     );
-    await recordHistory(pool, alertId, tenantId, "created", ev.severity, ev.message);
     if (canNotify(settings, ev.severity, null)) {
       const snap = ev.nas_device_id ? routerSnapsById.get(ev.nas_device_id) ?? null : null;
       const sent = await dispatchAlertNotifications(
@@ -419,7 +402,6 @@ export async function upsertInfrastructureAlerts(
           `UPDATE infrastructure_alerts SET notification_count = 1, last_notified_at = NOW(3) WHERE id = ?`,
           [alertId]
         );
-        await recordHistory(pool, alertId, tenantId, "notified", ev.severity, ev.message, { channel: "multi" });
       }
     }
   }
@@ -428,11 +410,6 @@ export async function upsertInfrastructureAlerts(
     const fingerprint = String(row.fingerprint);
     if (firingFps.has(fingerprint)) continue;
     const alertId = String(row.id);
-    await pool.execute(
-      `UPDATE infrastructure_alerts SET status = 'resolved', resolved_at = NOW(3) WHERE id = ?`,
-      [alertId]
-    );
-    await recordHistory(pool, alertId, tenantId, "resolved", String(row.severity), "تم حل المشكلة");
 
     if (settings.recovery_notifications_enabled) {
       const recoveryEv: EvaluatedAlert = {
@@ -458,10 +435,11 @@ export async function upsertInfrastructureAlerts(
         settings
       );
       if (sent) {
-        await pool.execute(`UPDATE infrastructure_alerts SET recovery_notified_at = NOW(3) WHERE id = ?`, [alertId]);
-        await recordHistory(pool, alertId, tenantId, "recovery_notified", "info", recoveryEv.message);
+        /* recovery sent — row deleted below */
       }
     }
+
+    await pool.execute(`DELETE FROM infrastructure_alerts WHERE id = ? AND tenant_id = ?`, [alertId, tenantId]);
   }
 }
 

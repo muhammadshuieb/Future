@@ -105,6 +105,9 @@ export type RcloneStatus = {
   schedule_time_2: string | null;
   schedule_timezone: string;
   retention_days: number;
+  last_scheduled_slot: string | null;
+  /** Exact HH:mm times registered for cron (matches page: once or twice daily). */
+  schedule_active_times: string[];
 };
 
 export type BackupAlert = {
@@ -390,7 +393,7 @@ async function runMysqldump(filePath: string): Promise<void> {
   }
 }
 
-async function getRcloneSettings(tenantId: string): Promise<RcloneSettings> {
+export async function getRcloneSettings(tenantId: string): Promise<RcloneSettings> {
   await ensureBackupSchema();
   const [rows] = await pool.query<RcloneSettingsRow[]>(
     `SELECT *
@@ -709,6 +712,8 @@ export async function getRcloneStatus(tenantId: string): Promise<RcloneStatus> {
     schedule_time_2: settings.scheduleTime2,
     schedule_timezone: await resolveAppTimezone(tenantId),
     retention_days: settings.retentionDays,
+    last_scheduled_slot: settings.lastScheduledSlot,
+    schedule_active_times: getActiveBackupScheduleSlots(settings),
   };
 }
 
@@ -1021,6 +1026,22 @@ function normalizeHm(raw: string): string {
   return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 }
 
+/** Times that cron should run — mirrors Maintenance page (daily = one slot, twice_daily = two). */
+export function getActiveBackupScheduleSlots(settings: {
+  scheduleEnabled: boolean;
+  scheduleMode: ScheduleMode;
+  scheduleTime1: string;
+  scheduleTime2: string | null;
+}): string[] {
+  if (!settings.scheduleEnabled) return [];
+  const t1 = normalizeHm(settings.scheduleTime1);
+  if (settings.scheduleMode === "twice_daily" && settings.scheduleTime2?.trim()) {
+    const t2 = normalizeHm(settings.scheduleTime2);
+    return Array.from(new Set([t1, t2])).sort();
+  }
+  return [t1];
+}
+
 export async function updateBackupSchedule(
   tenantId: string,
   input: {
@@ -1058,6 +1079,8 @@ export async function updateBackupSchedule(
       last_scheduled_slot = NULL`,
     [tenantId, input.enabled ? 1 : 0, input.mode, time1, time2, retentionDays]
   );
+  const { syncBackupScheduleCronJobs } = await import("./backup-schedule-jobs.service.js");
+  await syncBackupScheduleCronJobs(tenantId);
 }
 
 export async function deleteBackupRunsBulk(
@@ -1073,58 +1096,63 @@ export async function deleteBackupRunsBulk(
   return { requested: uniq.length, deleted };
 }
 
-/** BullMQ repeat interval for `backup-scheduler` (same default used to widen slot matching). */
-export function getBackupSchedulerPollMs(): number {
-  const n = parseInt(process.env.BACKUP_SCHEDULER_POLL_MS?.trim() ?? "", 10);
-  return Number.isFinite(n) && n >= 300_000 ? n : 600_000;
+function scheduledSlotKey(date: string, slot: string): string {
+  return `${date}|${slot}`;
 }
 
-function slotMatchWindowMinutes(): number {
-  const pollMin = Math.ceil(getBackupSchedulerPollMs() / 60_000);
-  return Math.min(15, Math.max(5, pollMin + 2));
-}
-
-export async function maybeRunScheduledBackup(tenantId: string, timeZone: string): Promise<void> {
+/** Runs one scheduled backup when its cron job fires at the configured time. */
+export async function runScheduledBackupAtSlot(
+  tenantId: string,
+  slot: string,
+  timeZone: string
+): Promise<void> {
   await ensureBackupSchema();
   await ensureScheduleColumns();
   await ensureBackupRcloneSettingsRow(tenantId);
   const settings = await getRcloneSettings(tenantId);
   if (!settings.scheduleEnabled) return;
 
-  const t1 = normalizeHm(settings.scheduleTime1);
-  const t2 = settings.scheduleTime2 ? normalizeHm(settings.scheduleTime2) : null;
-  const slots =
-    settings.scheduleMode === "twice_daily" && t2
-      ? Array.from(new Set([t1, t2])).sort()
-      : [t1];
-
-  const now = new Date();
-  const { date, hm } = localDateAndHmInZone(now, timeZone);
-  const cur = hhmmToMinutes(normalizeHm(hm));
-  if (cur < 0) return;
-
-  const win = slotMatchWindowMinutes();
-  const matches = slots.filter((slot) => {
-    const s = hhmmToMinutes(slot);
-    return s >= 0 && Math.abs(cur - s) <= win;
-  });
-  if (matches.length === 0) return;
-
-  for (const slot of matches) {
-    const key = `${date}|${slot}`;
-    if (settings.lastScheduledSlot === key) continue;
-    await runDatabaseBackup({ tenantId, triggeredBy: "system" });
-    const [upd] = await pool.execute(
-      `UPDATE backup_rclone_settings SET last_scheduled_slot = ? WHERE tenant_id = ?`,
-      [key, tenantId]
+  const normalizedSlot = normalizeHm(slot);
+  const activeSlots = getActiveBackupScheduleSlots(settings);
+  if (!activeSlots.includes(normalizedSlot)) {
+    console.warn(
+      `[backup-scheduled] slot ${normalizedSlot} not in active schedule [${activeSlots.join(", ")}], skipping`
     );
-    const affected = (upd as { affectedRows?: number }).affectedRows ?? 0;
-    if (affected === 0) {
-      console.warn(
-        `[backup] last_scheduled_slot not persisted for tenant ${tenantId}; check backup_rclone_settings row`
-      );
-    }
     return;
+  }
+  let date: string;
+  try {
+    ({ date } = localDateAndHmInZone(new Date(), timeZone));
+  } catch (e) {
+    console.error(
+      `[backup-scheduled] invalid timezone "${timeZone}" for tenant ${tenantId}:`,
+      e instanceof Error ? e.message : e
+    );
+    return;
+  }
+
+  const key = scheduledSlotKey(date, normalizedSlot);
+  if (settings.lastScheduledSlot === key) return;
+
+  console.info(
+    `[backup-scheduled] tenant=${tenantId} tz=${timeZone} slot=${normalizedSlot} key=${key}`
+  );
+  const result = await runDatabaseBackup({ tenantId, triggeredBy: "system" });
+  if (result.status !== "success") {
+    console.warn(
+      `[backup-scheduled] failed tenant=${tenantId} slot=${normalizedSlot}: ${result.error_message ?? "unknown"}`
+    );
+    return;
+  }
+  const [upd] = await pool.execute(
+    `UPDATE backup_rclone_settings SET last_scheduled_slot = ? WHERE tenant_id = ?`,
+    [key, tenantId]
+  );
+  const affected = (upd as { affectedRows?: number }).affectedRows ?? 0;
+  if (affected === 0) {
+    console.warn(
+      `[backup] last_scheduled_slot not persisted for tenant ${tenantId}; check backup_rclone_settings row`
+    );
   }
 }
 

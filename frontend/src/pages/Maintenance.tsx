@@ -38,6 +38,8 @@ type RcloneStatus = {
   schedule_time_2: string | null;
   schedule_timezone: string;
   retention_days: number;
+  last_scheduled_slot?: string | null;
+  schedule_active_times?: string[];
 };
 
 type DatabaseSizeInfo = {
@@ -891,6 +893,12 @@ export function MaintenancePage() {
         }
         return;
       }
+      try {
+        const saved = JSON.parse(raw) as { status?: RcloneStatus };
+        if (saved.status) setRcloneStatus(saved.status);
+      } catch {
+        /* reload below */
+      }
       setInfo(t("maintenance.scheduleSaved"));
       await load();
     } finally {
@@ -1441,9 +1449,30 @@ export function MaintenancePage() {
             <p className="mt-1 text-xs opacity-70">{t("maintenance.retentionHint")}</p>
           </div>
           {rcloneStatus ? (
-            <p className="mb-3 text-xs opacity-70">
-              {t("maintenance.scheduleTimezone")}: {rcloneStatus.schedule_timezone}
-            </p>
+            <div className="mb-3 space-y-1 text-xs opacity-70">
+              <p>
+                {t("maintenance.scheduleTimezone")}: {rcloneStatus.schedule_timezone}
+              </p>
+              {scheduleEnabled && (rcloneStatus.schedule_active_times?.length ?? 0) > 0 ? (
+                <p>
+                  {scheduleMode === "twice_daily"
+                    ? t("maintenance.scheduleActiveTwice")
+                        .replace("{time1}", rcloneStatus.schedule_active_times![0] ?? scheduleTime1)
+                        .replace("{time2}", rcloneStatus.schedule_active_times![1] ?? scheduleTime2)
+                    : t("maintenance.scheduleActiveDaily").replace(
+                        "{time}",
+                        rcloneStatus.schedule_active_times![0] ?? scheduleTime1
+                      )}
+                </p>
+              ) : scheduleEnabled ? (
+                <p>{t("maintenance.scheduleActiveNone")}</p>
+              ) : null}
+              {rcloneStatus.last_scheduled_slot ? (
+                <p>
+                  {t("maintenance.scheduleLastSlot")}: {rcloneStatus.last_scheduled_slot}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <Button type="button" onClick={() => void saveBackupSchedule()} disabled={savingSchedule}>
             {savingSchedule ? t("common.loading") : t("maintenance.scheduleSave")}

@@ -217,7 +217,8 @@ router.put("/backup-schedule", async (req, res) => {
       time2: parsed.data.time2 ?? null,
       retentionDays: parsed.data.retentionDays,
     });
-    res.json({ ok: true });
+    const status = await getRcloneStatus(tenantId);
+    res.json({ ok: true, status });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     if (msg === "backup_schedule_times_too_close") {

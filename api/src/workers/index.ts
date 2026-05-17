@@ -24,7 +24,7 @@ import {
   mysqlPoolConnections,
 } from "../services/metrics.service.js";
 import { dispatchWorkerJob } from "./dispatch-worker-job.js";
-import { getBackupSchedulerPollMs } from "../services/backup.service.js";
+import { syncBackupScheduleCronJobsForDefaultTenant } from "../services/backup-schedule-jobs.service.js";
 import { startDiskMonitor } from "../services/disk-monitor.service.js";
 
 /**
@@ -165,7 +165,7 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await replaceRepeatablesByName("daily-backup");
   await replaceRepeatablesByName("backup-scheduler");
-  await add("backup-scheduler", getBackupSchedulerPollMs());
+  await syncBackupScheduleCronJobsForDefaultTenant();
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
