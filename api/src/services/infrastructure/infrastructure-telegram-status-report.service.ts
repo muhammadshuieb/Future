@@ -1,7 +1,10 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
-import { listRouterHealthSnapshots } from "./router-health-collector.service.js";
+import {
+  prepareRoutersForStatusReport,
+  type StatusReportRouterPrep,
+} from "./router-health-collector.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import { formatUptime } from "./infrastructure-telegram-notify.service.js";
 import { formatTrafficMbLine } from "./traffic-metrics.util.js";
@@ -41,7 +44,10 @@ function routerBlock(snap: RouterHealthSnapshot): string {
   return lines.join("\n");
 }
 
-export function formatStatusReportMessage(routers: RouterHealthSnapshot[]): string {
+export function formatStatusReportMessage(
+  routers: RouterHealthSnapshot[],
+  prep?: Pick<StatusReportRouterPrep, "issue" | "active_nas_count" | "mikrotik_api_count">
+): string {
   const now = new Date().toLocaleString("ar-SY", {
     hour: "2-digit",
     minute: "2-digit",
@@ -49,9 +55,19 @@ export function formatStatusReportMessage(routers: RouterHealthSnapshot[]): stri
     month: "2-digit",
   });
   const online = routers.filter((r) => r.last_sync_ok).length;
-  const header = `📊 تقرير الراوترات — ${now}\nمتصل: ${online}/${routers.length}\n`;
+  const total = routers.length > 0 ? routers.length : prep?.active_nas_count ?? 0;
+  const header = `📊 تقرير الراوترات — ${now}\nمتصل: ${online}/${total}\n`;
   if (routers.length === 0) {
-    return `${header}\nلا توجد بيانات راوتر — فعّل MikroTik API على أجهزة NAS ثم شغّل «فحص الآن» من مركز NOC.`;
+    if (prep?.issue === "migration_required") {
+      return `${header}\n⚠️ جدول مراقبة الراوترات غير موجود — شغّل migrations البنية التحتية (019+) على قاعدة البيانات ثم أعد «فحص الآن».`;
+    }
+    if (prep?.issue === "no_active_nas") {
+      return `${header}\nلا يوجد راوتر نشط في NAS — أضف جهازاً بحالة active.`;
+    }
+    if ((prep?.mikrotik_api_count ?? 0) === 0) {
+      return `${header}\nيوجد ${prep?.active_nas_count ?? 0} راوتر في NAS لكن MikroTik API غير مفعّل — فعّله من تعديل الجهاز (مستخدم + كلمة مرور API).`;
+    }
+    return `${header}\nتعذّر جمع بيانات الراوتر — تحقق من IP ومنفذ API من صفحة NAS ثم «فحص الآن» من مركز NOC.`;
   }
   const blocks = routers.map((r) => routerBlock(r));
   return `${header}\n${blocks.join("\n──────────────\n")}`;
@@ -77,10 +93,11 @@ function splitTelegramMessages(text: string, maxLen = 4000): string[] {
 async function dispatchStatusReport(
   pool: Pool,
   tenantId: string,
-  creds: { botToken: string; chatId: string }
+  creds: { botToken: string; chatId: string },
+  collectIfEmpty = false
 ): Promise<{ ok: boolean; error?: string; detail?: string }> {
-  const routers = await listRouterHealthSnapshots(pool, tenantId);
-  const body = formatStatusReportMessage(routers);
+  const prep = await prepareRoutersForStatusReport(pool, tenantId, collectIfEmpty);
+  const body = formatStatusReportMessage(prep.routers, prep);
   for (const chunk of splitTelegramMessages(body)) {
     const send = await sendTelegramMessage(creds.botToken, creds.chatId, chunk);
     if (!send.ok) {
@@ -120,7 +137,7 @@ export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string
   const creds = await getTelegramCredentials(pool, tenantId);
   if (!creds) return false;
 
-  const result = await dispatchStatusReport(pool, tenantId, creds);
+  const result = await dispatchStatusReport(pool, tenantId, creds, true);
   if (!result.ok) {
     log.warn(`telegram_status_report_failed tenant=${tenantId} ${result.detail}`, {}, "telegram");
     return false;
@@ -128,7 +145,7 @@ export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string
   return true;
 }
 
-/** Manual send — fast path using last snapshots (no router API collect on HTTP request). */
+/** Manual send — collects router data when snapshots are missing, then sends. */
 export async function sendTelegramStatusReportNow(
   pool: Pool,
   tenantId: string
@@ -141,5 +158,5 @@ export async function sendTelegramStatusReportNow(
       detail: "أدخل Bot Token و Chat ID ثم اضغط «حفظ وتفعيل»",
     };
   }
-  return dispatchStatusReport(pool, tenantId, creds);
+  return dispatchStatusReport(pool, tenantId, creds, true);
 }

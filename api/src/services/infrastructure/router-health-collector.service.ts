@@ -385,6 +385,67 @@ export async function collectRouterHealthForTenant(
   return out;
 }
 
+export type StatusReportRouterPrep = {
+  routers: RouterHealthSnapshot[];
+  issue?: "migration_required" | "no_active_nas";
+  active_nas_count: number;
+  mikrotik_api_count: number;
+};
+
+/** Load snapshots for Telegram report; collect from routers first when table is empty. */
+export async function prepareRoutersForStatusReport(
+  pool: Pool,
+  tenantId: string,
+  collectIfEmpty = true
+): Promise<StatusReportRouterPrep> {
+  if (!(await hasTable(pool, "nas_devices"))) {
+    return { routers: [], issue: "no_active_nas", active_nas_count: 0, mikrotik_api_count: 0 };
+  }
+  if (!(await hasTable(pool, "router_health_snapshots"))) {
+    const [nasRows] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS c FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
+      [tenantId]
+    );
+    const active = Number(nasRows[0]?.c ?? 0);
+    return {
+      routers: [],
+      issue: "migration_required",
+      active_nas_count: active,
+      mikrotik_api_count: 0,
+    };
+  }
+
+  const [nasStats] = await pool.query<RowDataPacket[]>(
+    `SELECT
+       COUNT(*) AS active_count,
+       SUM(CASE WHEN COALESCE(mikrotik_api_enabled, 0) = 1
+         AND COALESCE(TRIM(mikrotik_api_user), '') <> ''
+         AND mikrotik_api_password IS NOT NULL
+         AND mikrotik_api_password <> '' THEN 1 ELSE 0 END) AS api_count
+     FROM nas_devices WHERE tenant_id = ? AND status = 'active'`,
+    [tenantId]
+  );
+  const activeNasCount = Number(nasStats[0]?.active_count ?? 0);
+  const mikrotikApiCount = Number(nasStats[0]?.api_count ?? 0);
+
+  if (activeNasCount === 0) {
+    return { routers: [], issue: "no_active_nas", active_nas_count: 0, mikrotik_api_count: 0 };
+  }
+
+  let routers = await listRouterHealthSnapshots(pool, tenantId);
+  if (routers.length === 0 && collectIfEmpty) {
+    const prev = new Map(routers.map((r) => [r.nas_device_id, r]));
+    await collectRouterHealthForTenant(pool, tenantId, prev);
+    routers = await listRouterHealthSnapshots(pool, tenantId);
+  }
+
+  return {
+    routers,
+    active_nas_count: activeNasCount,
+    mikrotik_api_count: mikrotikApiCount,
+  };
+}
+
 export async function listRouterHealthSnapshots(pool: Pool, tenantId: string): Promise<RouterHealthSnapshot[]> {
   if (!(await hasTable(pool, "router_health_snapshots"))) return [];
   const [rows] = await pool.query<RowDataPacket[]>(
