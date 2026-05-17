@@ -115,6 +115,8 @@ router.put("/settings", requireRole("admin", "manager"), requireMonitoringManage
 const telegramBody = z.object({
   bot_token: z.string().min(20).optional(),
   chat_id: z.string().min(1),
+  status_reports_enabled: z.boolean().optional(),
+  status_interval_minutes: z.number().int().min(1).max(1440).optional(),
 });
 
 router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
@@ -127,6 +129,8 @@ router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage
     const telegram = await saveTelegramConfig(pool, req.auth!.tenantId, {
       bot_token: parsed.data.bot_token,
       chat_id: parsed.data.chat_id,
+      status_reports_enabled: parsed.data.status_reports_enabled,
+      status_interval_minutes: parsed.data.status_interval_minutes,
     });
     const settings = await getMonitoringSettings(pool, req.auth!.tenantId);
     res.json({ telegram, settings });
@@ -142,6 +146,30 @@ router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage
     }
     res.status(500).json({ error: msg });
   }
+});
+
+router.post("/telegram/send-status-now", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const { maybeSendTelegramStatusReport } = await import(
+    "../services/infrastructure/infrastructure-telegram-status-report.service.js"
+  );
+  const { collectRouterHealthForTenant } = await import(
+    "../services/infrastructure/router-health-collector.service.js"
+  );
+  const tenantId = req.auth!.tenantId;
+  await collectRouterHealthForTenant(pool, tenantId);
+  await pool
+    .execute(
+      `UPDATE infrastructure_monitoring_settings SET telegram_last_status_report_at = NULL WHERE tenant_id = ?`,
+      [tenantId]
+    )
+    .catch(() => {});
+  const sent = await maybeSendTelegramStatusReport(pool, tenantId);
+  if (!sent) {
+    res.status(400).json({ ok: false, error: "status_report_not_sent" });
+    return;
+  }
+  const telegram = await getTelegramConfig(pool, tenantId);
+  res.json({ ok: true, telegram });
 });
 
 router.post("/telegram/test", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {

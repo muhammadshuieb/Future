@@ -7,6 +7,9 @@ export type TelegramConfigPublic = {
   configured: boolean;
   chat_id: string | null;
   alerts_enabled: boolean;
+  status_reports_enabled: boolean;
+  status_interval_minutes: number;
+  last_status_report_at: string | null;
   last_test_ok: boolean | null;
   last_error: string | null;
 };
@@ -14,6 +17,8 @@ export type TelegramConfigPublic = {
 export type TelegramConfigSave = {
   bot_token?: string;
   chat_id?: string;
+  status_reports_enabled?: boolean;
+  status_interval_minutes?: number;
 };
 
 function tokenFromRow(row: RowDataPacket): string | null {
@@ -24,24 +29,29 @@ function tokenFromRow(row: RowDataPacket): string | null {
 }
 
 export async function getTelegramConfig(pool: Pool, tenantId: string): Promise<TelegramConfigPublic> {
-  if (!(await hasTable(pool, "infrastructure_monitoring_settings"))) {
-    return { configured: false, chat_id: null, alerts_enabled: false, last_test_ok: null, last_error: null };
-  }
+  const empty: TelegramConfigPublic = {
+    configured: false,
+    chat_id: null,
+    alerts_enabled: false,
+    status_reports_enabled: true,
+    status_interval_minutes: 5,
+    last_status_report_at: null,
+    last_test_ok: null,
+    last_error: null,
+  };
+  if (!(await hasTable(pool, "infrastructure_monitoring_settings"))) return empty;
   const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
-  if (!col.has("telegram_chat_id")) {
-    return { configured: false, chat_id: null, alerts_enabled: false, last_test_ok: null, last_error: null };
-  }
+  if (!col.has("telegram_chat_id")) return empty;
 
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT telegram_chat_id, telegram_bot_token_encrypted, telegram_alerts_enabled,
-            telegram_last_test_ok, telegram_last_error
+            telegram_last_test_ok, telegram_last_error,
+            telegram_status_reports_enabled, telegram_status_interval_minutes, telegram_last_status_report_at
      FROM infrastructure_monitoring_settings WHERE tenant_id = ? LIMIT 1`,
     [tenantId]
   );
   const r = rows[0];
-  if (!r) {
-    return { configured: false, chat_id: null, alerts_enabled: false, last_test_ok: null, last_error: null };
-  }
+  if (!r) return empty;
   const chatId = r.telegram_chat_id != null ? String(r.telegram_chat_id).trim() : "";
   const token = tokenFromRow(r);
   const configured = Boolean(token && chatId);
@@ -49,6 +59,16 @@ export async function getTelegramConfig(pool: Pool, tenantId: string): Promise<T
     configured,
     chat_id: chatId || null,
     alerts_enabled: Boolean(r.telegram_alerts_enabled ?? 0),
+    status_reports_enabled: col.has("telegram_status_reports_enabled")
+      ? Boolean(r.telegram_status_reports_enabled ?? 1)
+      : true,
+    status_interval_minutes: col.has("telegram_status_interval_minutes")
+      ? Math.max(1, Math.min(1440, Number(r.telegram_status_interval_minutes ?? 5)))
+      : 5,
+    last_status_report_at:
+      col.has("telegram_last_status_report_at") && r.telegram_last_status_report_at
+        ? new Date(String(r.telegram_last_status_report_at)).toISOString()
+        : null,
     last_test_ok: r.telegram_last_test_ok != null ? Boolean(r.telegram_last_test_ok) : null,
     last_error: r.telegram_last_error != null ? String(r.telegram_last_error) : null,
   };
@@ -85,16 +105,31 @@ export async function saveTelegramConfig(
   }
 
   const configured = Boolean(token && chatId);
+  const statusEnabled = input.status_reports_enabled ?? true;
+  const statusInterval = Math.max(
+    1,
+    Math.min(1440, Number(input.status_interval_minutes ?? 5))
+  );
+
+  const sets = [
+    "telegram_chat_id = ?",
+    "telegram_bot_token_encrypted = ?",
+    "telegram_alerts_enabled = ?",
+    "infrastructure_alerts_enabled = 1",
+    "telegram_last_test_ok = NULL",
+    "telegram_last_error = NULL",
+  ];
+  const vals: (string | number | Buffer)[] = [chatId, encryptSecret(token), configured ? 1 : 0];
+
+  if (col.has("telegram_status_reports_enabled")) {
+    sets.push("telegram_status_reports_enabled = ?", "telegram_status_interval_minutes = ?");
+    vals.push(statusEnabled ? 1 : 0, statusInterval);
+  }
+
+  vals.push(tenantId);
   await pool.execute(
-    `UPDATE infrastructure_monitoring_settings SET
-      telegram_chat_id = ?,
-      telegram_bot_token_encrypted = ?,
-      telegram_alerts_enabled = ?,
-      infrastructure_alerts_enabled = 1,
-      telegram_last_test_ok = NULL,
-      telegram_last_error = NULL
-     WHERE tenant_id = ?`,
-    [chatId, encryptSecret(token), configured ? 1 : 0, tenantId]
+    `UPDATE infrastructure_monitoring_settings SET ${sets.join(", ")} WHERE tenant_id = ?`,
+    vals
   );
 
   const test = await testTelegramConnection(pool, tenantId);

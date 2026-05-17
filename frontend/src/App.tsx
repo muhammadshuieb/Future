@@ -187,8 +187,9 @@ function AppRoutes() {
           <Route path="whatsapp/templates" element={<WhatsAppTemplatesPage />} />
           <Route path="whatsapp/broadcast" element={<WhatsAppBroadcastPage />} />
           <Route path="whatsapp/logs" element={<WhatsAppLogsPage />} />
-          <Route path="notifications" element={<Navigate to="/notifications/telegram" replace />} />
-          <Route path="notifications/telegram" element={<TelegramNotificationsPage />} />
+          <Route path="telegram" element={<TelegramNotificationsPage />} />
+          <Route path="notifications/telegram" element={<Navigate to="/telegram" replace />} />
+          <Route path="notifications" element={<Navigate to="/telegram" replace />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

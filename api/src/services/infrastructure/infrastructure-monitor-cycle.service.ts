@@ -5,6 +5,7 @@ import { runAlertEvaluationCycle } from "./infrastructure-alert-engine.service.j
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import { log } from "../logger.service.js";
 import { executeDueRouterActions } from "./router-actions.service.js";
+import { maybeSendTelegramStatusReport } from "./infrastructure-telegram-status-report.service.js";
 
 export async function runInfrastructureMonitorCycle(pool: Pool, tenantId: string): Promise<void> {
   const prevSnaps = await listRouterHealthSnapshots(pool, tenantId);
@@ -17,6 +18,10 @@ export async function runInfrastructureMonitorCycle(pool: Pool, tenantId: string
   await runAlertEvaluationCycle(pool, tenantId, routerSnaps, prevMap, serverSnap);
   await executeDueRouterActions(pool, tenantId).catch((e) => {
     log.warn(`router_scheduled_actions_failed ${String(e)}`, {}, "infra-monitor");
+  });
+
+  await maybeSendTelegramStatusReport(pool, tenantId).catch((e) => {
+    log.warn(`telegram_status_report_failed ${String(e)}`, {}, "infra-monitor");
   });
 
   log.info(

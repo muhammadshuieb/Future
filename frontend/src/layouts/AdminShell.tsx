@@ -39,7 +39,6 @@ import {
   Braces,
   Zap,
   CreditCard,
-  Bell,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -165,7 +164,6 @@ export function AdminShell() {
     location.pathname.startsWith("/billing") ||
     location.pathname.startsWith("/inventory");
   const isWhatsAppRoute = location.pathname.startsWith("/whatsapp");
-  const isNotificationsRoute = location.pathname.startsWith("/notifications");
   const isMaintenanceRoute =
     location.pathname.startsWith("/maintenance") ||
     location.pathname.startsWith("/maintenance/updates") ||
@@ -181,7 +179,6 @@ export function AdminShell() {
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
   const [financeOpen, setFinanceOpen] = useState(isFinanceRoute);
   const [whatsAppOpen, setWhatsAppOpen] = useState(isWhatsAppRoute);
-  const [notificationsOpen, setNotificationsOpen] = useState(isNotificationsRoute);
   const [maintenanceOpen, setMaintenanceOpen] = useState(isMaintenanceRoute);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -267,9 +264,6 @@ export function AdminShell() {
     { to: "/whatsapp/templates", labelKey: "nav.whatsappTemplates", icon: FileText, tone: "indigo" },
     { to: "/whatsapp/broadcast", labelKey: "nav.whatsappBroadcast", icon: Send, tone: "pink" },
     { to: "/whatsapp/logs", labelKey: "nav.whatsappLogs", icon: ListChecks, tone: "slate" },
-  ];
-  const notificationsNav: NavItem[] = [
-    { to: "/notifications/telegram", labelKey: "nav.telegram", icon: Send, tone: "sky" },
   ];
   const staffNav: NavItem[] = [
     { to: "/staff", labelKey: "nav.staffUsers", icon: Users, tone: "purple" },
@@ -472,34 +466,15 @@ export function AdminShell() {
             </>
           ) : null}
 
-          {/* Notifications group */}
           {canManageWhatsApp ? (
-            <>
-              <GroupButton
-                open={notificationsOpen}
-                onToggle={() => setNotificationsOpen((v) => !v)}
-                active={isNotificationsRoute}
-                label={t("nav.notifications")}
-                Icon={Bell}
-                tone="sky"
-              />
-              {notificationsOpen
-                ? notificationsNav.map(({ to, labelKey, icon: Icon, tone }) => (
-                    <NavLink
-                      key={to}
-                      to={to}
-                      className={({ isActive }) => itemClass(isActive, tone, true)}
-                    >
-                      {({ isActive }) => (
-                        <>
-                          <IconTile Icon={Icon} tone={tone} active={isActive} small />
-                          <span className="truncate">{t(labelKey)}</span>
-                        </>
-                      )}
-                    </NavLink>
-                  ))
-                : null}
-            </>
+            <NavLink to="/telegram" className={({ isActive }) => itemClass(isActive, "sky")}>
+              {({ isActive }) => (
+                <>
+                  <IconTile Icon={Send} tone="sky" active={isActive} />
+                  <span className="truncate">{t("nav.telegram")}</span>
+                </>
+              )}
+            </NavLink>
           ) : null}
 
           {/* WhatsApp group */}
