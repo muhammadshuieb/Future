@@ -4,6 +4,7 @@ import { createRedisClient } from "../../lib/redis-connection.js";
 import type { UsageCycleRedisClient } from "../../lib/usage-lock.js";
 import { log } from "../logger.service.js";
 import { runTelegramStatusReportsDue } from "./infrastructure-telegram-status-report.service.js";
+import { runWhatsAppStatusReportsDue } from "./infrastructure-whatsapp-status-report.service.js";
 
 const LOCK_KEY = "fr:telegram-status-report-tick";
 const LOCK_TTL_SEC = 120;
@@ -68,9 +69,14 @@ export function startTelegramStatusReportScheduler(pool: Pool): void {
 
   const run = () => {
     void withTickLock(async () => {
-      const { checked, sent } = await runTelegramStatusReportsDue(pool);
-      if (sent > 0) {
-        log.info(`telegram_scheduler sent=${sent} checked=${checked}`, {}, "telegram");
+      const tg = await runTelegramStatusReportsDue(pool);
+      const wa = await runWhatsAppStatusReportsDue(pool);
+      if (tg.sent > 0 || wa.sent > 0) {
+        log.info(
+          `infra_status_scheduler telegram=${tg.sent}/${tg.checked} whatsapp=${wa.sent}/${wa.checked}`,
+          {},
+          "telegram"
+        );
       }
     });
   };

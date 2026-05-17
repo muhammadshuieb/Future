@@ -1,83 +1,25 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
+import { getTableColumns } from "../../db/schemaGuards.js";
+import { listRouterHealthSnapshots } from "./router-health-collector.service.js";
+import { buildScheduledStatusMessages } from "./infrastructure-status-report-build.service.js";
 import {
-  listRouterHealthSnapshots,
-  prepareRoutersForStatusReport,
-  type StatusReportRouterPrep,
-} from "./router-health-collector.service.js";
-import type { RouterHealthSnapshot } from "./infrastructure-types.js";
-import { formatTelegramDateTime, formatUptime } from "./infrastructure-telegram-notify.service.js";
-import { formatTrafficSection } from "./traffic-metrics.util.js";
+  formatEmptyReportMessage,
+  formatSingleRouterReport,
+} from "./infrastructure-status-report-format.service.js";
 import {
   getTelegramCredentials,
   getTelegramCredentialsLoose,
   sendTelegramMessage,
 } from "./infrastructure-telegram.service.js";
 import { log } from "../logger.service.js";
+import type { RouterHealthSnapshot } from "./infrastructure-types.js";
+import type { StatusReportRouterPrep } from "./router-health-collector.service.js";
 
-const SEP = "━━━━━━━━━━━━━━━━";
-
-/** One Telegram message per router. */
-export function formatSingleRouterReport(snap: RouterHealthSnapshot): string {
-  const online = snap.last_sync_ok && snap.health_status === "online";
-  const statusLine = online ? "✅ متصل" : "🔴 غير متصل";
-  const lines: string[] = [
-    `📊 ${snap.nas_name}`,
-    `🕐 ${formatTelegramDateTime()}`,
-    statusLine,
-    SEP,
-    `📍 ${snap.nas_ip}`,
-  ];
-
-  if (!online) {
-    lines.push(`❌ ${snap.last_sync_error ?? "تعذّر الاتصال"}`);
-    return lines.join("\n");
-  }
-
-  lines.push(
-    `⏱ Uptime: ${formatUptime(snap.uptime_seconds)}`,
-    "",
-    `💻 المعالج: ${snap.cpu_percent ?? "—"}%`,
-    `💾 الذاكرة: ${snap.ram_percent ?? "—"}%`,
-    ""
-  );
-
-  if (snap.board_temperature_c != null || snap.voltage_supported) {
-    if (snap.board_temperature_c != null) {
-      lines.push(`🌡 الحرارة: ${snap.board_temperature_c}°C`);
-    }
-    if (snap.voltage_supported) {
-      lines.push(`⚡ الجهد: ${snap.voltage_v != null ? `${snap.voltage_v}V` : "—"}`);
-    }
-    lines.push("");
-  }
-
-  lines.push(`👥 PPPoE: ${snap.ppp_active_sessions}`, `📶 Hotspot: ${snap.hotspot_active_sessions}`);
-
-  if (snap.interfaces_down > 0) {
-    lines.push(`⚠️ واجهات متوقفة: ${snap.interfaces_down}`);
-  }
-
-  lines.push("", ...formatTrafficSection(snap));
-  return lines.join("\n");
-}
-
-export function formatEmptyReportMessage(
-  prep: Pick<StatusReportRouterPrep, "issue" | "active_nas_count" | "mikrotik_api_count">
-): string {
-  const header = [`📊 تقرير الراوترات`, `🕐 ${formatTelegramDateTime()}`, ""].join("\n");
-  if (prep.issue === "migration_required") {
-    return `${header}⚠️ جدول مراقبة الراوترات غير موجود — شغّل migrations (019+) ثم أعد المحاولة.`;
-  }
-  if (prep.issue === "no_active_nas") {
-    return `${header}لا يوجد راوتر نشط في NAS.`;
-  }
-  if ((prep.mikrotik_api_count ?? 0) === 0) {
-    return `${header}يوجد ${prep.active_nas_count ?? 0} راوتر لكن MikroTik API غير مفعّل.`;
-  }
-  return `${header}تعذّر جمع البيانات — تحقق من IP ومنفذ API.`;
-}
+export {
+  formatSingleRouterReport,
+  formatEmptyReportMessage,
+} from "./infrastructure-status-report-format.service.js";
 
 /** @deprecated combined report; use formatSingleRouterReport */
 export function formatStatusReportMessage(
@@ -113,15 +55,7 @@ async function dispatchStatusReport(
   creds: { botToken: string; chatId: string },
   freshCollect = false
 ): Promise<{ ok: boolean; error?: string; detail?: string }> {
-  const prep = await prepareRoutersForStatusReport(pool, tenantId, {
-    collectIfEmpty: true,
-    freshCollect,
-  });
-
-  const messages: string[] =
-    prep.routers.length > 0
-      ? prep.routers.map((r) => formatSingleRouterReport(r))
-      : [formatEmptyReportMessage(prep)];
+  const { messages } = await buildScheduledStatusMessages(pool, tenantId, freshCollect);
 
   for (const body of messages) {
     for (const chunk of splitTelegramMessages(body)) {
@@ -166,13 +100,12 @@ export async function maybeSendTelegramStatusReport(
   if (!col.has("telegram_status_interval_minutes")) return false;
 
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT telegram_status_reports_enabled, telegram_status_interval_minutes, telegram_last_status_report_at,
-            telegram_alerts_enabled
+    `SELECT telegram_status_reports_enabled, telegram_status_interval_minutes, telegram_last_status_report_at
      FROM infrastructure_monitoring_settings WHERE tenant_id = ? LIMIT 1`,
     [tenantId]
   );
   const r = rows[0];
-  if (!r || !Boolean(r.telegram_alerts_enabled ?? 0) || !Boolean(r.telegram_status_reports_enabled ?? 1)) {
+  if (!r || !Boolean(r.telegram_status_reports_enabled ?? 1)) {
     return false;
   }
 
@@ -200,7 +133,6 @@ export async function maybeSendTelegramStatusReport(
   return true;
 }
 
-/** Worker/API tick — all tenants due for a scheduled status report. */
 export async function runTelegramStatusReportsDue(
   pool: Pool
 ): Promise<{ checked: number; sent: number }> {
@@ -210,7 +142,6 @@ export async function runTelegramStatusReportsDue(
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT tenant_id FROM infrastructure_monitoring_settings
      WHERE COALESCE(telegram_status_reports_enabled, 0) = 1
-       AND COALESCE(telegram_alerts_enabled, 0) = 1
        AND telegram_chat_id IS NOT NULL AND TRIM(telegram_chat_id) <> ''
        AND telegram_bot_token_encrypted IS NOT NULL`
   );
@@ -227,7 +158,6 @@ export async function runTelegramStatusReportsDue(
   return { checked: rows.length, sent };
 }
 
-/** Manual send — fresh collect with instant Mbps, one message per router. */
 export async function sendTelegramStatusReportNow(
   pool: Pool,
   tenantId: string

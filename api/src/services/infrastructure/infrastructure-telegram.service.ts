@@ -18,6 +18,7 @@ export type TelegramConfigPublic = {
 export type TelegramConfigSave = {
   bot_token?: string;
   chat_id?: string;
+  instant_alerts_enabled?: boolean;
   status_reports_enabled?: boolean;
   status_interval_minutes?: number;
 };
@@ -106,6 +107,7 @@ export async function saveTelegramConfig(
   }
 
   const configured = Boolean(token && chatId);
+  const instantEnabled = input.instant_alerts_enabled ?? configured;
   const statusEnabled = input.status_reports_enabled ?? true;
   const statusInterval = Math.max(
     1,
@@ -120,7 +122,11 @@ export async function saveTelegramConfig(
     "telegram_last_test_ok = NULL",
     "telegram_last_error = NULL",
   ];
-  const vals: (string | number | Buffer)[] = [chatId, encryptSecret(token), configured ? 1 : 0];
+  const vals: (string | number | Buffer)[] = [
+    chatId,
+    encryptSecret(token),
+    instantEnabled ? 1 : 0,
+  ];
 
   if (col.has("telegram_status_reports_enabled")) {
     sets.push("telegram_status_reports_enabled = ?", "telegram_status_interval_minutes = ?");

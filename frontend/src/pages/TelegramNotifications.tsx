@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Send, RefreshCw, CheckCircle2, AlertCircle, Clock } from "lucide-react";
+import { Send, RefreshCw, CheckCircle2, AlertCircle, Clock, MessageCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
@@ -34,6 +34,19 @@ type TelegramSchedulerInfo = {
   worker_last_heartbeat_age_ms: number | null;
 };
 
+type WhatsAppInfraConfig = {
+  connected: boolean;
+  configured: boolean;
+  session_owner_phone: string | null;
+  instant_alerts_enabled: boolean;
+  critical_only: boolean;
+  status_reports_enabled: boolean;
+  status_interval_minutes: number;
+  last_status_report_at: string | null;
+  last_test_ok: boolean | null;
+  last_error: string | null;
+};
+
 export function TelegramNotificationsPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -45,8 +58,17 @@ export function TelegramNotificationsPage() {
   const [telegram, setTelegram] = useState<TelegramConfig | null>(null);
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
+  const [telegramInstantEnabled, setTelegramInstantEnabled] = useState(true);
   const [statusReportsEnabled, setStatusReportsEnabled] = useState(true);
   const [statusIntervalMinutes, setStatusIntervalMinutes] = useState(5);
+  const [whatsapp, setWhatsapp] = useState<WhatsAppInfraConfig | null>(null);
+  const [waInstantEnabled, setWaInstantEnabled] = useState(true);
+  const [waCriticalOnly, setWaCriticalOnly] = useState(false);
+  const [waStatusReportsEnabled, setWaStatusReportsEnabled] = useState(true);
+  const [waStatusIntervalMinutes, setWaStatusIntervalMinutes] = useState(5);
+  const [savingWa, setSavingWa] = useState(false);
+  const [testingWa, setTestingWa] = useState(false);
+  const [sendingWaReport, setSendingWaReport] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -71,14 +93,23 @@ export function TelegramNotificationsPage() {
       if (r.ok) {
         const j = (await r.json()) as {
           telegram?: TelegramConfig;
+          whatsapp?: WhatsAppInfraConfig;
           thresholds?: AlertThresholds;
           telegram_scheduler?: TelegramSchedulerInfo;
         };
         if (j.telegram) {
           setTelegram(j.telegram);
           setChatId(j.telegram.chat_id ?? "");
+          setTelegramInstantEnabled(j.telegram.alerts_enabled ?? true);
           setStatusReportsEnabled(j.telegram.status_reports_enabled ?? true);
           setStatusIntervalMinutes(j.telegram.status_interval_minutes ?? 5);
+        }
+        if (j.whatsapp) {
+          setWhatsapp(j.whatsapp);
+          setWaInstantEnabled(j.whatsapp.instant_alerts_enabled ?? true);
+          setWaCriticalOnly(j.whatsapp.critical_only ?? false);
+          setWaStatusReportsEnabled(j.whatsapp.status_reports_enabled ?? true);
+          setWaStatusIntervalMinutes(j.whatsapp.status_interval_minutes ?? 5);
         }
         if (j.telegram_scheduler) setScheduler(j.telegram_scheduler);
         if (j.thresholds) {
@@ -107,10 +138,12 @@ export function TelegramNotificationsPage() {
       const body: {
         chat_id: string;
         bot_token?: string;
+        instant_alerts_enabled: boolean;
         status_reports_enabled: boolean;
         status_interval_minutes: number;
       } = {
         chat_id: chatId.trim(),
+        instant_alerts_enabled: telegramInstantEnabled,
         status_reports_enabled: statusReportsEnabled,
         status_interval_minutes: Math.max(1, Math.min(1440, statusIntervalMinutes)),
       };
@@ -206,6 +239,98 @@ export function TelegramNotificationsPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingThresholds(false);
+    }
+  }
+
+  async function saveWhatsApp() {
+    setSavingWa(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const r = await apiFetch("/api/infrastructure-monitoring/whatsapp", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instant_alerts_enabled: waInstantEnabled,
+          critical_only: waCriticalOnly,
+          status_reports_enabled: waStatusReportsEnabled,
+          status_interval_minutes: Math.max(1, Math.min(1440, waStatusIntervalMinutes)),
+        }),
+      });
+      if (!r.ok) {
+        const raw = await readApiError(r);
+        setError(formatStaffApiError(r.status, raw, t));
+        return;
+      }
+      const j = (await r.json()) as { whatsapp: WhatsAppInfraConfig; notification_ok?: boolean };
+      setWhatsapp(j.whatsapp);
+      const min = j.whatsapp?.status_interval_minutes ?? waStatusIntervalMinutes;
+      if (j.notification_ok === false) {
+        setError(j.whatsapp?.last_error ?? t("infraWa.testFail"));
+      } else if (waStatusReportsEnabled) {
+        setMessage(`${t("infraWa.saved")}. ${t("infraWa.savedSchedule").replace("{{min}}", String(min))}`);
+      } else {
+        setMessage(t("infraWa.saved"));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingWa(false);
+    }
+  }
+
+  async function testWhatsApp() {
+    setTestingWa(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const r = await apiFetch("/api/infrastructure-monitoring/whatsapp/test", { method: "POST" });
+      const j = (await r.json()) as { ok?: boolean; whatsapp?: WhatsAppInfraConfig; error?: string };
+      if (j.whatsapp) setWhatsapp(j.whatsapp);
+      if (r.ok && j.ok) {
+        setMessage(t("infraWa.testOk"));
+      } else {
+        setError(j.error ?? j.whatsapp?.last_error ?? t("infraWa.testFail"));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTestingWa(false);
+    }
+  }
+
+  async function sendWhatsAppNow() {
+    setSendingWaReport(true);
+    setMessage(null);
+    setError(null);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 120_000);
+    try {
+      const r = await apiFetch("/api/infrastructure-monitoring/whatsapp/send-status-now", {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const j = (await r.json()) as {
+        ok?: boolean;
+        whatsapp?: WhatsAppInfraConfig;
+        error?: string;
+        detail?: string;
+      };
+      if (j.whatsapp) setWhatsapp(j.whatsapp);
+      if (r.ok && j.ok) {
+        setMessage(t("infraWa.statusSent"));
+      } else {
+        setError(j.detail ?? j.error ?? t("telegram.statusSendFail"));
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") {
+        setError(t("telegram.sendTimeout"));
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      window.clearTimeout(timer);
+      setSendingWaReport(false);
     }
   }
 
@@ -393,18 +518,28 @@ export function TelegramNotificationsPage() {
           <Card className="p-5">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Clock className="h-4 w-4 text-sky-500" />
-              {t("telegram.statusReportsTitle")}
+              Telegram — {t("telegram.statusReportsTitle")}
             </div>
-            <p className="mt-2 text-xs opacity-70">{t("telegram.statusReportsHint")}</p>
+            <p className="mt-2 text-xs opacity-70">{t("infraWa.reportServerFirst")}</p>
 
             <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={telegramInstantEnabled}
+                onChange={(e) => setTelegramInstantEnabled(e.target.checked)}
+                className="rounded border-[hsl(var(--border))]"
+              />
+              {t("infraWa.telegramInstant")}
+            </label>
+
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={statusReportsEnabled}
                 onChange={(e) => setStatusReportsEnabled(e.target.checked)}
                 className="rounded border-[hsl(var(--border))]"
               />
-              {t("telegram.statusReportsEnabled")}
+              {t("infraWa.telegramPeriodic")}
             </label>
 
             <div className="mt-4 max-w-xs">
@@ -454,6 +589,100 @@ export function TelegramNotificationsPage() {
                 {t("telegram.goNas")}
               </Link>
             </p>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <MessageCircle className="h-4 w-4 text-emerald-500" />
+              {t("infraWa.title")}
+            </div>
+            <p className="mt-2 text-xs opacity-70">{t("infraWa.subtitle")}</p>
+            <p className="mt-2 text-xs">
+              <Link
+                to="/whatsapp/connection"
+                className="font-medium text-emerald-600 underline dark:text-emerald-400"
+              >
+                {t("infraWa.openConnection")}
+              </Link>
+            </p>
+
+            {whatsapp?.session_owner_phone ? (
+              <p className="mt-2 text-xs opacity-80">
+                {t("infraWa.connectedPhone")}: <span className="font-mono">{whatsapp.session_owner_phone}</span>
+              </p>
+            ) : (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t("infraWa.notConnected")}</p>
+            )}
+
+            <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={waInstantEnabled}
+                onChange={(e) => setWaInstantEnabled(e.target.checked)}
+                className="rounded border-[hsl(var(--border))]"
+              />
+              {t("infraWa.instantAlerts")}
+            </label>
+
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={waCriticalOnly}
+                onChange={(e) => setWaCriticalOnly(e.target.checked)}
+                className="rounded border-[hsl(var(--border))]"
+              />
+              {t("infraWa.criticalOnly")}
+            </label>
+
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={waStatusReportsEnabled}
+                onChange={(e) => setWaStatusReportsEnabled(e.target.checked)}
+                className="rounded border-[hsl(var(--border))]"
+              />
+              {t("infraWa.statusReports")}
+            </label>
+
+            <div className="mt-4 max-w-xs">
+              <TextField
+                label={t("telegram.statusIntervalMinutes")}
+                type="number"
+                min={1}
+                max={1440}
+                value={String(waStatusIntervalMinutes)}
+                onChange={(e) => setWaStatusIntervalMinutes(Number(e.target.value) || 5)}
+              />
+              <p className="mt-1 text-[10px] opacity-60">{t("telegram.statusIntervalHelp")}</p>
+            </div>
+
+            {whatsapp?.last_status_report_at ? (
+              <p className="mt-2 text-xs opacity-60">
+                {t("infraWa.lastReport")}:{" "}
+                {new Date(whatsapp.last_status_report_at).toLocaleString(isRtl ? "ar-SY" : "en")}
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => void saveWhatsApp()} disabled={savingWa}>
+                {savingWa ? t("common.loading") : t("infraWa.save")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void testWhatsApp()}
+                disabled={testingWa || !whatsapp?.configured}
+              >
+                {testingWa ? t("common.loading") : t("infraWa.test")}
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void sendWhatsAppNow()}
+                disabled={sendingWaReport || !whatsapp?.connected}
+              >
+                {sendingWaReport ? t("common.loading") : t("infraWa.sendNow")}
+              </Button>
+            </div>
           </Card>
 
           {message ? <p className="text-xs text-emerald-600 dark:text-emerald-400">{message}</p> : null}

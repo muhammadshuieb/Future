@@ -4,34 +4,15 @@ import type { AlertSeverity, RouterHealthSnapshot } from "./infrastructure-types
 import type { EvaluatedAlert } from "./infrastructure-alert-engine.service.js";
 import type { ServerHealthSnapshot } from "./server-health-collector.service.js";
 import { formatTrafficSection } from "./traffic-metrics.util.js";
-import { config } from "../../config.js";
 import { getTelegramCredentials, sendTelegramMessage } from "./infrastructure-telegram.service.js";
+import {
+  formatInfraDateTime,
+  formatUptime,
+} from "./infrastructure-status-report-format.service.js";
 
-/** mm/dd/yyyy HH:mm in app timezone (for Telegram messages). */
-export function formatTelegramDateTime(date: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: config.appTimezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-  const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((p) => p.type === type)?.value ?? "00";
-  return `${get("month")}/${get("day")}/${get("year")} ${get("hour")}:${get("minute")}`;
-}
-
-export function formatUptime(seconds: number | null | undefined): string {
-  if (seconds == null || seconds <= 0) return "—";
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (days > 0) return `${days}ي ${hours}س`;
-  if (hours > 0) return `${hours}س ${minutes}د`;
-  return `${minutes}د`;
-}
+/** @deprecated use formatInfraDateTime */
+export const formatTelegramDateTime = formatInfraDateTime;
+export { formatUptime };
 
 function routerMetricsBlock(snap: RouterHealthSnapshot | null | undefined): string[] {
   if (!snap) return [];
@@ -93,7 +74,7 @@ export function formatAlertTelegramMessage(
     ev.message,
     ...(isServer ? serverMetricsBlock(serverSnap) : routerMetricsBlock(snap)),
     ev.threshold_value ? `العتبة: ${ev.threshold_value}` : null,
-    `الوقت: ${formatTelegramDateTime()}`,
+    `الوقت: ${formatInfraDateTime()}`,
   ].filter(Boolean) as string[];
   return lines.join("\n");
 }

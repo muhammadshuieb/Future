@@ -310,7 +310,7 @@ async function dispatchAlertNotifications(
 ): Promise<boolean> {
   let anySent = false;
   if (!isRecovery && shouldNotifyWhatsApp(settings, severity)) {
-    const body = formatAlertWhatsAppMessage(ev);
+    const body = formatAlertWhatsAppMessage(ev, snap, serverSnap);
     if (await dispatchInfrastructureWhatsApp(pool, tenantId, severity, body, false)) anySent = true;
   }
   if (isRecovery && settings.recovery_notifications_enabled && settings.whatsapp_alerts_enabled) {

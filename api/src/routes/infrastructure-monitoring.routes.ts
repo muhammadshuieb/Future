@@ -32,6 +32,11 @@ import {
   saveTelegramConfig,
   testTelegramConnection,
 } from "../services/infrastructure/infrastructure-telegram.service.js";
+import {
+  getWhatsAppInfraConfig,
+  saveWhatsAppInfraConfig,
+  testWhatsAppInfraConnection,
+} from "../services/infrastructure/infrastructure-whatsapp.service.js";
 import type { RowDataPacket } from "mysql2";
 import { hasTable } from "../db/schemaGuards.js";
 
@@ -86,6 +91,7 @@ router.get("/settings", requireRole("admin", "manager"), requireMonitoringManage
   const thresholds = await getGlobalThresholds(pool, tenantId);
   const targets = await listNotificationTargets(pool, tenantId);
   const telegram = await getTelegramConfig(pool, tenantId);
+  const whatsapp = await getWhatsAppInfraConfig(pool, tenantId);
   const {
     getWorkerHeartbeatAgeMs,
     isTelegramReportSchedulerEnabled,
@@ -96,6 +102,7 @@ router.get("/settings", requireRole("admin", "manager"), requireMonitoringManage
     thresholds,
     targets,
     telegram,
+    whatsapp,
     telegram_scheduler: {
       api_scheduler_enabled: isTelegramReportSchedulerEnabled(),
       worker_alive: workerAgeMs != null && workerAgeMs < 90_000,
@@ -130,6 +137,14 @@ router.put("/settings", requireRole("admin", "manager"), requireMonitoringManage
 const telegramBody = z.object({
   bot_token: z.string().min(20).optional(),
   chat_id: z.string().min(1),
+  instant_alerts_enabled: z.boolean().optional(),
+  status_reports_enabled: z.boolean().optional(),
+  status_interval_minutes: z.number().int().min(1).max(1440).optional(),
+});
+
+const whatsappInfraBody = z.object({
+  instant_alerts_enabled: z.boolean().optional(),
+  critical_only: z.boolean().optional(),
   status_reports_enabled: z.boolean().optional(),
   status_interval_minutes: z.number().int().min(1).max(1440).optional(),
 });
@@ -144,6 +159,7 @@ router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage
     const telegram = await saveTelegramConfig(pool, req.auth!.tenantId, {
       bot_token: parsed.data.bot_token,
       chat_id: parsed.data.chat_id,
+      instant_alerts_enabled: parsed.data.instant_alerts_enabled,
       status_reports_enabled: parsed.data.status_reports_enabled,
       status_interval_minutes: parsed.data.status_interval_minutes,
     });
@@ -188,6 +204,57 @@ router.post("/telegram/test", requireRole("admin", "manager"), requireMonitoring
     return;
   }
   res.json({ ok: true, telegram: result.config });
+});
+
+router.put("/whatsapp", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const parsed = whatsappInfraBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+  try {
+    const whatsapp = await saveWhatsAppInfraConfig(pool, req.auth!.tenantId, parsed.data);
+    const settings = await getMonitoringSettings(pool, req.auth!.tenantId);
+    res.json({ whatsapp, settings, notification_ok: whatsapp.last_test_ok !== false });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "whatsapp_schema_missing") {
+      res.status(503).json({ error: "migration_required" });
+      return;
+    }
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/whatsapp/send-status-now", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const { sendWhatsAppStatusReportNow } = await import(
+    "../services/infrastructure/infrastructure-whatsapp-status-report.service.js"
+  );
+  const tenantId = req.auth!.tenantId;
+  const result = await sendWhatsAppStatusReportNow(pool, tenantId);
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: result.error ?? "status_report_not_sent",
+      detail: result.detail,
+    });
+    return;
+  }
+  const whatsapp = await getWhatsAppInfraConfig(pool, tenantId);
+  res.json({ ok: true, whatsapp });
+});
+
+router.post("/whatsapp/test", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
+  const result = await testWhatsAppInfraConnection(pool, req.auth!.tenantId);
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      whatsapp: result.config,
+      error: result.config.last_error ?? "test_failed",
+    });
+    return;
+  }
+  res.json({ ok: true, whatsapp: result.config });
 });
 
 const thresholdBody = z.object({
