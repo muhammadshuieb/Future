@@ -2,6 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
 import { encryptSecret, tryDecryptSecret } from "../crypto.service.js";
+import { log } from "../logger.service.js";
 
 export type TelegramConfigPublic = {
   configured: boolean;
@@ -140,6 +141,16 @@ export async function saveTelegramConfig(
   }
 
   const confirmation = await sendTelegramSaveConfirmation(pool, tenantId, statusInterval, statusEnabled);
+
+  if (statusEnabled && col.has("telegram_status_interval_minutes")) {
+    const { maybeSendTelegramStatusReport } = await import(
+      "./infrastructure-telegram-status-report.service.js"
+    );
+    void maybeSendTelegramStatusReport(pool, tenantId, { freshCollect: true }).catch((e) => {
+      log.warn(`telegram_first_report_after_save ${String(e)}`, {}, "telegram");
+    });
+  }
+
   return confirmation.config;
 }
 

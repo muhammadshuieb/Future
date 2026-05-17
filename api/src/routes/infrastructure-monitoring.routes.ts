@@ -86,7 +86,22 @@ router.get("/settings", requireRole("admin", "manager"), requireMonitoringManage
   const thresholds = await getGlobalThresholds(pool, tenantId);
   const targets = await listNotificationTargets(pool, tenantId);
   const telegram = await getTelegramConfig(pool, tenantId);
-  res.json({ settings, thresholds, targets, telegram });
+  const {
+    getWorkerHeartbeatAgeMs,
+    isTelegramReportSchedulerEnabled,
+  } = await import("../services/infrastructure/telegram-status-report-scheduler.service.js");
+  const workerAgeMs = await getWorkerHeartbeatAgeMs();
+  res.json({
+    settings,
+    thresholds,
+    targets,
+    telegram,
+    telegram_scheduler: {
+      api_scheduler_enabled: isTelegramReportSchedulerEnabled(),
+      worker_alive: workerAgeMs != null && workerAgeMs < 90_000,
+      worker_last_heartbeat_age_ms: workerAgeMs,
+    },
+  });
 });
 
 const settingsBody = z.object({

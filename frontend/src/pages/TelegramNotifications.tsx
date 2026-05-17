@@ -28,6 +28,12 @@ type AlertThresholds = {
   disk_percent_max: number;
 };
 
+type TelegramSchedulerInfo = {
+  api_scheduler_enabled: boolean;
+  worker_alive: boolean;
+  worker_last_heartbeat_age_ms: number | null;
+};
+
 export function TelegramNotificationsPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -52,6 +58,7 @@ export function TelegramNotificationsPage() {
   const [diskMax, setDiskMax] = useState("90");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scheduler, setScheduler] = useState<TelegramSchedulerInfo | null>(null);
 
   const load = useCallback(async () => {
     if (!canManage) {
@@ -62,13 +69,18 @@ export function TelegramNotificationsPage() {
     try {
       const r = await apiFetch("/api/infrastructure-monitoring/settings");
       if (r.ok) {
-        const j = (await r.json()) as { telegram?: TelegramConfig; thresholds?: AlertThresholds };
+        const j = (await r.json()) as {
+          telegram?: TelegramConfig;
+          thresholds?: AlertThresholds;
+          telegram_scheduler?: TelegramSchedulerInfo;
+        };
         if (j.telegram) {
           setTelegram(j.telegram);
           setChatId(j.telegram.chat_id ?? "");
           setStatusReportsEnabled(j.telegram.status_reports_enabled ?? true);
           setStatusIntervalMinutes(j.telegram.status_interval_minutes ?? 5);
         }
+        if (j.telegram_scheduler) setScheduler(j.telegram_scheduler);
         if (j.thresholds) {
           setVoltageMin(
             j.thresholds.voltage_v_min != null ? String(j.thresholds.voltage_v_min) : "11.5"
@@ -412,6 +424,10 @@ export function TelegramNotificationsPage() {
                 {t("telegram.lastStatusReport")}:{" "}
                 {new Date(telegram.last_status_report_at).toLocaleString(isRtl ? "ar-SY" : "en")}
               </p>
+            ) : null}
+
+            {scheduler && !scheduler.api_scheduler_enabled ? (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t("telegram.schedulerDisabled")}</p>
             ) : null}
 
             <div className="mt-4 flex flex-wrap gap-2">

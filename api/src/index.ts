@@ -441,6 +441,14 @@ async function start() {
   } catch (error) {
     console.error("[bootstrap] disk monitor failed", error);
   }
+  try {
+    const { startTelegramStatusReportScheduler } = await import(
+      "./services/infrastructure/telegram-status-report-scheduler.service.js"
+    );
+    startTelegramStatusReportScheduler(pool);
+  } catch (error) {
+    console.error("[bootstrap] telegram report scheduler failed", error);
+  }
   const host = process.env.LISTEN_HOST ?? "0.0.0.0";
   server.listen(config.port, host, () => {
     console.log(`API + WS listening on ${host}:${config.port}`);

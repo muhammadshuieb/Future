@@ -2,6 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
 import {
+  listRouterHealthSnapshots,
   prepareRoutersForStatusReport,
   type StatusReportRouterPrep,
 } from "./router-health-collector.service.js";
@@ -141,6 +142,21 @@ async function dispatchStatusReport(
   return { ok: true };
 }
 
+const SNAPSHOT_MAX_AGE_MS = 3 * 60_000;
+
+async function shouldFreshCollectForReport(pool: Pool, tenantId: string): Promise<boolean> {
+  const routers = await listRouterHealthSnapshots(pool, tenantId);
+  if (routers.length === 0) return true;
+  let newest = 0;
+  for (const r of routers) {
+    const raw = r.last_sync_at ?? r.last_seen_at;
+    if (!raw) continue;
+    const t = new Date(raw).getTime();
+    if (Number.isFinite(t) && t > newest) newest = t;
+  }
+  return newest === 0 || Date.now() - newest > SNAPSHOT_MAX_AGE_MS;
+}
+
 export async function maybeSendTelegramStatusReport(
   pool: Pool,
   tenantId: string,
@@ -165,10 +181,16 @@ export async function maybeSendTelegramStatusReport(
   const elapsedMs = lastAt ? Date.now() - lastAt.getTime() : Infinity;
   if (elapsedMs < intervalMin * 60_000) return false;
 
-  const creds = await getTelegramCredentials(pool, tenantId);
-  if (!creds) return false;
+  const creds =
+    (await getTelegramCredentials(pool, tenantId)) ??
+    (await getTelegramCredentialsLoose(pool, tenantId));
+  if (!creds) {
+    log.warn(`telegram_status_report_skip_no_creds tenant=${tenantId}`, {}, "telegram");
+    return false;
+  }
 
-  const freshCollect = options.freshCollect ?? false;
+  const freshCollect =
+    options.freshCollect ?? (await shouldFreshCollectForReport(pool, tenantId));
   const result = await dispatchStatusReport(pool, tenantId, creds, freshCollect);
   if (!result.ok) {
     log.warn(`telegram_status_report_failed tenant=${tenantId} ${result.detail}`, {}, "telegram");
@@ -178,10 +200,12 @@ export async function maybeSendTelegramStatusReport(
   return true;
 }
 
-/** Worker tick — check all tenants due for a scheduled status report (every ~60s). */
-export async function runTelegramStatusReportsDue(pool: Pool): Promise<void> {
+/** Worker/API tick — all tenants due for a scheduled status report. */
+export async function runTelegramStatusReportsDue(
+  pool: Pool
+): Promise<{ checked: number; sent: number }> {
   const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
-  if (!col.has("telegram_status_interval_minutes")) return;
+  if (!col.has("telegram_status_interval_minutes")) return { checked: 0, sent: 0 };
 
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT tenant_id FROM infrastructure_monitoring_settings
@@ -191,14 +215,16 @@ export async function runTelegramStatusReportsDue(pool: Pool): Promise<void> {
        AND telegram_bot_token_encrypted IS NOT NULL`
   );
 
+  let sent = 0;
   for (const row of rows) {
     const tenantId = String(row.tenant_id);
     try {
-      await maybeSendTelegramStatusReport(pool, tenantId, { freshCollect: true });
+      if (await maybeSendTelegramStatusReport(pool, tenantId)) sent += 1;
     } catch (err) {
       log.warn(`telegram_status_report_tick_failed tenant=${tenantId} ${String(err)}`, {}, "telegram");
     }
   }
+  return { checked: rows.length, sent };
 }
 
 /** Manual send — fresh collect with instant Mbps, one message per router. */
