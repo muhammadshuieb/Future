@@ -3,7 +3,7 @@ import { isInQuietHours, getMonitoringSettings } from "./infrastructure-settings
 import type { AlertSeverity, RouterHealthSnapshot } from "./infrastructure-types.js";
 import type { EvaluatedAlert } from "./infrastructure-alert-engine.service.js";
 import type { ServerHealthSnapshot } from "./server-health-collector.service.js";
-import { formatTrafficMbLine } from "./traffic-metrics.util.js";
+import { formatTrafficSection } from "./traffic-metrics.util.js";
 import { getTelegramCredentials, sendTelegramMessage } from "./infrastructure-telegram.service.js";
 
 function nowAr(): string {
@@ -33,8 +33,8 @@ function routerMetricsBlock(snap: RouterHealthSnapshot | null | undefined): stri
   if (snap.cpu_percent != null) lines.push(`CPU: ${snap.cpu_percent}%`);
   if (snap.ram_percent != null) lines.push(`RAM: ${snap.ram_percent}%`);
   if (snap.ppp_active_sessions > 0) lines.push(`PPP: ${snap.ppp_active_sessions}`);
-  if (snap.traffic_rx_mb != null || snap.traffic_tx_mb != null) {
-    lines.push(formatTrafficMbLine(snap.traffic_rx_mb, snap.traffic_tx_mb, snap.traffic_monitor_interface));
+  if (snap.traffic_rx_mb != null || snap.traffic_tx_mb != null || snap.traffic_rx_bps != null) {
+    lines.push(...formatTrafficSection(snap));
   }
   return lines;
 }

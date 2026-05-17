@@ -7,7 +7,7 @@ import {
 } from "./router-health-collector.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import { formatUptime } from "./infrastructure-telegram-notify.service.js";
-import { formatTrafficMbLine } from "./traffic-metrics.util.js";
+import { formatTrafficSection } from "./traffic-metrics.util.js";
 import {
   getTelegramCredentials,
   getTelegramCredentialsLoose,
@@ -15,32 +15,50 @@ import {
 } from "./infrastructure-telegram.service.js";
 import { log } from "../logger.service.js";
 
+const SEP = "━━━━━━━━━━━━━━━━";
+
 function routerBlock(snap: RouterHealthSnapshot): string {
   const online = snap.last_sync_ok && snap.health_status === "online";
   const icon = online ? "🟢" : "🔴";
-  const lines = [
-    `${icon} ${snap.nas_name} (${snap.nas_ip})`,
-    online ? `⏱ Uptime: ${formatUptime(snap.uptime_seconds)}` : `❌ ${snap.last_sync_error ?? "غير متصل"}`,
+  const lines: string[] = [
+    SEP,
+    `${icon} ${snap.nas_name}`,
+    `📍 ${snap.nas_ip}`,
   ];
-  if (online) {
-    lines.push(`CPU: ${snap.cpu_percent ?? "—"}% | RAM: ${snap.ram_percent ?? "—"}%`);
-    if (snap.board_temperature_c != null || snap.voltage_supported) {
-      const temp = snap.board_temperature_c != null ? `${snap.board_temperature_c}°C` : "—";
-      const volt = snap.voltage_supported
-        ? snap.voltage_v != null
-          ? `${snap.voltage_v}V`
-          : "—"
-        : null;
-      lines.push(`🌡 ${temp}${volt != null ? ` | ⚡ ${volt}` : ""}`);
-    }
-    lines.push(`PPPoE: ${snap.ppp_active_sessions} | Hotspot: ${snap.hotspot_active_sessions}`);
-    if (snap.interfaces_down > 0) {
-      lines.push(`⚠️ واجهات متوقفة: ${snap.interfaces_down}`);
-    }
-    lines.push(
-      formatTrafficMbLine(snap.traffic_rx_mb, snap.traffic_tx_mb, snap.traffic_monitor_interface)
-    );
+
+  if (!online) {
+    lines.push(`❌ ${snap.last_sync_error ?? "غير متصل"}`);
+    return lines.join("\n");
   }
+
+  lines.push(`⏱ Uptime: ${formatUptime(snap.uptime_seconds)}`, "");
+  lines.push(
+    `💻 المعالج: ${snap.cpu_percent ?? "—"}%`,
+    `💾 الذاكرة: ${snap.ram_percent ?? "—"}%`,
+    ""
+  );
+
+  if (snap.board_temperature_c != null || snap.voltage_supported) {
+    const parts: string[] = [];
+    if (snap.board_temperature_c != null) {
+      parts.push(`🌡 الحرارة: ${snap.board_temperature_c}°C`);
+    }
+    if (snap.voltage_supported) {
+      parts.push(`⚡ الجهد: ${snap.voltage_v != null ? `${snap.voltage_v}V` : "—"}`);
+    }
+    lines.push(...parts, "");
+  }
+
+  lines.push(
+    `👥 PPPoE: ${snap.ppp_active_sessions}`,
+    `📶 Hotspot: ${snap.hotspot_active_sessions}`
+  );
+
+  if (snap.interfaces_down > 0) {
+    lines.push(`⚠️ واجهات متوقفة: ${snap.interfaces_down}`);
+  }
+
+  lines.push("", ...formatTrafficSection(snap));
   return lines.join("\n");
 }
 
@@ -56,21 +74,24 @@ export function formatStatusReportMessage(
   });
   const online = routers.filter((r) => r.last_sync_ok).length;
   const total = routers.length > 0 ? routers.length : prep?.active_nas_count ?? 0;
-  const header = `📊 تقرير الراوترات — ${now}\nمتصل: ${online}/${total}\n`;
+
+  const header = ["📊 تقرير الراوترات", `🕐 ${now}`, `✅ متصل: ${online}/${total}`, ""].join("\n");
+
   if (routers.length === 0) {
     if (prep?.issue === "migration_required") {
-      return `${header}\n⚠️ جدول مراقبة الراوترات غير موجود — شغّل migrations البنية التحتية (019+) على قاعدة البيانات ثم أعد «فحص الآن».`;
+      return `${header}⚠️ جدول مراقبة الراوترات غير موجود — شغّل migrations البنية التحتية (019+) على قاعدة البيانات ثم أعد «فحص الآن».`;
     }
     if (prep?.issue === "no_active_nas") {
-      return `${header}\nلا يوجد راوتر نشط في NAS — أضف جهازاً بحالة active.`;
+      return `${header}لا يوجد راوتر نشط في NAS — أضف جهازاً بحالة active.`;
     }
     if ((prep?.mikrotik_api_count ?? 0) === 0) {
-      return `${header}\nيوجد ${prep?.active_nas_count ?? 0} راوتر في NAS لكن MikroTik API غير مفعّل — فعّله من تعديل الجهاز (مستخدم + كلمة مرور API).`;
+      return `${header}يوجد ${prep?.active_nas_count ?? 0} راوتر في NAS لكن MikroTik API غير مفعّل — فعّله من تعديل الجهاز (مستخدم + كلمة مرور API).`;
     }
-    return `${header}\nتعذّر جمع بيانات الراوتر — تحقق من IP ومنفذ API من صفحة NAS ثم «فحص الآن» من مركز NOC.`;
+    return `${header}تعذّر جمع بيانات الراوتر — تحقق من IP ومنفذ API من صفحة NAS ثم «فحص الآن» من مركز NOC.`;
   }
+
   const blocks = routers.map((r) => routerBlock(r));
-  return `${header}\n${blocks.join("\n──────────────\n")}`;
+  return `${header}${blocks.join("\n")}`;
 }
 
 function splitTelegramMessages(text: string, maxLen = 4000): string[] {

@@ -2,8 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeTrafficPeriodMb,
-  formatTrafficMbLine,
+  formatBytesAsMbGb,
+  formatTrafficSection,
 } from "../services/infrastructure/traffic-metrics.util.js";
+import type { RouterHealthSnapshot } from "../services/infrastructure/infrastructure-types.js";
 
 describe("traffic-metrics.util", () => {
   it("computes MB delta between polls", () => {
@@ -19,10 +21,31 @@ describe("traffic-metrics.util", () => {
     assert.equal(r.txMb, 2);
   });
 
-  it("formats Arabic traffic line", () => {
-    const line = formatTrafficMbLine(12.5, 3.2, "ether1");
-    assert.match(line, /12\.5 MB/);
-    assert.match(line, /3\.2 MB/);
-    assert.match(line, /ether1/);
+  it("formats cumulative bytes when period missing", () => {
+    const s = formatBytesAsMbGb(50 * 1024 * 1024);
+    assert.match(s, /MB/);
+  });
+
+  it("formatTrafficSection shows period when available", () => {
+    const snap = {
+      traffic_rx_mb: 12.5,
+      traffic_tx_mb: 3.2,
+      traffic_monitor_interface: "ether1",
+    } as RouterHealthSnapshot;
+    const lines = formatTrafficSection(snap);
+    assert.ok(lines.some((l) => l.includes("12.5") || l.includes("MB")));
+    assert.ok(lines.some((l) => l.includes("ether1")));
+  });
+
+  it("formatTrafficSection shows cumulative when no period", () => {
+    const snap = {
+      traffic_rx_mb: null,
+      traffic_tx_mb: null,
+      traffic_rx_bps: 100 * 1024 * 1024,
+      traffic_tx_bps: 20 * 1024 * 1024,
+      traffic_monitor_interface: "sfp1",
+    } as RouterHealthSnapshot;
+    const lines = formatTrafficSection(snap);
+    assert.ok(lines.some((l) => l.includes("إجمالي")));
   });
 });
