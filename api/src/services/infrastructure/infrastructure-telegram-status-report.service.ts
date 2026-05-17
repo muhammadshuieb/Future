@@ -4,7 +4,11 @@ import { getTableColumns, hasTable } from "../../db/schemaGuards.js";
 import { listRouterHealthSnapshots } from "./router-health-collector.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 import { formatUptime } from "./infrastructure-telegram-notify.service.js";
-import { getTelegramCredentials, sendTelegramMessage } from "./infrastructure-telegram.service.js";
+import {
+  getTelegramCredentials,
+  getTelegramCredentialsLoose,
+  sendTelegramMessage,
+} from "./infrastructure-telegram.service.js";
 import { log } from "../logger.service.js";
 
 function formatBytes(n: number | null | undefined): string {
@@ -23,9 +27,7 @@ function routerBlock(snap: RouterHealthSnapshot): string {
     online ? `⏱ Uptime: ${formatUptime(snap.uptime_seconds)}` : `❌ ${snap.last_sync_error ?? "غير متصل"}`,
   ];
   if (online) {
-    lines.push(
-      `CPU: ${snap.cpu_percent ?? "—"}% | RAM: ${snap.ram_percent ?? "—"}%`
-    );
+    lines.push(`CPU: ${snap.cpu_percent ?? "—"}% | RAM: ${snap.ram_percent ?? "—"}%`);
     if (snap.board_temperature_c != null || snap.voltage_supported) {
       const temp = snap.board_temperature_c != null ? `${snap.board_temperature_c}°C` : "—";
       const volt = snap.voltage_supported
@@ -39,8 +41,11 @@ function routerBlock(snap: RouterHealthSnapshot): string {
     if (snap.interfaces_down > 0) {
       lines.push(`⚠️ واجهات متوقفة: ${snap.interfaces_down}`);
     }
+    const ifaceLabel = snap.traffic_monitor_interface
+      ? ` (${snap.traffic_monitor_interface})`
+      : "";
     lines.push(
-      `📡 Traffic RX: ${formatBytes(snap.traffic_rx_bps)} | TX: ${formatBytes(snap.traffic_tx_bps)}`
+      `📡 Traffic${ifaceLabel} RX: ${formatBytes(snap.traffic_rx_bps)} | TX: ${formatBytes(snap.traffic_tx_bps)}`
     );
   }
   return lines.join("\n");
@@ -56,7 +61,7 @@ export function formatStatusReportMessage(routers: RouterHealthSnapshot[]): stri
   const online = routers.filter((r) => r.last_sync_ok).length;
   const header = `📊 تقرير الراوترات — ${now}\nمتصل: ${online}/${routers.length}\n`;
   if (routers.length === 0) {
-    return `${header}\nلا توجد راوترات مسجّلة.`;
+    return `${header}\nلا توجد بيانات راوتر — فعّل MikroTik API على أجهزة NAS ثم شغّل «فحص الآن» من مركز NOC.`;
   }
   const blocks = routers.map((r) => routerBlock(r));
   return `${header}\n${blocks.join("\n──────────────\n")}`;
@@ -77,6 +82,29 @@ function splitTelegramMessages(text: string, maxLen = 4000): string[] {
   }
   if (cur) parts.push(cur);
   return parts;
+}
+
+async function dispatchStatusReport(
+  pool: Pool,
+  tenantId: string,
+  creds: { botToken: string; chatId: string }
+): Promise<{ ok: boolean; error?: string; detail?: string }> {
+  const routers = await listRouterHealthSnapshots(pool, tenantId);
+  const body = formatStatusReportMessage(routers);
+  for (const chunk of splitTelegramMessages(body)) {
+    const send = await sendTelegramMessage(creds.botToken, creds.chatId, chunk);
+    if (!send.ok) {
+      return { ok: false, error: "telegram_send_failed", detail: send.error };
+    }
+  }
+  const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
+  if (col.has("telegram_last_status_report_at")) {
+    await pool.execute(
+      `UPDATE infrastructure_monitoring_settings SET telegram_last_status_report_at = NOW(3) WHERE tenant_id = ?`,
+      [tenantId]
+    );
+  }
+  return { ok: true };
 }
 
 export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string): Promise<boolean> {
@@ -102,25 +130,26 @@ export async function maybeSendTelegramStatusReport(pool: Pool, tenantId: string
   const creds = await getTelegramCredentials(pool, tenantId);
   if (!creds) return false;
 
-  const routers = await listRouterHealthSnapshots(pool, tenantId);
-  const body = formatStatusReportMessage(routers);
-  const chunks = splitTelegramMessages(body);
-
-  let anyOk = false;
-  for (const chunk of chunks) {
-    const send = await sendTelegramMessage(creds.botToken, creds.chatId, chunk);
-    if (send.ok) anyOk = true;
-    else {
-      log.warn(`telegram_status_report_failed tenant=${tenantId} ${send.error}`, {}, "telegram");
-      return false;
-    }
+  const result = await dispatchStatusReport(pool, tenantId, creds);
+  if (!result.ok) {
+    log.warn(`telegram_status_report_failed tenant=${tenantId} ${result.detail}`, {}, "telegram");
+    return false;
   }
+  return true;
+}
 
-  if (anyOk && col.has("telegram_last_status_report_at")) {
-    await pool.execute(
-      `UPDATE infrastructure_monitoring_settings SET telegram_last_status_report_at = NOW(3) WHERE tenant_id = ?`,
-      [tenantId]
-    );
+/** Manual send — fast path using last snapshots (no router API collect on HTTP request). */
+export async function sendTelegramStatusReportNow(
+  pool: Pool,
+  tenantId: string
+): Promise<{ ok: boolean; error?: string; detail?: string }> {
+  const creds = (await getTelegramCredentials(pool, tenantId)) ?? (await getTelegramCredentialsLoose(pool, tenantId));
+  if (!creds) {
+    return {
+      ok: false,
+      error: "telegram_not_configured",
+      detail: "أدخل Bot Token و Chat ID ثم اضغط «حفظ وتفعيل»",
+    };
   }
-  return anyOk;
+  return dispatchStatusReport(pool, tenantId, creds);
 }

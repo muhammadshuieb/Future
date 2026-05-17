@@ -37,6 +37,7 @@ export type RouterHealthSnapshot = {
   interfaces_down: number;
   traffic_rx_bps: number | null;
   traffic_tx_bps: number | null;
+  traffic_monitor_interface: string | null;
   internet_reachable: boolean | null;
   last_sync_ok: boolean;
   last_sync_at: string | null;

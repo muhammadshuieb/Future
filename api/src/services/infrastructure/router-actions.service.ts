@@ -1,9 +1,9 @@
 import { randomUUID } from "crypto";
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { RouterOSAPI } from "node-routeros";
 import { hasTable } from "../../db/schemaGuards.js";
-import { resolveMikrotikApiHost, nasRowHasMikrotikApi } from "../mikrotik-api-probe.js";
+import { resolveMikrotikApiHost, resolveMikrotikApiPort, nasRowHasMikrotikApi } from "../mikrotik-api-probe.js";
+import { createRouterOsApi, safeApiClose } from "../mikrotik-routeros-compat.js";
 import { logRouterCommand } from "../router-command-log.service.js";
 
 export type RouterActionType = "reboot" | "restart_interface" | "disable_interface" | "enable_interface";
@@ -57,10 +57,11 @@ async function runRosAction(
   host: string,
   user: string,
   password: string,
+  port: number,
   actionType: RouterActionType,
   payload: Record<string, unknown>
 ): Promise<string> {
-  const api = new RouterOSAPI({ host, user, password, port: 8728, timeout: 15_000 });
+  const api = createRouterOsApi(host, user, password, port, 15_000);
   try {
     await api.connect();
     if (actionType === "reboot") {
@@ -81,11 +82,7 @@ async function runRosAction(
     await api.close();
     return "ok";
   } catch (e) {
-    try {
-      await api.close();
-    } catch {
-      /* ignore */
-    }
+    await safeApiClose(api);
     throw e;
   }
 }
@@ -93,7 +90,8 @@ async function runRosAction(
 export async function executeDueRouterActions(pool: Pool, tenantId: string): Promise<void> {
   if (!(await hasTable(pool, "router_scheduled_actions"))) return;
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT a.*, n.mikrotik_api_enabled, n.mikrotik_api_user, n.mikrotik_api_password, n.wireguard_tunnel_ip, n.ip, n.name
+    `SELECT a.*, n.mikrotik_api_enabled, n.mikrotik_api_user, n.mikrotik_api_password, n.mikrotik_api_port,
+            n.wireguard_tunnel_ip, n.ip, n.name
      FROM router_scheduled_actions a
      JOIN nas_devices n ON n.id = a.nas_device_id AND n.tenant_id = a.tenant_id
      WHERE a.tenant_id = ? AND a.status = 'pending' AND a.scheduled_at <= NOW(3)
@@ -124,6 +122,7 @@ export async function executeDueRouterActions(pool: Pool, tenantId: string): Pro
         host,
         user,
         password,
+        resolveMikrotikApiPort(row),
         String(row.action_type) as RouterActionType,
         payload
       );

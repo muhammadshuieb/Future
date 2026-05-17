@@ -1,53 +1,48 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { RouterOSAPI } from "node-routeros";
 import { hasTable } from "../../db/schemaGuards.js";
-import { resolveMikrotikApiHost, nasRowHasMikrotikApi } from "../mikrotik-api-probe.js";
+import {
+  resolveMikrotikApiHost,
+  resolveMikrotikApiPort,
+  nasRowHasMikrotikApi,
+} from "../mikrotik-api-probe.js";
+import {
+  createRouterOsApi,
+  isRosDisabled,
+  isRosRunning,
+  parseHealthSensors,
+  parsePingInternetReachable,
+  parseRosNumber,
+  parseRosUptimeSeconds,
+  parseRouterOsVersion,
+  safeApiClose,
+  type RosRow,
+} from "../mikrotik-routeros-compat.js";
 import { logRouterCommand } from "../router-command-log.service.js";
 import { log } from "../logger.service.js";
 import type { RouterHealthSnapshot } from "./infrastructure-types.js";
 
-function parseUptimeSeconds(uptime: string | undefined): number | null {
-  if (!uptime) return null;
-  let sec = 0;
-  const w = uptime.match(/(\d+)w/);
-  const d = uptime.match(/(\d+)d/);
-  const h = uptime.match(/(\d+)h/);
-  const m = uptime.match(/(\d+)m/);
-  const s = uptime.match(/(\d+)s/);
-  if (w) sec += Number(w[1]) * 604800;
-  if (d) sec += Number(d[1]) * 86400;
-  if (h) sec += Number(h[1]) * 3600;
-  if (m) sec += Number(m[1]) * 60;
-  if (s) sec += Number(s[1]);
-  return sec || null;
-}
-
-function parseNumber(v: unknown): number | null {
-  if (v == null || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-type RosRow = Record<string, unknown>;
-
 async function collectFromRouter(
   host: string,
   user: string,
-  password: string
+  password: string,
+  port: number,
+  trafficMonitorInterface: string | null
 ): Promise<{
   metrics: Omit<RouterHealthSnapshot, "nas_device_id" | "tenant_id" | "nas_name" | "nas_ip">;
   raw: Record<string, unknown>;
 }> {
-  const api = new RouterOSAPI({ host, user, password, port: 8728, timeout: 12_000 });
+  const api = createRouterOsApi(host, user, password, port, 12_000);
+  const trafficIface = trafficMonitorInterface?.trim() || null;
   const raw: Record<string, unknown> = {};
   try {
     await api.connect();
     const resource = ((await api.write("/system/resource/print")) as RosRow[])[0] ?? {};
     raw.resource = resource;
-    const totalMem = parseNumber(resource["total-memory"]) ?? 0;
-    const freeMem = parseNumber(resource["free-memory"]) ?? 0;
-    const cpuLoad = parseNumber(resource["cpu-load"]) ?? null;
+    raw.router_os_version = parseRouterOsVersion(resource);
+    const totalMem = parseRosNumber(resource["total-memory"]) ?? 0;
+    const freeMem = parseRosNumber(resource["free-memory"]) ?? 0;
+    const cpuLoad = parseRosNumber(resource["cpu-load"]) ?? null;
     const ramPercent =
       totalMem > 0 ? Math.round(((totalMem - freeMem) / totalMem) * 1000) / 10 : null;
 
@@ -57,18 +52,10 @@ async function collectFromRouter(
     try {
       const healthRows = (await api.write("/system/health/print")) as RosRow[];
       raw.health = healthRows;
-      for (const h of healthRows) {
-        const name = String(h.name ?? h[".id"] ?? "").toLowerCase();
-        const val = parseNumber(h.value);
-        if (val == null) continue;
-        if (name.includes("temperature") || name.includes("temp")) {
-          boardTemperature = boardTemperature ?? val;
-        }
-        if (name.includes("voltage")) {
-          voltageSupported = true;
-          voltage = val;
-        }
-      }
+      const parsed = parseHealthSensors(healthRows);
+      boardTemperature = parsed.boardTemperature;
+      voltage = parsed.voltage;
+      voltageSupported = parsed.voltageSupported;
     } catch {
       raw.health = "unsupported";
     }
@@ -79,14 +66,24 @@ async function collectFromRouter(
       const ifaces = (await api.write("/interface/print")) as RosRow[];
       raw.interfaces_count = ifaces.length;
       for (const iface of ifaces) {
-        const disabled = String(iface.disabled ?? "false") === "true";
-        const running = String(iface.running ?? "true") === "true";
+        const ifaceName = String(iface.name ?? "");
+        const disabled = isRosDisabled(iface.disabled);
+        const running = isRosRunning(iface.running);
         const type = String(iface.type ?? "");
+        if (trafficIface) {
+          if (ifaceName !== trafficIface) continue;
+          if (!disabled && !running) interfacesDown += 1;
+          ifaceTraffic.rx = parseRosNumber(iface["rx-byte"]) ?? 0;
+          ifaceTraffic.tx = parseRosNumber(iface["tx-byte"]) ?? 0;
+          break;
+        }
         if (!disabled && !running && type !== "loopback") interfacesDown += 1;
-        const rx = parseNumber(iface["rx-byte"]) ?? 0;
-        const tx = parseNumber(iface["tx-byte"]) ?? 0;
-        ifaceTraffic.rx += rx;
-        ifaceTraffic.tx += tx;
+        if (type !== "loopback") {
+          const rx = parseRosNumber(iface["rx-byte"]) ?? 0;
+          const tx = parseRosNumber(iface["tx-byte"]) ?? 0;
+          ifaceTraffic.rx += rx;
+          ifaceTraffic.tx += tx;
+        }
       }
     } catch (e) {
       raw.interfaces_error = String(e);
@@ -114,7 +111,7 @@ async function collectFromRouter(
     try {
       const ping = (await api.write("/ping", ["=address=8.8.8.8", "=count=2"])) as RosRow[];
       raw.ping = ping;
-      internetReachable = ping.some((p) => String(p.status ?? "").includes("timeout") === false);
+      internetReachable = parsePingInternetReachable(ping);
     } catch {
       internetReachable = null;
     }
@@ -130,12 +127,13 @@ async function collectFromRouter(
         board_temperature_c: boardTemperature,
         voltage_v: voltage,
         voltage_supported: voltageSupported,
-        uptime_seconds: parseUptimeSeconds(String(resource.uptime ?? "")),
+        uptime_seconds: parseRosUptimeSeconds(String(resource.uptime ?? "")),
         ppp_active_sessions: pppCount,
         hotspot_active_sessions: hotspotCount,
         interfaces_down: interfacesDown,
         traffic_rx_bps: ifaceTraffic.rx > 0 ? ifaceTraffic.rx : null,
         traffic_tx_bps: ifaceTraffic.tx > 0 ? ifaceTraffic.tx : null,
+        traffic_monitor_interface: trafficIface,
         internet_reachable: internetReachable,
         last_sync_ok: true,
         last_sync_at: new Date().toISOString(),
@@ -145,11 +143,7 @@ async function collectFromRouter(
       raw,
     };
   } catch (err) {
-    try {
-      await api.close();
-    } catch {
-      /* ignore */
-    }
+    await safeApiClose(api);
     const msg = err instanceof Error ? err.message : String(err);
     return {
       metrics: {
@@ -165,6 +159,7 @@ async function collectFromRouter(
         interfaces_down: 0,
         traffic_rx_bps: null,
         traffic_tx_bps: null,
+        traffic_monitor_interface: trafficIface,
         internet_reachable: null,
         last_sync_ok: false,
         last_sync_at: new Date().toISOString(),
@@ -210,6 +205,7 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
         interfaces_down: 0,
         traffic_rx_bps: null,
         traffic_tx_bps: null,
+        traffic_monitor_interface: null,
         internet_reachable: null,
         last_sync_ok: false,
         last_sync_at: null,
@@ -238,6 +234,7 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
           interfaces_down: 0,
           traffic_rx_bps: null,
           traffic_tx_bps: null,
+          traffic_monitor_interface: null,
           internet_reachable: null,
           last_sync_ok: false,
           last_sync_at: new Date().toISOString(),
@@ -246,7 +243,11 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
         };
       } else {
         const started = Date.now();
-        const { metrics, raw } = await collectFromRouter(host, user, password);
+        const port = resolveMikrotikApiPort(row);
+        const trafficIface = row.traffic_monitor_interface != null
+          ? String(row.traffic_monitor_interface).trim() || null
+          : null;
+        const { metrics, raw } = await collectFromRouter(host, user, password, port, trafficIface);
         await logRouterCommand(pool, {
           tenantId,
           routerId: nasId,
@@ -329,7 +330,11 @@ export async function collectRouterHealthForTenant(pool: Pool, tenantId: string)
 export async function listRouterHealthSnapshots(pool: Pool, tenantId: string): Promise<RouterHealthSnapshot[]> {
   if (!(await hasTable(pool, "router_health_snapshots"))) return [];
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT * FROM router_health_snapshots WHERE tenant_id = ? ORDER BY nas_name`,
+    `SELECT s.*, n.traffic_monitor_interface
+     FROM router_health_snapshots s
+     LEFT JOIN nas_devices n ON n.id = s.nas_device_id
+     WHERE s.tenant_id = ?
+     ORDER BY s.nas_name`,
     [tenantId]
   );
   return rows.map((r) => ({
@@ -349,6 +354,8 @@ export async function listRouterHealthSnapshots(pool: Pool, tenantId: string): P
     interfaces_down: Number(r.interfaces_down ?? 0),
     traffic_rx_bps: r.traffic_rx_bps != null ? Number(r.traffic_rx_bps) : null,
     traffic_tx_bps: r.traffic_tx_bps != null ? Number(r.traffic_tx_bps) : null,
+    traffic_monitor_interface:
+      r.traffic_monitor_interface != null ? String(r.traffic_monitor_interface) : null,
     internet_reachable: r.internet_reachable != null ? Boolean(r.internet_reachable) : null,
     last_sync_ok: Boolean(r.last_sync_ok),
     last_sync_at: r.last_sync_at ? new Date(r.last_sync_at as string).toISOString() : null,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Send, RefreshCw, CheckCircle2, AlertCircle, Clock } from "lucide-react";
+import { Link } from "react-router-dom";
 import { apiFetch, readApiError, formatStaffApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -135,12 +136,25 @@ export function TelegramNotificationsPage() {
       const r = await apiFetch("/api/infrastructure-monitoring/telegram/send-status-now", {
         method: "POST",
       });
-      const j = (await r.json()) as { ok?: boolean; telegram?: TelegramConfig; error?: string };
+      const j = (await r.json()) as {
+        ok?: boolean;
+        telegram?: TelegramConfig;
+        error?: string;
+        detail?: string;
+      };
       if (j.telegram) setTelegram(j.telegram);
       if (r.ok && j.ok) {
         setMessage(t("telegram.statusSent"));
       } else {
-        setError(j.error ?? t("telegram.statusSendFail"));
+        const code = j.error ?? "";
+        const detail = j.detail ?? "";
+        if (code === "telegram_not_configured") {
+          setError(`${t("telegram.errNotConfigured")}${detail ? ` — ${detail}` : ""}`);
+        } else if (code === "telegram_send_failed") {
+          setError(`${t("telegram.errSendFailed")}${detail ? `: ${detail}` : ""}`);
+        } else {
+          setError(detail || t("telegram.statusSendFail"));
+        }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -271,6 +285,12 @@ export function TelegramNotificationsPage() {
               <li>{t("telegram.reportField2")}</li>
               <li>{t("telegram.reportField3")}</li>
             </ul>
+            <p className="mt-4 text-xs opacity-70">
+              {t("telegram.nasSettingsHint")}{" "}
+              <Link to="/nas" className="font-medium text-sky-600 underline dark:text-sky-400">
+                {t("telegram.goNas")}
+              </Link>
+            </p>
           </Card>
 
           {message ? <p className="text-xs text-emerald-600 dark:text-emerald-400">{message}</p> : null}

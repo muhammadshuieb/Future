@@ -149,23 +149,17 @@ router.put("/telegram", requireRole("admin", "manager"), requireMonitoringManage
 });
 
 router.post("/telegram/send-status-now", requireRole("admin", "manager"), requireMonitoringManage, async (req, res) => {
-  const { maybeSendTelegramStatusReport } = await import(
+  const { sendTelegramStatusReportNow } = await import(
     "../services/infrastructure/infrastructure-telegram-status-report.service.js"
   );
-  const { collectRouterHealthForTenant } = await import(
-    "../services/infrastructure/router-health-collector.service.js"
-  );
   const tenantId = req.auth!.tenantId;
-  await collectRouterHealthForTenant(pool, tenantId);
-  await pool
-    .execute(
-      `UPDATE infrastructure_monitoring_settings SET telegram_last_status_report_at = NULL WHERE tenant_id = ?`,
-      [tenantId]
-    )
-    .catch(() => {});
-  const sent = await maybeSendTelegramStatusReport(pool, tenantId);
-  if (!sent) {
-    res.status(400).json({ ok: false, error: "status_report_not_sent" });
+  const result = await sendTelegramStatusReportNow(pool, tenantId);
+  if (!result.ok) {
+    res.status(400).json({
+      ok: false,
+      error: result.error ?? "status_report_not_sent",
+      detail: result.detail,
+    });
     return;
   }
   const telegram = await getTelegramConfig(pool, tenantId);

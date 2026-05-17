@@ -1,11 +1,11 @@
 import type { Pool } from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
-import { RouterOSAPI } from "node-routeros";
 import { hasTable } from "../db/schemaGuards.js";
 import { log } from "./logger.service.js";
 import { logRouterCommand } from "./router-command-log.service.js";
 import { routerApiFailuresTotal } from "./metrics.service.js";
-import { resolveMikrotikApiHost } from "./mikrotik-api-probe.js";
+import { resolveMikrotikApiHost, resolveMikrotikApiPort } from "./mikrotik-api-probe.js";
+import { createRouterOsApi, safeApiClose } from "./mikrotik-routeros-compat.js";
 
 async function ensureSessionCacheTable(pool: Pool): Promise<void> {
   await pool.query(`
@@ -29,7 +29,7 @@ export async function syncMikrotikSessionsFromNasTable(pool: Pool): Promise<void
   await ensureSessionCacheTable(pool);
 
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, tenant_id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password
+    `SELECT id, tenant_id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password, mikrotik_api_port
      FROM nas_devices
      WHERE status = 'active'
        AND COALESCE(mikrotik_api_enabled, 0) = 1
@@ -44,13 +44,8 @@ export async function syncMikrotikSessionsFromNasTable(pool: Pool): Promise<void
     const tenantId = String(row.tenant_id ?? "");
     if (!host || !user || !nasId) continue;
 
-    const api = new RouterOSAPI({
-      host,
-      user,
-      password,
-      port: 8728,
-      timeout: 8000,
-    });
+    const port = resolveMikrotikApiPort(row);
+    const api = createRouterOsApi(host, user, password, port, 8000);
 
     const started = Date.now();
     try {

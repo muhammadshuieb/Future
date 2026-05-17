@@ -41,6 +41,10 @@ export function NasPage() {
   const [mikrotikApiEnabled, setMikrotikApiEnabled] = useState(false);
   const [mikrotikApiUser, setMikrotikApiUser] = useState("");
   const [mikrotikApiPassword, setMikrotikApiPassword] = useState("");
+  const [mikrotikApiPort, setMikrotikApiPort] = useState("8728");
+  const [trafficMonitorInterface, setTrafficMonitorInterface] = useState("");
+  const [interfaceOptions, setInterfaceOptions] = useState<{ name: string; type: string }[]>([]);
+  const [interfacesLoading, setInterfacesLoading] = useState(false);
   const [apiTestLoading, setApiTestLoading] = useState<Record<string, boolean>>({});
   const [apiTestResult, setApiTestResult] = useState<Record<string, { ok: boolean; message: string }>>({});
 
@@ -166,6 +170,9 @@ export function NasPage() {
     setMikrotikApiEnabled(false);
     setMikrotikApiUser("");
     setMikrotikApiPassword("");
+    setMikrotikApiPort("8728");
+    setTrafficMonitorInterface("");
+    setInterfaceOptions([]);
     setFormError(null);
     setModal("create");
   }
@@ -182,8 +189,29 @@ export function NasPage() {
     setMikrotikApiEnabled(Boolean(n.mikrotik_api_enabled));
     setMikrotikApiUser(String(n.mikrotik_api_user ?? ""));
     setMikrotikApiPassword("");
+    setMikrotikApiPort(String(n.mikrotik_api_port ?? 8728));
+    setTrafficMonitorInterface(String(n.traffic_monitor_interface ?? ""));
+    setInterfaceOptions([]);
     setFormError(null);
     setModal("edit");
+  }
+
+  async function loadMikrotikInterfaces(nasId: string) {
+    setInterfacesLoading(true);
+    try {
+      const r = await apiFetch(`/api/nas/${nasId}/mikrotik-interfaces`);
+      if (r.ok) {
+        const j = (await r.json()) as { interfaces?: { name: string; type: string }[] };
+        setInterfaceOptions(j.interfaces ?? []);
+      } else {
+        const raw = await readApiError(r);
+        setFormError(formatStaffApiError(r.status, raw, t));
+      }
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setInterfacesLoading(false);
+    }
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -207,6 +235,8 @@ export function NasPage() {
             mikrotik_api_enabled: mikrotikApiEnabled,
             mikrotik_api_user: mikrotikApiUser || undefined,
             mikrotik_api_password: mikrotikApiPassword || undefined,
+            mikrotik_api_port: parseInt(mikrotikApiPort, 10) || 8728,
+            traffic_monitor_interface: trafficMonitorInterface.trim() || null,
           }),
         });
         if (r.ok) {
@@ -223,6 +253,8 @@ export function NasPage() {
         body.mikrotik_api_enabled = mikrotikApiEnabled;
         body.mikrotik_api_user = mikrotikApiUser;
         if (mikrotikApiPassword.trim()) body.mikrotik_api_password = mikrotikApiPassword;
+        body.mikrotik_api_port = parseInt(mikrotikApiPort, 10) || 8728;
+        body.traffic_monitor_interface = trafficMonitorInterface.trim() || null;
         const r = await apiFetch(`/api/nas/${editId}`, {
           method: "PATCH",
           body: JSON.stringify(body),
@@ -477,6 +509,44 @@ export function NasPage() {
                 onChange={(e) => setMikrotikApiPassword(e.target.value)}
                 hint={modal === "edit" ? t("nas.secretHint") : undefined}
               />
+              <TextField
+                label={t("nas.mikrotikApiPort")}
+                type="number"
+                min={1}
+                max={65535}
+                value={mikrotikApiPort}
+                onChange={(e) => setMikrotikApiPort(e.target.value)}
+                hint={t("nas.mikrotikApiPortHint")}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-medium opacity-80">{t("nas.trafficInterface")}</label>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  className="min-w-[12rem] flex-1 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]/60 px-3 py-2 text-sm"
+                  value={trafficMonitorInterface}
+                  onChange={(e) => setTrafficMonitorInterface(e.target.value)}
+                >
+                  <option value="">{t("nas.trafficInterfaceAll")}</option>
+                  {interfaceOptions.map((iface) => (
+                    <option key={iface.name} value={iface.name}>
+                      {iface.name} ({iface.type})
+                    </option>
+                  ))}
+                </select>
+                {modal === "edit" && editId ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="text-xs"
+                    disabled={interfacesLoading}
+                    onClick={() => void loadMikrotikInterfaces(editId)}
+                  >
+                    {interfacesLoading ? t("common.loading") : t("nas.loadInterfaces")}
+                  </Button>
+                ) : null}
+              </div>
+              <p className="text-[11px] opacity-60">{t("nas.trafficInterfaceHint")}</p>
             </div>
             </>
           ) : null}

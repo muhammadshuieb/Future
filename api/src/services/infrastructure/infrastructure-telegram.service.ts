@@ -181,6 +181,25 @@ export async function getTelegramCredentials(
   return { botToken: token, chatId };
 }
 
+/** Token + chat when saved, even if alerts toggle is off (manual send). */
+export async function getTelegramCredentialsLoose(
+  pool: Pool,
+  tenantId: string
+): Promise<{ botToken: string; chatId: string } | null> {
+  const col = await getTableColumns(pool, "infrastructure_monitoring_settings");
+  if (!col.has("telegram_chat_id")) return null;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT telegram_chat_id, telegram_bot_token_encrypted FROM infrastructure_monitoring_settings WHERE tenant_id = ? LIMIT 1`,
+    [tenantId]
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const chatId = String(r.telegram_chat_id ?? "").trim();
+  const token = tokenFromRow(r);
+  if (!token || !chatId) return null;
+  return { botToken: token, chatId };
+}
+
 export async function testTelegramConnection(
   pool: Pool,
   tenantId: string

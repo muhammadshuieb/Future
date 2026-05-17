@@ -26,6 +26,7 @@ function baseRouter(overrides: Partial<RouterHealthSnapshot>): RouterHealthSnaps
     interfaces_down: 0,
     traffic_rx_bps: null,
     traffic_tx_bps: null,
+    traffic_monitor_interface: null,
     internet_reachable: true,
     last_sync_ok: true,
     last_sync_at: new Date().toISOString(),
