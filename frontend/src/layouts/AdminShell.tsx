@@ -171,8 +171,7 @@ export function AdminShell() {
     location.pathname.startsWith("/wireguard") ||
     location.pathname.startsWith("/observability") ||
     location.pathname.startsWith("/system-health") ||
-    location.pathname.startsWith("/server-logs") ||
-    location.pathname.startsWith("/resellers");
+    location.pathname.startsWith("/server-logs");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
   const [financeOpen, setFinanceOpen] = useState(isFinanceRoute);
@@ -243,9 +242,6 @@ export function AdminShell() {
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
         ] as NavItem[])
-      : []),
-    ...(user?.role === "admin" || user?.permissions?.view_resellers
-      ? ([{ to: "/resellers", labelKey: "nav.resellers", icon: UserCircle, tone: "violet" }] as NavItem[])
       : []),
   ];
   const whatsappNav: NavItem[] = [

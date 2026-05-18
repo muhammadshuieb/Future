@@ -202,11 +202,11 @@ export function OnlineUsersPage() {
   function sortHeader(label: string, key: SortKey, align: string) {
     const active = sortKey === key;
     return (
-      <th className={cn("px-4 py-3", align)}>
+      <th className={cn("whitespace-nowrap px-4 py-3", align)}>
         <button
           type="button"
           onClick={() => toggleSort(key)}
-          className="inline-flex items-center gap-1 hover:opacity-80"
+          className="inline-flex items-center gap-1 whitespace-nowrap hover:opacity-80"
         >
           {label}
           <span className="text-[10px] opacity-70">{active ? (sortDir === "asc" ? "▲" : "▼") : "↕"}</span>
@@ -431,8 +431,8 @@ export function OnlineUsersPage() {
       ) : null}
 
       <Card className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="sticky-list-table w-full text-sm">
+        <div className="responsive-table-scroll">
+          <table className="sticky-list-table w-full min-w-[42rem] text-sm">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-xs uppercase opacity-70">
                 {canDisconnect ? (
@@ -468,12 +468,12 @@ export function OnlineUsersPage() {
                       />
                     </td>
                   ) : null}
-                  {onlineColumnVisibility.isVisible("username") ? <td className="px-4 py-3 font-medium">{item.username}</td> : null}
-                  {onlineColumnVisibility.isVisible("nas") ? <td className="px-4 py-3">{item.nasipaddress || "—"}</td> : null}
-                  {onlineColumnVisibility.isVisible("ip") ? <td className="px-4 py-3">{item.framedipaddress || "—"}</td> : null}
-                  {onlineColumnVisibility.isVisible("usage") ? <td className="px-4 py-3">{formatBytes(item.session_bytes)}</td> : null}
-                  {onlineColumnVisibility.isVisible("duration") ? <td className="px-4 py-3 font-mono">{formatDuration(item.duration_seconds)}</td> : null}
-                  {onlineColumnVisibility.isVisible("started") ? <td className="px-4 py-3 font-mono text-xs opacity-90">{formatStart(item.acctstarttime)}</td> : null}
+                  {onlineColumnVisibility.isVisible("username") ? <td className="whitespace-nowrap px-4 py-3 font-medium">{item.username}</td> : null}
+                  {onlineColumnVisibility.isVisible("nas") ? <td className="whitespace-nowrap px-4 py-3">{item.nasipaddress || "—"}</td> : null}
+                  {onlineColumnVisibility.isVisible("ip") ? <td className="whitespace-nowrap px-4 py-3">{item.framedipaddress || "—"}</td> : null}
+                  {onlineColumnVisibility.isVisible("usage") ? <td className="whitespace-nowrap px-4 py-3">{formatBytes(item.session_bytes)}</td> : null}
+                  {onlineColumnVisibility.isVisible("duration") ? <td className="whitespace-nowrap px-4 py-3 font-mono">{formatDuration(item.duration_seconds)}</td> : null}
+                  {onlineColumnVisibility.isVisible("started") ? <td className="whitespace-nowrap px-4 py-3 font-mono text-xs opacity-90">{formatStart(item.acctstarttime)}</td> : null}
                   <td className={cn("px-4 py-3", isRtl ? "text-left" : "text-right")}>
                     {canDisconnect ? (
                       <Button

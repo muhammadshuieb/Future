@@ -357,7 +357,6 @@ export function SpeedProfileSchedulesPage() {
             <SelectField label={t("speed.colTarget")} value={targetType} onChange={(e) => setTargetType(e.target.value)}>
               <option value="package">package</option>
               <option value="subscriber">subscriber</option>
-              <option value="reseller">reseller</option>
               <option value="branch">branch</option>
               <option value="tenant">tenant</option>
             </SelectField>

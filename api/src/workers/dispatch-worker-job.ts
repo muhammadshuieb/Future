@@ -6,7 +6,11 @@ import { config } from "../config.js";
 import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
 import { runScheduledBackupAtSlot } from "../services/backup.service.js";
-import { BACKUP_SCHEDULED_JOB } from "../services/backup-schedule-jobs.service.js";
+import {
+  BACKUP_RETENTION_CLEANUP_JOB,
+  BACKUP_SCHEDULED_JOB,
+} from "../services/backup-schedule-jobs.service.js";
+import { runBackupRetentionCleanup } from "../services/backup.service.js";
 import { resolveAppTimezone } from "../services/system-settings.service.js";
 import {
   sendOperationalAlertWhatsApp,
@@ -226,6 +230,14 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
         slot,
         await resolveAppTimezone(backupTenantId)
       );
+      break;
+    }
+    case BACKUP_RETENTION_CLEANUP_JOB: {
+      const cleanupTenantId =
+        typeof job.data?.tenantId === "string" && job.data.tenantId.trim()
+          ? job.data.tenantId.trim()
+          : tenantId;
+      await runBackupRetentionCleanup(cleanupTenantId);
       break;
     }
     case "whatsapp-expiry-reminders":

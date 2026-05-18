@@ -3,8 +3,6 @@ import { clearStaffActivity, touchStaffActivity } from "./staffSession";
 const TOKEN_KEY = "fr_staff_token";
 const USER_TOKEN = "fr_user_token";
 const PORTAL_TOKEN_KEY = "fr_portal_token";
-const RESELLER_TOKEN_KEY = "fr_reseller_token";
-
 export function getApiBase() {
   const base = import.meta.env.VITE_PUBLIC_API_BASE;
   if (typeof base === "string" && base.trim()) return base.trim().replace(/\/+$/, "");
@@ -41,15 +39,6 @@ export function getPortalToken() {
 export function setPortalToken(t: string | null) {
   if (t) localStorage.setItem(PORTAL_TOKEN_KEY, t);
   else localStorage.removeItem(PORTAL_TOKEN_KEY);
-}
-
-export function getResellerToken() {
-  return localStorage.getItem(RESELLER_TOKEN_KEY);
-}
-
-export function setResellerToken(t: string | null) {
-  if (t) localStorage.setItem(RESELLER_TOKEN_KEY, t);
-  else localStorage.removeItem(RESELLER_TOKEN_KEY);
 }
 
 export async function apiFetch(
@@ -257,12 +246,3 @@ export async function portalApiFetch(path: string, init: RequestInit = {}): Prom
   return fetch(`${getApiBase()}${path}`, { ...init, headers });
 }
 
-export async function resellerPortalApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = getResellerToken();
-  const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && !(init.body instanceof FormData)) {
-    headers.set("Content-Type", "application/json");
-  }
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(`${getApiBase()}${path}`, { ...init, headers });
-}

@@ -22,8 +22,6 @@ import {
   PortalSpeedTestPage,
   PortalSupportPage,
 } from "./pages/portal/PortalPages";
-import { ResellersListPage } from "./pages/enterprise/EnterprisePages";
-
 const DashboardPage = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.DashboardPage })));
 const UsersPage = lazy(() => import("./pages/Users").then((m) => ({ default: m.UsersPage })));
 const UserProfilePage = lazy(() => import("./pages/UserProfile").then((m) => ({ default: m.UserProfilePage })));
@@ -170,7 +168,6 @@ function AppRoutes() {
           <Route path="speed-profiles" element={<SpeedProfilesPage />} />
           <Route path="speed-profiles/schedules" element={<SpeedProfileSchedulesPage />} />
           <Route path="speed-profiles/live" element={<SpeedProfilesLivePage />} />
-          <Route path="resellers" element={<ResellersListPage />} />
           <Route path="online-users" element={<OnlineUsersPage />} />
           <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />
           <Route path="inventory/categories" element={<ExpenseCategoriesPage />} />

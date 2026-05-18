@@ -34,7 +34,6 @@ export type EffectiveSpeedResult = {
     | "manual_override"
     | "schedule_subscriber"
     | "schedule_package"
-    | "schedule_reseller"
     | "schedule_branch"
     | "schedule_tenant"
     | "package"
@@ -46,7 +45,6 @@ export type EffectiveSpeedResult = {
 const SCHED_TIER: Record<string, number> = {
   subscriber: 5,
   package: 4,
-  reseller: 3,
   branch: 3,
   tenant: 2,
 };
@@ -527,31 +525,12 @@ function scheduleTargetsSubscriber(row: RowDataPacket, sub: RowDataPacket): bool
   return false;
 }
 
-async function scheduleTargetsResellerBranch(
-  pool: Pool,
-  row: RowDataPacket,
-  subscriberId: string
-): Promise<boolean> {
+function scheduleTargetsBranch(row: RowDataPacket, sub: RowDataPacket): boolean {
   const tt = String(row.target_type ?? "").toLowerCase();
   const tid = row.target_id != null ? String(row.target_id) : "";
-  if (!(await hasTable(pool, "reseller_subscriber_assignments"))) return false;
-  if (tt === "reseller") {
-    const [r] = await pool.query<RowDataPacket[]>(
-      `SELECT 1 FROM reseller_subscriber_assignments WHERE subscriber_id = ? AND reseller_id = ? LIMIT 1`,
-      [subscriberId, tid]
-    );
-    return Boolean(r[0]);
-  }
-  if (tt === "branch" && (await hasTable(pool, "resellers"))) {
-    const [r] = await pool.query<RowDataPacket[]>(
-      `SELECT 1 FROM reseller_subscriber_assignments rsa
-       JOIN resellers r ON r.id = rsa.reseller_id
-       WHERE rsa.subscriber_id = ? AND r.branch_id = ? LIMIT 1`,
-      [subscriberId, tid]
-    );
-    return Boolean(r[0]);
-  }
-  return false;
+  if (tt !== "branch") return false;
+  const branchId = sub.branch_id != null ? String(sub.branch_id) : "";
+  return Boolean(branchId && tid === branchId);
 }
 
 function pickWinningSchedule(
@@ -630,8 +609,8 @@ export async function resolveEffectiveSpeedProfile(
     const zoned = zonedNowParts(now, tz);
     if (!repeatMatches(row, now, zoned)) continue;
     const direct = scheduleTargetsSubscriber(row, sub);
-    const rb = await scheduleTargetsResellerBranch(pool, row, subscriberId);
-    if (!direct && !rb) continue;
+    const branch = scheduleTargetsBranch(row, sub);
+    if (!direct && !branch) continue;
     const profileId = scheduleProfileIdForRow(row, ctx);
     candidates.push({ row, profileId });
   }
@@ -647,11 +626,9 @@ export async function resolveEffectiveSpeedProfile(
           ? "schedule_subscriber"
           : tt === "package"
             ? "schedule_package"
-            : tt === "reseller"
-              ? "schedule_reseller"
-              : tt === "branch"
-                ? "schedule_branch"
-                : "schedule_tenant";
+            : tt === "branch"
+              ? "schedule_branch"
+              : "schedule_tenant";
       return {
         profileId: pr.id,
         mikrotikValue: pr.mikrotik_rate_limit_value,
@@ -872,15 +849,7 @@ async function collectSubscriberIdsToEvaluate(pool: Pool, tenantId: string): Pro
                (sch.target_type = 'subscriber' AND sch.target_id = s.id)
                OR (sch.target_type = 'package' AND sch.target_id = s.package_id)
                OR (sch.target_type = 'tenant' AND (sch.target_id IS NULL OR sch.target_id = s.tenant_id))
-               OR (sch.target_type = 'reseller' AND EXISTS (
-                 SELECT 1 FROM reseller_subscriber_assignments rsa
-                 WHERE rsa.subscriber_id = s.id AND rsa.reseller_id = sch.target_id
-               ))
-               OR (sch.target_type = 'branch' AND EXISTS (
-                 SELECT 1 FROM reseller_subscriber_assignments rsa
-                 INNER JOIN resellers r ON r.id = rsa.reseller_id
-                 WHERE rsa.subscriber_id = s.id AND r.branch_id = sch.target_id
-               ))
+               OR (sch.target_type = 'branch' AND sch.target_id = s.branch_id)
              )
          )
        )`,

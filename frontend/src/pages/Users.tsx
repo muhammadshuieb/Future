@@ -915,7 +915,7 @@ export function UsersPage() {
       ) : null}
 
       <div className="glass overflow-hidden rounded-2xl p-0">
-        <div className="max-h-[min(78vh,1200px)] max-w-full overflow-auto">
+        <div className="responsive-table-scroll max-h-[min(78vh,1200px)] max-w-full overflow-y-auto">
           <table className="sticky-list-table users-table w-full text-[0.8125rem] leading-snug">
             <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50 text-[11px] font-semibold uppercase tracking-wide opacity-75">
@@ -1019,14 +1019,14 @@ export function UsersPage() {
                     </td>
                     {userColumnVisibility.isVisible("username") ? (
                       <td className={td}>
-                        <div className="flex min-w-0 items-center gap-1.5">
+                        <div className="flex items-center gap-1.5">
                           <span
                             className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", pres.dotClass)}
                             title={pres.label}
                             aria-hidden
                           />
                           <Link
-                            className="min-w-0 truncate font-medium text-[hsl(var(--primary))] hover:underline"
+                            className="whitespace-nowrap font-medium text-[hsl(var(--primary))] hover:underline md:min-w-0 md:truncate"
                             to={`/users/${s.id}`}
                           >
                             {String(s.username)}
@@ -1035,18 +1035,18 @@ export function UsersPage() {
                       </td>
                     ) : null}
                     {userColumnVisibility.isVisible("full_name") ? (
-                      <td className={cn(td, "max-w-[10rem] truncate opacity-90")}>
+                      <td className={cn(td, "whitespace-nowrap opacity-90 md:max-w-[10rem] md:truncate")}>
                         {[s.first_name, s.last_name].filter(Boolean).join(" ").trim() || String(s.nickname ?? "—")}
                       </td>
                     ) : null}
                     {userColumnVisibility.isVisible("phone") ? (
-                      <td className={cn(td, "max-w-[7rem] truncate opacity-90")}>{String(s.phone ?? "—")}</td>
+                      <td className={cn(td, "whitespace-nowrap opacity-90 md:max-w-[7rem] md:truncate")}>{String(s.phone ?? "—")}</td>
                     ) : null}
                     {userColumnVisibility.isVisible("password") ? (
                       <td className={td}>
                         {canRevealPassword ? (
-                          <div className="flex max-w-[11rem] items-center gap-1">
-                            <code className="truncate rounded bg-[hsl(var(--muted))] px-1 py-0.5 font-mono text-[10px]">
+                          <div className="flex items-center gap-1 md:max-w-[11rem]">
+                            <code className="whitespace-nowrap rounded bg-[hsl(var(--muted))] px-1 py-0.5 font-mono text-[10px] md:truncate">
                               {revealedPasswords[s.id] || t("users.passwordHidden")}
                             </code>
                             <Button
@@ -1077,7 +1077,7 @@ export function UsersPage() {
                       </td>
                     ) : null}
                     {userColumnVisibility.isVisible("package") ? (
-                      <td className={cn(td, "max-w-[9rem] truncate opacity-90")}>{String(s.package_name ?? "—")}</td>
+                      <td className={cn(td, "whitespace-nowrap opacity-90 md:max-w-[9rem] md:truncate")}>{String(s.package_name ?? "—")}</td>
                     ) : null}
                     {userColumnVisibility.isVisible("remaining_quota") ? (
                       <td className={cn(td, "font-mono text-[10px] opacity-90")}>
@@ -1085,10 +1085,10 @@ export function UsersPage() {
                       </td>
                     ) : null}
                     {userColumnVisibility.isVisible("nas_network") ? (
-                      <td className={cn(td, "max-w-[10rem]")}>
-                        <div className="truncate opacity-90">{formatNasLabel(s)}</div>
+                      <td className={cn(td, "whitespace-nowrap md:max-w-[10rem]")}>
+                        <div className="opacity-90 md:truncate">{formatNasLabel(s)}</div>
                         {uiKind === "online" ? (
-                          <div className="truncate font-mono text-[10px] leading-tight text-blue-700/90 dark:text-blue-300/90">
+                          <div className="font-mono text-[10px] leading-tight text-blue-700/90 dark:text-blue-300/90 md:truncate">
                             {s.session_framed_ip
                               ? `${t("users.ip")}: ${s.session_framed_ip}`
                               : formatSessionNetwork(s) !== "—"
@@ -1099,10 +1099,10 @@ export function UsersPage() {
                       </td>
                     ) : null}
                     {userColumnVisibility.isVisible("region") ? (
-                      <td className={cn(td, "max-w-[8rem] truncate opacity-90")}>{String(s.region_name ?? "—")}</td>
+                      <td className={cn(td, "whitespace-nowrap opacity-90 md:max-w-[8rem] md:truncate")}>{String(s.region_name ?? "—")}</td>
                     ) : null}
                     {userColumnVisibility.isVisible("created_by") ? (
-                      <td className={cn(td, "max-w-[8rem] truncate opacity-90")}>
+                      <td className={cn(td, "whitespace-nowrap opacity-90 md:max-w-[8rem] md:truncate")}>
                         {String(s.creator_name ?? s.creator_email ?? "—")}
                       </td>
                     ) : null}

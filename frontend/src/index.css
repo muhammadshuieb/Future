@@ -158,21 +158,46 @@ samp {
     background-color: hsl(var(--card));
   }
 
-  /* Users table compact mode: fit viewport width and show more rows. */
+  /* Wide tables: horizontal scroll on narrow viewports instead of squashing columns. */
+  .responsive-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Users table: compact fixed layout on desktop; natural column widths on mobile. */
   .users-table {
-    table-layout: fixed;
+    min-width: 56rem;
   }
-  .users-table th,
-  .users-table td {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+
+  @media (min-width: 768px) {
+    .users-table {
+      table-layout: fixed;
+      min-width: 0;
+      width: 100%;
+    }
+    .users-table th,
+    .users-table td {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .users-table td {
+      padding-top: 0.42rem;
+      padding-bottom: 0.42rem;
+      padding-left: 0.45rem;
+      padding-right: 0.45rem;
+    }
   }
-  .users-table td {
-    padding-top: 0.42rem;
-    padding-bottom: 0.42rem;
-    padding-left: 0.45rem;
-    padding-right: 0.45rem;
+
+  @media (max-width: 767px) {
+    .users-table th,
+    .users-table td {
+      white-space: nowrap;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+      padding-left: 0.65rem;
+      padding-right: 0.65rem;
+    }
   }
 }
 

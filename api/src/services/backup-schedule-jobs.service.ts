@@ -11,6 +11,7 @@ import { resolveAppTimezone } from "./system-settings.service.js";
 import { taskQueue } from "./task-queue.service.js";
 
 export const BACKUP_SCHEDULED_JOB = "backup-scheduled";
+export const BACKUP_RETENTION_CLEANUP_JOB = "backup-retention-cleanup";
 
 const WORKER_HEARTBEAT_KEY = "future-radius:worker:heartbeat";
 const WORKER_ONLINE_MS = 90_000;
@@ -243,7 +244,36 @@ export async function getBackupScheduleHealth(tenantId: string): Promise<BackupS
   };
 }
 
+/** Daily sweep: delete backups older than retention from disk and Google Drive. */
+export async function syncBackupRetentionCleanupCronJob(tenantId: string): Promise<void> {
+  const jobs = await taskQueue.getRepeatableJobs();
+  for (const job of jobs) {
+    if ((job.name ?? "") === BACKUP_RETENTION_CLEANUP_JOB && job.key) {
+      await taskQueue.removeRepeatableByKey(job.key);
+    }
+  }
+  const timeZone = await resolveAppTimezone(tenantId);
+  try {
+    await taskQueue.add(
+      BACKUP_RETENTION_CLEANUP_JOB,
+      { tenantId },
+      {
+        repeat: {
+          pattern: "30 4 * * *",
+          tz: timeZone,
+          key: `backup-retention-cron:${tenantId}`,
+        },
+      }
+    );
+    console.info(`[backup-schedule] retention cleanup cron registered tenant=${tenantId} tz=${timeZone} at 04:30`);
+  } catch (e) {
+    console.warn("[backup-schedule] retention cleanup cron register failed", e);
+  }
+}
+
 /** Called by worker/API on boot — loads schedule from DB (same as Maintenance page). */
 export async function syncBackupScheduleCronJobsForDefaultTenant(): Promise<BackupScheduleSyncResult> {
-  return syncBackupScheduleCronJobs(config.defaultTenantId);
+  const result = await syncBackupScheduleCronJobs(config.defaultTenantId);
+  await syncBackupRetentionCleanupCronJob(config.defaultTenantId);
+  return result;
 }

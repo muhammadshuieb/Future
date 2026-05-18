@@ -44,7 +44,7 @@ const profileBody = z.object({
 const scheduleBody = z.object({
   name: z.string().min(1).max(160),
   branch_id: z.string().uuid().nullable().optional(),
-  target_type: z.enum(["package", "subscriber", "reseller", "branch", "tenant"]),
+  target_type: z.enum(["package", "subscriber", "branch", "tenant"]),
   target_id: z.string().uuid().nullable().optional(),
   speed_profile_id: z.string().uuid(),
   fallback_speed_profile_id: z.string().uuid().nullable().optional(),

@@ -494,9 +494,16 @@ async function uploadToRemote(filePath: string, tenantId: string): Promise<strin
   });
 }
 
-async function cleanupLocalBackups(dir: string, retentionDays: number): Promise<number> {
+/** Permanent delete on Google Drive (default rclone behavior moves files to trash). */
+const RCLONE_PERMANENT_DELETE_FLAGS = ["--drive-use-trash=false"];
+
+export function retentionCutoffMs(retentionDays: number): number {
+  return Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+}
+
+export async function cleanupLocalBackups(dir: string, retentionDays: number): Promise<number> {
   const files = await readdir(dir);
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const cutoff = retentionCutoffMs(retentionDays);
   let deleted = 0;
 
   for (const name of files) {
@@ -515,23 +522,79 @@ async function cleanupLocalBackups(dir: string, retentionDays: number): Promise<
   return deleted;
 }
 
-async function cleanupRemoteBackups(retentionDays: number, tenantId: string): Promise<number> {
+export async function cleanupRemoteBackups(retentionDays: number, tenantId: string): Promise<number> {
   const settings = await getRcloneSettings(tenantId);
   if (!settings.enabled) return 0;
   assertRcloneConfigured(settings);
-  await withRcloneConfig(settings, async (configPath, remoteBase) => {
+  return withRcloneConfig(settings, async (configPath, remoteBase) => {
+    const minAge = `${retentionDays}d`;
+    const include = `${BACKUP_PREFIX}*.sql.gz`;
+    const listArgs = [
+      "lsf",
+      remoteBase,
+      "--files-only",
+      "--include",
+      include,
+      "--min-age",
+      minAge,
+      "--config",
+      configPath,
+    ];
+    let toDelete: string[] = [];
+    try {
+      const listed = await runProcess("rclone", listArgs);
+      toDelete = listed
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith(BACKUP_PREFIX) && line.endsWith(".sql.gz"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/not found|directory not found|couldn't find/i.test(msg)) {
+        throw e;
+      }
+    }
+    if (toDelete.length === 0) return 0;
+
     await runProcess("rclone", [
       "delete",
       remoteBase,
       "--min-age",
-      `${retentionDays}d`,
+      minAge,
       "--include",
-      `${BACKUP_PREFIX}*.sql.gz`,
+      include,
+      ...RCLONE_PERMANENT_DELETE_FLAGS,
       "--config",
       configPath,
     ]);
+    console.info(
+      `[backup] remote retention cleanup tenant=${tenantId} retention=${retentionDays}d deleted≈${toDelete.length} path=${remoteBase}`
+    );
+    return toDelete.length;
   });
-  return 0;
+}
+
+/** Removes expired backup files locally + on Google Drive (runs after each backup and on daily schedule). */
+export async function runBackupRetentionCleanup(tenantId: string): Promise<{
+  local_deleted: number;
+  remote_deleted: number;
+}> {
+  await ensureBackupSchema();
+  const settings = await getRcloneSettings(tenantId);
+  const retentionDays = settings.retentionDays;
+  const dir = getBackupDir();
+  const localDeleted = await cleanupLocalBackups(dir, retentionDays);
+  let remoteDeleted = 0;
+  try {
+    remoteDeleted = await cleanupRemoteBackups(retentionDays, tenantId);
+  } catch (e) {
+    console.warn("[backup] runBackupRetentionCleanup remote failed", e);
+  }
+  if (localDeleted > 0 || remoteDeleted > 0) {
+    console.info(
+      `[backup] retention cleanup tenant=${tenantId} days=${retentionDays} local=${localDeleted} remote=${remoteDeleted}`
+    );
+  }
+  return { local_deleted: localDeleted, remote_deleted: remoteDeleted };
 }
 
 function mapBackupRun(row: BackupRunRow): BackupRunView {
@@ -586,13 +649,9 @@ export async function runDatabaseBackup(opts: {
       remoteRef = await uploadToRemote(filePath, tenantId);
       await setRcloneCheckResult(tenantId, true, null);
     }
-    const localDeleted = await cleanupLocalBackups(dir, retentionDays);
-    let remoteDeleted = 0;
-    try {
-      remoteDeleted = await cleanupRemoteBackups(retentionDays, tenantId);
-    } catch (cleanupError) {
-      console.warn("backup cleanupRemoteBackups", cleanupError);
-    }
+    const retention = await runBackupRetentionCleanup(tenantId);
+    const localDeleted = retention.local_deleted;
+    const remoteDeleted = retention.remote_deleted;
     await pool.execute(
       `UPDATE backup_runs
        SET status = 'success',
@@ -661,6 +720,16 @@ export async function runDatabaseBackup(opts: {
   return mapBackupRun(rows[0]);
 }
 
+async function localBackupFileExists(localPath: string | null): Promise<boolean> {
+  if (!localPath) return false;
+  try {
+    await stat(localPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function listBackupRuns(tenantId: string, limit = 50): Promise<BackupRunView[]> {
   await ensureBackupSchema();
   const safeLimit = Math.max(1, Math.min(200, limit));
@@ -672,7 +741,13 @@ export async function listBackupRuns(tenantId: string, limit = 50): Promise<Back
      LIMIT ${safeLimit}`,
     [tenantId]
   );
-  return rows.map(mapBackupRun);
+  const views: BackupRunView[] = [];
+  for (const row of rows) {
+    const view = mapBackupRun(row);
+    view.can_download = await localBackupFileExists(row.local_path);
+    views.push(view);
+  }
+  return views;
 }
 
 export async function getBackupFileForDownload(
@@ -1083,8 +1158,17 @@ export async function updateBackupSchedule(
       last_scheduled_slot = NULL`,
     [tenantId, input.enabled ? 1 : 0, input.mode, time1, time2, retentionDays]
   );
-  const { syncBackupScheduleCronJobs } = await import("./backup-schedule-jobs.service.js");
-  return syncBackupScheduleCronJobs(tenantId);
+  const { syncBackupScheduleCronJobs, syncBackupRetentionCleanupCronJob } = await import(
+    "./backup-schedule-jobs.service.js"
+  );
+  const scheduleSync = await syncBackupScheduleCronJobs(tenantId);
+  await syncBackupRetentionCleanupCronJob(tenantId);
+  try {
+    await runBackupRetentionCleanup(tenantId);
+  } catch (e) {
+    console.warn("[backup] retention cleanup after schedule save", e);
+  }
+  return scheduleSync;
 }
 
 export async function deleteBackupRunsBulk(
@@ -1274,7 +1358,13 @@ export async function deleteBackupRun(tenantId: string, id: string): Promise<{
       const settings = await getRcloneSettings(tenantId);
       if (settings.enabled && settings.remoteName && settings.configText) {
         await withRcloneConfig(settings, async (configPath, remoteBase) => {
-          await runProcess("rclone", ["deletefile", `${remoteBase}/${row.file_name}`, "--config", configPath]);
+          await runProcess("rclone", [
+            "deletefile",
+            `${remoteBase}/${row.file_name}`,
+            ...RCLONE_PERMANENT_DELETE_FLAGS,
+            "--config",
+            configPath,
+          ]);
         });
         remoteDeleted = true;
       }

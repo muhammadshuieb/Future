@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  BACKUP_RETENTION_CLEANUP_JOB,
   cronPatternToSlot,
   hhmmToCron,
 } from "../services/backup-schedule-jobs.service.js";
-import { getActiveBackupScheduleSlots } from "../services/backup.service.js";
+import { getActiveBackupScheduleSlots, retentionCutoffMs } from "../services/backup.service.js";
 
 describe("backup schedule helpers", () => {
   it("hhmmToCron builds standard minute-hour pattern", () => {
@@ -17,6 +18,17 @@ describe("backup schedule helpers", () => {
     assert.equal(cronPatternToSlot("0 3 * * *"), "03:00");
     assert.equal(cronPatternToSlot("30 15 * * *"), "15:30");
     assert.equal(cronPatternToSlot("invalid"), null);
+  });
+
+  it("retentionCutoffMs subtracts full days", () => {
+    const now = Date.now();
+    const cutoff = retentionCutoffMs(7);
+    const diffDays = (now - cutoff) / (24 * 60 * 60 * 1000);
+    assert.ok(diffDays >= 6.99 && diffDays <= 7.01);
+  });
+
+  it("retention cleanup job name is stable", () => {
+    assert.equal(BACKUP_RETENTION_CLEANUP_JOB, "backup-retention-cleanup");
   });
 
   it("getActiveBackupScheduleSlots respects mode", () => {
