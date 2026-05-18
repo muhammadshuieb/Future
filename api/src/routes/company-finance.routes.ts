@@ -52,8 +52,26 @@ router.post(
     const t = req.auth!.tenantId;
     const id = randomUUID();
     const cur = (body.data.currency ?? "USD").slice(0, 8);
+    const amount = Number(body.data.amount);
     try {
+      let obligationAfter: number | null = null;
       await withTransaction(async (conn) => {
+        if (await hasColumn(pool, "users", "manager_obligation_balance")) {
+          const [mgrRows] = await conn.query<RowDataPacket[]>(
+            `SELECT COALESCE(manager_obligation_balance, 0) AS obligation
+             FROM users WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
+            [body.data.manager_id, t]
+          );
+          if (!mgrRows[0]) {
+            throw new Error("manager_not_found");
+          }
+          const obligationBefore = Number(mgrRows[0].obligation ?? 0);
+          if (amount > obligationBefore + 0.005) {
+            const err = new Error("settlement_exceeds_obligation");
+            (err as Error & { code: string }).code = "settlement_exceeds_obligation";
+            throw err;
+          }
+        }
         await conn.execute(
           `INSERT INTO manager_settlement_payments
             (id, tenant_id, settlement_id, manager_id, amount, currency, payment_method, note, created_by)
@@ -63,7 +81,7 @@ router.post(
             t,
             body.data.settlement_id ?? null,
             body.data.manager_id,
-            body.data.amount,
+            amount,
             cur,
             body.data.payment_method ?? "cash",
             body.data.note ?? null,
@@ -74,8 +92,14 @@ router.post(
           await conn.execute(
             `UPDATE users SET manager_obligation_balance = GREATEST(0, COALESCE(manager_obligation_balance, 0) - ?)
              WHERE id = ? AND tenant_id = ?`,
-            [body.data.amount, body.data.manager_id, t]
+            [amount, body.data.manager_id, t]
           );
+          const [afterRows] = await conn.query<RowDataPacket[]>(
+            `SELECT COALESCE(manager_obligation_balance, 0) AS obligation
+             FROM users WHERE id = ? AND tenant_id = ? LIMIT 1`,
+            [body.data.manager_id, t]
+          );
+          obligationAfter = Number(afterRows[0]?.obligation ?? 0);
         }
       });
       await writeFinancialAudit(pool, {
@@ -95,8 +119,17 @@ router.post(
         entityId: id,
         payload: body.data,
       });
-      res.status(201).json({ ok: true, id });
+      res.status(201).json({ ok: true, id, manager_obligation_balance: obligationAfter });
     } catch (e) {
+      const code = e instanceof Error ? (e as Error & { code?: string }).code : undefined;
+      if (code === "settlement_exceeds_obligation") {
+        res.status(400).json({ error: "settlement_exceeds_obligation" });
+        return;
+      }
+      if (e instanceof Error && e.message === "manager_not_found") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
       console.error("[settlements/pay]", e);
       res.status(500).json({ error: "failed" });
     }

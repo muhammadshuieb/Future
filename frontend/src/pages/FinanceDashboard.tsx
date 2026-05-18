@@ -12,6 +12,7 @@ type InvoiceRow = { amount?: number | string; status?: string; issue_date?: stri
 type PaymentRow = { amount?: number | string; paid_at?: string | null };
 type ExpenseMonthly = { expense_cost?: number };
 
+/** @deprecated استخدم /financial-dashboard — هذه الصفحة غير موصولة بالمسارات. */
 export function FinanceDashboardPage() {
   const { t } = useI18n();
   const { period } = useFinancePeriod();

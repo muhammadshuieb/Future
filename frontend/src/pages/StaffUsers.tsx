@@ -9,7 +9,7 @@ import { ColumnVisibilityMenu, useColumnVisibility } from "../components/ui/Colu
 import { SelectField, TextField } from "../components/ui/TextField";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LocaleContext";
-import { hasStaffPermission } from "../lib/permissions";
+import { canTopupManagerWallet, hasStaffPermission } from "../lib/permissions";
 import { cn } from "../lib/utils";
 
 type StaffRow = {
@@ -101,7 +101,8 @@ export function StaffUsersPage() {
   const { user } = useAuth();
   const canManageManagers = hasStaffPermission(user?.role, user?.permissions, "manage_managers");
   const canTransferBalance = hasStaffPermission(user?.role, user?.permissions, "transfer_balance");
-  const canManage = canManageManagers || canTransferBalance;
+  const canTopup = canTopupManagerWallet(user?.role, user?.permissions);
+  const canManage = canManageManagers || canTransferBalance || canTopup;
   const [items, setItems] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -262,7 +263,7 @@ export function StaffUsersPage() {
   }
 
   async function topupManager(item: StaffRow) {
-    if (!canTransferBalance) return;
+    if (!canTopup) return;
     setTopupTarget(item);
   }
 
@@ -404,7 +405,7 @@ export function StaffUsersPage() {
                     {String(item.created_at ?? "").slice(0, 16).replace("T", " ")}
                   </td> : null}
                   <td className="px-4 py-3 text-right">
-                    {canTransferBalance && (item.role === "manager" || String(item.id).startsWith("rm:")) ? (
+                    {canTopup && (item.role === "manager" || String(item.id).startsWith("rm:")) ? (
                       <button
                         type="button"
                         onClick={() => void topupManager(item)}

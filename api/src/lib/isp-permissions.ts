@@ -67,6 +67,7 @@ export function defaultIspPermissionsAccountant(): Record<IspPermissionKey, bool
   o["managers:view"] = true;
   o["managers:view_wallet"] = true;
   o["managers:view_statement"] = true;
+  o["managers:topup_wallet"] = true;
   o["managers:collect_settlement"] = true;
   return o;
 }

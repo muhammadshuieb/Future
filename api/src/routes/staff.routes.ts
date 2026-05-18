@@ -16,9 +16,12 @@ import {
 } from "../lib/speed-profile-permissions.js";
 import { hashStaffPassword } from "../lib/staff-password.js";
 import { writeAuditLog } from "../services/audit-log.service.js";
+import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import type { RowDataPacket } from "mysql2";
+import type { PoolConnection } from "mysql2/promise";
 import { withTransaction } from "../db/transaction.js";
 import { applyManagerWalletLedgerWithConnection } from "../services/manager-wallet-ledger.service.js";
+import { requestHasIspPermission } from "../lib/isp-permissions.js";
 
 const router = Router();
 
@@ -35,6 +38,44 @@ function canTransferBalance(req: Request): boolean {
   return req.auth?.role === "admin" || requestHasManagerPermission(req, "transfer_balance");
 }
 
+/** Topup: admin, ISP managers:topup_wallet (accountant), or manager staff transfer_balance. */
+function canTopupWallet(req: Request): boolean {
+  if (req.auth?.role === "admin") return true;
+  if (requestHasIspPermission(req, "managers:topup_wallet")) return true;
+  if (req.auth?.role === "manager" && requestHasManagerPermission(req, "transfer_balance")) return true;
+  return false;
+}
+
+async function applyWalletTargetBalanceViaLedger(
+  conn: PoolConnection,
+  tenantId: string,
+  managerId: string,
+  targetBalance: number,
+  actorId: string,
+  reason: string
+): Promise<void> {
+  const [rows] = await conn.query<RowDataPacket[]>(
+    `SELECT wallet_balance FROM users WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
+    [managerId, tenantId]
+  );
+  const current = Number(rows[0]?.wallet_balance ?? 0);
+  const target = Number(targetBalance);
+  const delta = target - current;
+  if (Math.abs(delta) < 0.005) return;
+  await applyManagerWalletLedgerWithConnection(conn, {
+    tenantId,
+    managerId,
+    delta,
+    type: delta > 0 ? "topup" : "manual_adjustment",
+    currency: "USD",
+    referenceType: "staff_wallet_adjust",
+    referenceId: actorId,
+    description: reason,
+    createdBy: actorId,
+    meta: { target_balance: target, previous_balance: current },
+  });
+}
+
 function isSelfTarget(req: Request, userId: string): boolean {
   return String(req.auth?.sub ?? "") === String(userId);
 }
@@ -48,7 +89,7 @@ async function getRoleId(tenantId: string, name: string): Promise<string | null>
 }
 
 router.get("/", async (req: Request, res: Response) => {
-  if (!canManageManagers(req) && !canTransferBalance(req)) {
+  if (!canManageManagers(req) && !canTransferBalance(req) && !canTopupWallet(req)) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
@@ -132,30 +173,57 @@ router.post("/", async (req: Request, res: Response) => {
   const bcryptPw = await hashStaffPassword(password);
   const permJson =
     role === "manager" && permissions ? JSON.stringify(permissions) : null;
-  await pool.execute(
-    `INSERT INTO users (id, tenant_id, email, name, password_hash, status, wallet_balance, allowed_negative_balance, permissions_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      uid,
-      tenantId,
-      email,
-      name,
-      bcryptPw,
-      active === false ? "disabled" : "active",
-      Number(opening_balance ?? 0),
-      Number(allowed_negative_balance ?? 0),
-      permJson,
-    ]
-  );
-  await pool.execute(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [uid, roleId]);
+  const opening = Number(opening_balance ?? 0);
+  await withTransaction(async (conn) => {
+    await conn.execute(
+      `INSERT INTO users (id, tenant_id, email, name, password_hash, status, wallet_balance, allowed_negative_balance, permissions_json)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [
+        uid,
+        tenantId,
+        email,
+        name,
+        bcryptPw,
+        active === false ? "disabled" : "active",
+        Number(allowed_negative_balance ?? 0),
+        permJson,
+      ]
+    );
+    await conn.execute(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [uid, roleId]);
+    if (opening > 0) {
+      await applyManagerWalletLedgerWithConnection(conn, {
+        tenantId,
+        managerId: uid,
+        delta: opening,
+        type: "topup",
+        currency: "USD",
+        referenceType: "staff_opening_balance",
+        referenceId: req.auth!.sub,
+        description: "opening_balance",
+        createdBy: req.auth!.sub,
+        meta: { opening_balance: opening },
+      });
+    }
+  });
   await writeAuditLog(pool, {
     tenantId,
     staffId: req.auth!.sub,
     action: "create",
     entityType: "staff_user",
     entityId: uid,
-    payload: { role, email },
+    payload: { role, email, opening_balance: opening },
   });
+  if (opening > 0) {
+    await writeFinancialAudit(pool, {
+      tenantId,
+      staffId: req.auth!.sub,
+      action: "manager_wallet_opening_balance",
+      entityType: "staff_wallet",
+      entityId: uid,
+      payload: { opening_balance: opening },
+      ip: req.ip,
+    });
+  }
   res.status(201).json({ id: uid });
 });
 
@@ -215,9 +283,17 @@ router.patch("/:id", async (req: Request, res: Response) => {
     sets.push("status = ?");
     vals.push(d.active ? "active" : "disabled");
   }
-  if (d.opening_balance !== undefined || d.wallet_balance !== undefined) {
-    sets.push("wallet_balance = ?");
-    vals.push(Number(d.wallet_balance ?? d.opening_balance ?? 0));
+  const walletTarget =
+    d.wallet_balance !== undefined
+      ? Number(d.wallet_balance)
+      : d.opening_balance !== undefined
+        ? Number(d.opening_balance)
+        : undefined;
+  if (walletTarget !== undefined) {
+    if (!canTopupWallet(req)) {
+      res.status(403).json({ error: "forbidden", detail: "topup_wallet_required" });
+      return;
+    }
   }
   if (d.allowed_negative_balance !== undefined) {
     sets.push("allowed_negative_balance = ?");
@@ -233,6 +309,33 @@ router.patch("/:id", async (req: Request, res: Response) => {
       targetId,
       tenantId,
     ]);
+  }
+  if (walletTarget !== undefined) {
+    try {
+      await withTransaction(async (conn) => {
+        await applyWalletTargetBalanceViaLedger(
+          conn,
+          tenantId,
+          targetId,
+          walletTarget,
+          req.auth!.sub,
+          d.wallet_balance !== undefined ? "wallet_balance_adjust" : "opening_balance_adjust"
+        );
+      });
+      await writeFinancialAudit(pool, {
+        tenantId,
+        staffId: req.auth!.sub,
+        action: "manager_wallet_manual_adjust",
+        entityType: "staff_wallet",
+        entityId: targetId,
+        payload: { target_balance: walletTarget },
+        ip: req.ip,
+      });
+    } catch (e) {
+      console.error("[staff patch wallet]", e);
+      res.status(500).json({ error: "wallet_adjust_failed" });
+      return;
+    }
   }
   if (d.role !== undefined) {
     const rid = await getRoleId(tenantId, d.role);
@@ -291,6 +394,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
 const topupBody = z.object({
   amount: z.number().positive().max(100000000),
   note: z.string().max(255).optional(),
+  currency: z.enum(["USD", "SYP", "TRY"]).optional(),
 });
 
 const rolePermissionsBody = z.object({
@@ -359,8 +463,8 @@ router.put("/roles-permissions/:role", requireRole("admin"), async (req: Request
   res.json({ ok: true });
 });
 
-router.post("/:id/topup", requireRole("admin", "manager"), async (req: Request, res: Response) => {
-  if (!canTransferBalance(req)) {
+router.post("/:id/topup", requireRole("admin", "manager", "accountant"), async (req: Request, res: Response) => {
+  if (!canTopupWallet(req)) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
@@ -393,7 +497,7 @@ router.post("/:id/topup", requireRole("admin", "manager"), async (req: Request, 
         managerId: targetId,
         delta: amount,
         type: "topup",
-        currency: "USD",
+        currency: (parsed.data.currency ?? "USD").slice(0, 8),
         referenceType: "staff_topup",
         referenceId: actorId,
         description: parsed.data.note ?? "wallet_topup",
@@ -409,6 +513,15 @@ router.post("/:id/topup", requireRole("admin", "manager"), async (req: Request, 
       entityType: "staff_wallet",
       entityId: targetId,
       payload: { amount, note: parsed.data.note ?? null, ledger_id: out.ledger_id },
+    });
+    await writeFinancialAudit(pool, {
+      tenantId,
+      staffId: actorId,
+      action: "manager_wallet_topup",
+      entityType: "staff_wallet",
+      entityId: targetId,
+      payload: { amount, note: parsed.data.note ?? null, ledger_id: out.ledger_id },
+      ip: req.ip,
     });
     res.json({ ok: true, wallet_balance: out.balance_after });
   } catch (e) {

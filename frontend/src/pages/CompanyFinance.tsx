@@ -3,7 +3,7 @@ import { apiFetch, formatStaffApiError, readApiError } from "../lib/api";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { useAuth } from "../context/AuthContext";
-import { hasIspPermission } from "../lib/permissions";
+import { canCollectManagerSettlement, hasIspPermission } from "../lib/permissions";
 import { cn } from "../lib/utils";
 import { Download, Loader2, Printer, RefreshCw } from "lucide-react";
 
@@ -25,6 +25,7 @@ export function CompanyFinancePage() {
   const canLedger = hasIspPermission(role, perms, "managers:view_wallet");
   const canStatement = hasIspPermission(role, perms, "managers:view_statement");
   const canSettleView = hasIspPermission(role, perms, "managers:view_statement");
+  const canCollectSettlement = canCollectManagerSettlement(role, perms);
   const canCommissions =
     hasIspPermission(role, perms, "financial_reports:view") ||
     (role === "manager" && hasIspPermission(role, perms, "managers:view_statement"));
@@ -54,6 +55,13 @@ export function CompanyFinancePage() {
   const [oblig, setOblig] = useState<Record<string, unknown>[]>([]);
   const [unpaid, setUnpaid] = useState<Record<string, unknown>[]>([]);
   const [prepaid, setPrepaid] = useState<Record<string, unknown>[]>([]);
+
+  const [settleAmount, setSettleAmount] = useState("");
+  const [settleMethod, setSettleMethod] = useState("cash");
+  const [settleNote, setSettleNote] = useState("");
+  const [settleCurrency, setSettleCurrency] = useState<"USD" | "SYP" | "TRY">("USD");
+  const [settleSaving, setSettleSaving] = useState(false);
+  const [settleSuccess, setSettleSuccess] = useState<string | null>(null);
 
   const mgrQ = useMemo(() => {
     const m = managerFilter.trim();
@@ -262,6 +270,69 @@ export function CompanyFinancePage() {
     return balances.map((b) => ({ id: b.manager_id, label: `${b.name} (${b.email})` }));
   }, [balances]);
 
+  const selectedManagerObligation = useMemo(() => {
+    const mid = managerFilter.trim();
+    if (!mid) return null;
+    const row = balances.find((b) => b.manager_id === mid);
+    return row ? Number(row.manager_obligation_balance) : null;
+  }, [balances, managerFilter]);
+
+  async function submitSettlement(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canCollectSettlement) return;
+    const mid = managerFilter.trim();
+    const amount = Number(settleAmount);
+    if (!mid) {
+      setErr("اختر المدير أولاً");
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setErr("أدخل مبلغ جباية صحيحاً");
+      return;
+    }
+    if (selectedManagerObligation != null && amount > selectedManagerObligation + 0.005) {
+      setErr(`المبلغ يتجاوز التزام المدير (${selectedManagerObligation.toFixed(2)})`);
+      return;
+    }
+    setSettleSaving(true);
+    setErr(null);
+    setSettleSuccess(null);
+    try {
+      const res = await apiFetch("/api/company-finance/settlements/pay", {
+        method: "POST",
+        body: JSON.stringify({
+          manager_id: mid,
+          amount,
+          currency: settleCurrency,
+          payment_method: settleMethod,
+          note: settleNote.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const raw = await readApiError(res);
+        if (raw === "settlement_exceeds_obligation") {
+          setErr("المبلغ يتجاوز التزام المدير الحالي");
+        } else {
+          setErr(formatStaffApiError(res.status, raw, (k: string) => k));
+        }
+        return;
+      }
+      const j = (await res.json()) as { manager_obligation_balance?: number };
+      setSettleAmount("");
+      setSettleNote("");
+      setSettleSuccess(
+        j.manager_obligation_balance != null
+          ? `تم تسجيل الجباية. التزام المدير المتبقي: ${Number(j.manager_obligation_balance).toFixed(2)}`
+          : "تم تسجيل الجباية بنجاح"
+      );
+      await load();
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : String(ex));
+    } finally {
+      setSettleSaving(false);
+    }
+  }
+
   if (!canSummary && !canWallets && !canReports) {
     return (
       <div className="p-6 text-center text-sm opacity-80" dir="rtl">
@@ -419,6 +490,74 @@ export function CompanyFinancePage() {
         {canSettleView ? (
           <section className="space-y-2">
             <h2 className="text-sm font-bold">جباية من المدير — دفعات التسوية</h2>
+            {canCollectSettlement ? (
+              <Card className="p-3">
+                <form onSubmit={(e) => void submitSettlement(e)} className="flex flex-wrap items-end gap-3 text-xs">
+                  <p className="w-full text-[11px] opacity-70">
+                    اختر المدير من عوامل التصفية أعلاه، ثم أدخل مبلغ الجباية (لا يتجاوز التزام الشركة).
+                    {selectedManagerObligation != null ? (
+                      <span className="mr-2 font-mono text-amber-200">
+                        التزام حالي: {selectedManagerObligation.toFixed(2)}
+                      </span>
+                    ) : null}
+                  </p>
+                  <label className="flex flex-col gap-1">
+                    <span className="opacity-70">المبلغ</span>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2 py-1.5 w-28 font-mono"
+                      value={settleAmount}
+                      onChange={(e) => setSettleAmount(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="opacity-70">العملة</span>
+                    <select
+                      className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2 py-1.5"
+                      value={settleCurrency}
+                      onChange={(e) => setSettleCurrency(e.target.value as "USD" | "SYP" | "TRY")}
+                    >
+                      <option value="USD">USD</option>
+                      <option value="SYP">SYP</option>
+                      <option value="TRY">TRY</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="opacity-70">طريقة الدفع</span>
+                    <select
+                      className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2 py-1.5"
+                      value={settleMethod}
+                      onChange={(e) => setSettleMethod(e.target.value)}
+                    >
+                      <option value="cash">نقداً</option>
+                      <option value="bank">تحويل بنكي</option>
+                      <option value="check">شيك</option>
+                    </select>
+                  </label>
+                  <label className="flex min-w-[180px] flex-1 flex-col gap-1">
+                    <span className="opacity-70">ملاحظة</span>
+                    <input
+                      type="text"
+                      className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2 py-1.5"
+                      value={settleNote}
+                      onChange={(e) => setSettleNote(e.target.value)}
+                      maxLength={512}
+                    />
+                  </label>
+                  <Button type="submit" size="sm" disabled={settleSaving || !managerFilter.trim()}>
+                    {settleSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "تسجيل جباية"}
+                  </Button>
+                </form>
+              </Card>
+            ) : null}
+            {settleSuccess ? (
+              <p className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                {settleSuccess}
+              </p>
+            ) : null}
             <CompactTable rows={settlements} />
           </section>
         ) : null}

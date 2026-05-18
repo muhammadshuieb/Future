@@ -26,7 +26,30 @@ export function canOpenStaffSection(
   role: string | undefined,
   permissions: Record<string, boolean> | undefined
 ): boolean {
-  return hasStaffPermission(role, permissions, "manage_managers") || hasStaffPermission(role, permissions, "transfer_balance");
+  return (
+    hasStaffPermission(role, permissions, "manage_managers") ||
+    hasStaffPermission(role, permissions, "transfer_balance") ||
+    canTopupManagerWallet(role, permissions)
+  );
+}
+
+/** شحن محفظة مدير: admin، أو managers:topup_wallet، أو transfer_balance للمدير. */
+export function canTopupManagerWallet(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined
+): boolean {
+  if (role === "admin") return true;
+  if (hasIspPermission(role, permissions, "managers:topup_wallet")) return true;
+  return hasStaffPermission(role, permissions, "transfer_balance");
+}
+
+/** جباية تسوية من المدير. */
+export function canCollectManagerSettlement(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined
+): boolean {
+  if (role === "admin") return true;
+  return hasIspPermission(role, permissions, "managers:collect_settlement");
 }
 
 export function canViewSpeedProfiles(
