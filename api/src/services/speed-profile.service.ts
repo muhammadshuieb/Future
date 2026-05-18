@@ -9,22 +9,6 @@ import { enqueueCoaDisconnect } from "./task-queue.service.js";
 import { getSystemSettings } from "./system-settings.service.js";
 import { sendOperationalAlertWhatsApp } from "./whatsapp.service.js";
 
-async function recordCoaEventLocal(
-  pool: Pool,
-  tenantId: string,
-  nasIp: string,
-  username: string,
-  ok: boolean,
-  message: string
-): Promise<void> {
-  if (!(await hasTable(pool, "radius_coa_events"))) return;
-  await pool.execute(
-    `INSERT INTO radius_coa_events (tenant_id, event_time, nas_ip, username, ok, message)
-     VALUES (?, NOW(3), ?, ?, ?, ?)`,
-    [tenantId, nasIp, username, ok ? 1 : 0, message.slice(0, 250)]
-  );
-}
-
 export type SpeedProfileRow = {
   id: string;
   tenant_id: string;
@@ -773,7 +757,6 @@ async function coaApplyToOnlineSessions(
     const acctSessionId = s.acctsessionid != null ? String(s.acctsessionid) : undefined;
     const framedIp = s.framedipaddress != null ? String(s.framedipaddress) : undefined;
     const result = await coa.updateSessionRateForTenant(username, nasIp, tenantId, rate, acctSessionId, framedIp);
-    await recordCoaEventLocal(pool, tenantId, nasIp, username, result.ok, result.message);
     lastMsg = result.message;
     if (!result.ok) {
       allOk = false;

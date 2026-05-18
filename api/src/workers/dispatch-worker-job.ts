@@ -35,7 +35,6 @@ import {
   runSpeedProfileRevertAllTenants,
   runSpeedProfileReconcileAllTenants,
 } from "../services/speed-profile.service.js";
-import { runQoeCycle, runRadiusMonitorCycle, recordCoaEvent } from "./enterprise-analytics.worker.js";
 import { log } from "../services/logger.service.js";
 import { runInfrastructureMonitorCycle } from "../services/infrastructure/infrastructure-monitor-cycle.service.js";
 import { runTelegramStatusReportsDue } from "../services/infrastructure/infrastructure-telegram-status-report.service.js";
@@ -255,12 +254,6 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
         );
       }
       break;
-    case "qoe-cycle":
-      await runQoeCycle(pool, tenantId);
-      break;
-    case "radius-monitor-cycle":
-      await runRadiusMonitorCycle(pool, tenantId);
-      break;
     case "infrastructure-monitor-cycle":
       await runInfrastructureMonitorCycle(pool, tenantId);
       break;
@@ -304,7 +297,6 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
         payload.acctSessionId,
         payload.framedIp
       );
-      await recordCoaEvent(pool, payload.tenantId, payload.nasIp, payload.username, result.ok, result.message);
       if (!result.ok) {
         throw new Error(result.message);
       }

@@ -43,12 +43,9 @@ import metricsRoutes from "./routes/metrics.routes.js";
 import internalAlertsRoutes from "./routes/internal-alerts.routes.js";
 import dynamicSpeedRoutes from "./routes/dynamic-speed.routes.js";
 import speedProfilesRoutes from "./routes/speed-profiles.routes.js";
-import encodingHealthRoutes from "./routes/encoding-health.routes.js";
 import portalEnterpriseRoutes from "./routes/portal.routes.js";
-import qoeRoutes from "./routes/qoe.routes.js";
 import resellersRoutes from "./routes/resellers.routes.js";
 import resellerPortalRoutes from "./routes/reseller-portal.routes.js";
-import radiusMonitorRoutes from "./routes/radius-monitor.routes.js";
 import infrastructureMonitoringRoutes from "./routes/infrastructure-monitoring.routes.js";
 import rmCardsRoutes from "./routes/rm-cards.routes.js";
 import chatopsRoutes from "./routes/chatops.routes.js";
@@ -59,7 +56,6 @@ import {
   ensurePortalTenantAndStaffTables,
 } from "./services/portal-schema-bootstrap.service.js";
 import { applyAllMigrations } from "./services/migrations.service.js";
-import { buildCharsetVerificationReport } from "./services/encoding-verification.service.js";
 import {
   ensureBillingTables,
   ensureSubscriberWhatsAppOptOutColumn,
@@ -253,12 +249,9 @@ app.use("/metrics", metricsRoutes);
 app.use("/api/internal/alerts", internalAlertsRoutes);
 app.use("/api/dynamic-speed", dynamicSpeedRoutes);
 app.use("/api/speed-profiles", speedProfilesRoutes);
-app.use("/api/encoding-health", encodingHealthRoutes);
 app.use("/api/portal", portalEnterpriseRoutes);
-app.use("/api/qoe", qoeRoutes);
 app.use("/api/resellers", resellersRoutes);
 app.use("/api/reseller-portal", resellerPortalRoutes);
-app.use("/api/radius-monitor", radiusMonitorRoutes);
 app.use("/api/infrastructure-monitoring", infrastructureMonitoringRoutes);
 app.use("/api/rm-cards", rmCardsRoutes);
 app.use("/api/chatops", chatopsRoutes);
@@ -373,18 +366,6 @@ async function start() {
     );
   } catch (error) {
     console.error("[bootstrap] migrations failed", error);
-  }
-  try {
-    const charsetReport = await buildCharsetVerificationReport(pool);
-    if (charsetReport.warnings.length > 0) {
-      const slice = charsetReport.warnings.slice(0, 30);
-      for (const w of slice) console.warn(`[charset] ${w}`);
-      if (charsetReport.warnings.length > slice.length) {
-        console.warn(`[charset] ...and ${charsetReport.warnings.length - slice.length} more`);
-      }
-    }
-  } catch (e) {
-    console.warn("[charset] schema verification skipped", e instanceof Error ? e.message : e);
   }
   try {
     await ensurePortalTenantAndStaffTables();

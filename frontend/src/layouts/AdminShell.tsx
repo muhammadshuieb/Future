@@ -36,7 +36,6 @@ import {
   KeyRound,
   HardDrive,
   ArrowUpCircle,
-  Braces,
   Zap,
   CreditCard,
   Bell,
@@ -173,9 +172,6 @@ export function AdminShell() {
     location.pathname.startsWith("/observability") ||
     location.pathname.startsWith("/system-health") ||
     location.pathname.startsWith("/server-logs") ||
-    location.pathname.startsWith("/encoding-health") ||
-    location.pathname.startsWith("/qoe") ||
-    location.pathname.startsWith("/radius-monitor") ||
     location.pathname.startsWith("/resellers");
   const [subscribersOpen, setSubscribersOpen] = useState(isSubscribersRoute);
   const [staffOpen, setStaffOpen] = useState(isStaffRoute);
@@ -247,15 +243,6 @@ export function AdminShell() {
           { to: "/observability", labelKey: "nav.observability", icon: Gauge, tone: "amber" },
           { to: "/server-logs", labelKey: "nav.serverLogs", icon: ScrollText, tone: "rose" },
         ] as NavItem[])
-      : []),
-    ...(user?.role === "admin"
-      ? ([{ to: "/encoding-health", labelKey: "nav.encodingHealth", icon: Braces, tone: "fuchsia" }] as NavItem[])
-      : []),
-    ...(user?.role === "admin" || user?.permissions?.view_qoe
-      ? ([{ to: "/qoe/overview", labelKey: "nav.qoeOverview", icon: FolderKanban, tone: "teal" }] as NavItem[])
-      : []),
-    ...(user?.role === "admin" || user?.permissions?.view_radius_monitor
-      ? ([{ to: "/radius-monitor/overview", labelKey: "nav.radiusMonitor", icon: Radio, tone: "cyan" }] as NavItem[])
       : []),
     ...(user?.role === "admin" || user?.permissions?.view_resellers
       ? ([{ to: "/resellers", labelKey: "nav.resellers", icon: UserCircle, tone: "violet" }] as NavItem[])

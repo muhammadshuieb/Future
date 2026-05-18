@@ -12,18 +12,9 @@ export const RESELLER_PERMISSION_KEYS = [
   "manage_reseller_branding",
 ] as const;
 
-export const QOE_PERMISSION_KEYS = ["view_qoe", "manage_qoe_rules"] as const;
-
-export const RADIUS_MONITOR_KEYS = ["view_radius_monitor", "manage_radius_monitor_rules"] as const;
-
 export type ResellerPermissionKey = (typeof RESELLER_PERMISSION_KEYS)[number];
-export type QoePermissionKey = (typeof QOE_PERMISSION_KEYS)[number];
-export type RadiusMonitorPermissionKey = (typeof RADIUS_MONITOR_KEYS)[number];
 
-export type EnterpriseStaffPermissionKey =
-  | ResellerPermissionKey
-  | QoePermissionKey
-  | RadiusMonitorPermissionKey;
+export type EnterpriseStaffPermissionKey = ResellerPermissionKey;
 
 export function hasEnterpriseStaffPermission(
   req: Request,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Printer, FileSpreadsheet, ChevronRight } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -8,6 +8,11 @@ import { hasIspPermission } from "../lib/permissions";
 import { useI18n } from "../context/LocaleContext";
 import { Link } from "react-router-dom";
 import { cn } from "../lib/utils";
+import {
+  formatFinanceCell,
+  parseFinanceReportPayload,
+  type FinanceReportPreview,
+} from "../lib/finance-report-preview";
 
 type BalRow = { manager_id: string; name: string };
 
@@ -25,11 +30,10 @@ export function FinancialReportsHubPage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [managerId, setManagerId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<{ title: string; rows: Record<string, unknown>[]; columns: string[] } | null>(
-    null
-  );
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [preview, setPreview] = useState<FinanceReportPreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -38,11 +42,11 @@ export function FinancialReportsHubPage() {
       if (r.ok) {
         const j = (await r.json()) as { items: BalRow[] };
         setManagers(j.items ?? []);
-        if (user?.role === "manager") setManagerId(user.sub ?? "");
+        if (user?.role === "manager") setManagerId(user.id ?? "");
         else if (j.items?.[0]) setManagerId(j.items[0].manager_id);
       }
     })();
-  }, [canWallets, user?.role, user?.sub]);
+  }, [canWallets, user?.role, user?.id]);
 
   const q = useMemo(() => {
     const p = new URLSearchParams();
@@ -60,26 +64,24 @@ export function FinancialReportsHubPage() {
     return s ? `?${s}` : "";
   }, [managerId]);
 
-  const loadJson = async (path: string, title: string) => {
-    setLoading(true);
+  const loadJson = async (path: string, title: string, reportKey: string) => {
+    setLoadingKey(reportKey);
     setErr(null);
-    setPreview(null);
+    setPreview({ title, rows: [], columns: [] });
     try {
       const res = await apiFetch(path);
       if (!res.ok) throw new Error(await readApiError(res));
       const j = (await res.json()) as Record<string, unknown>;
-      let rows: Record<string, unknown>[] = [];
-      if (Array.isArray(j.items)) {
-        rows = j.items as Record<string, unknown>[];
-      } else {
-        rows = [j];
-      }
-      const columns = rows.length ? Object.keys(rows[0]!) : [];
+      const { rows, columns } = parseFinanceReportPayload(j);
       setPreview({ title, rows, columns });
+      requestAnimationFrame(() => {
+        previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     } catch (e) {
+      setPreview(null);
       setErr(e instanceof Error ? e.message : "failed");
     } finally {
-      setLoading(false);
+      setLoadingKey(null);
     }
   };
 
@@ -110,6 +112,7 @@ export function FinancialReportsHubPage() {
   );
 
   const ReportAction = ({
+    reportKey,
     title,
     desc,
     onPreview,
@@ -117,37 +120,41 @@ export function FinancialReportsHubPage() {
     csvName,
     showCsv,
   }: {
+    reportKey: string;
     title: string;
     desc: string;
     onPreview: () => void;
     csvPath?: string;
     csvName?: string;
     showCsv?: boolean;
-  }) => (
-    <Card className="flex flex-col gap-2 border-[hsl(var(--border))]/80 p-4">
-      <div className="font-semibold">{title}</div>
-      <p className="text-xs text-[hsl(var(--muted-foreground))]">{desc}</p>
-      <div className="mt-auto flex flex-wrap gap-2 pt-2">
-        <Button type="button" size="sm" variant="outline" onClick={onPreview} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
-          <span className="ms-1">{t("fd.reports.view")}</span>
-        </Button>
-        {showCsv && csvPath && csvName ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void downloadCsv(csvPath, csvName)}
-            disabled={!canExport}
-            title={!canExport ? t("fd.reports.exportDenied") : undefined}
-          >
-            <FileSpreadsheet className="h-4 w-4" />
-            <span className="ms-1">CSV</span>
+  }) => {
+    const busy = loadingKey === reportKey;
+    return (
+      <Card className="flex flex-col gap-2 border-[hsl(var(--border))]/80 p-4">
+        <div className="font-semibold">{title}</div>
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">{desc}</p>
+        <div className="mt-auto flex flex-wrap gap-2 pt-2">
+          <Button type="button" size="sm" variant="outline" onClick={onPreview} disabled={busy}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
+            <span className="ms-1">{t("fd.reports.view")}</span>
           </Button>
-        ) : null}
-      </div>
-    </Card>
-  );
+          {showCsv && csvPath && csvName ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void downloadCsv(csvPath, csvName)}
+              disabled={!canExport}
+              title={!canExport ? t("fd.reports.exportDenied") : undefined}
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span className="ms-1">CSV</span>
+            </Button>
+          ) : null}
+        </div>
+      </Card>
+    );
+  };
 
   if (!canReports && !canStatement) {
     return (
@@ -222,64 +229,146 @@ export function FinancialReportsHubPage() {
         <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm">{err}</div>
       ) : null}
 
+      {preview ? (
+        <div ref={previewRef} className="scroll-mt-4">
+          <Card className="overflow-hidden p-4 print:border-0">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="font-semibold">{preview.title}</h2>
+              {loadingKey ? (
+                <span className="inline-flex items-center gap-1 text-xs text-[hsl(var(--muted-foreground))]">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("fd.reports.loading")}
+                </span>
+              ) : (
+                <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                  {preview.rows.length} {t("fd.reports.rows")}
+                </span>
+              )}
+            </div>
+            {loadingKey ? (
+              <div className="flex justify-center py-10">
+                <Loader2 className="h-8 w-8 animate-spin text-[hsl(var(--muted-foreground))]" />
+              </div>
+            ) : preview.rows.length > 0 && preview.columns.length > 0 ? (
+              <div className="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+                <table className="w-full min-w-[520px] text-xs">
+                  <thead className="bg-[hsl(var(--muted))]/40">
+                    <tr>
+                      {preview.columns.map((c) => (
+                        <th key={c} className="whitespace-nowrap px-2 py-2 text-start font-medium">
+                          {c}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.slice(0, 200).map((row, i) => (
+                      <tr
+                        key={i}
+                        className={cn(
+                          "border-t border-[hsl(var(--border))]/60",
+                          i % 2 === 1 && "bg-[hsl(var(--muted))]/20"
+                        )}
+                      >
+                        {preview.columns.map((c) => (
+                          <td key={c} className="max-w-[280px] truncate px-2 py-1.5 font-mono">
+                            {formatFinanceCell(row[c])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-[hsl(var(--border))] px-4 py-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
+                {t("fd.reports.empty")}
+              </p>
+            )}
+          </Card>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 print:hidden">
         {canReports ? (
           <ReportAction
+            reportKey="summary"
             title={t("fd.reports.card.summary")}
             desc={t("fd.reports.card.summaryDesc")}
-            onPreview={() => void loadJson("/api/company-finance/reports/summary", t("fd.reports.card.summary"))}
+            onPreview={() =>
+              void loadJson("/api/company-finance/reports/summary", t("fd.reports.card.summary"), "summary")
+            }
           />
         ) : null}
         {canReports ? (
           <ReportAction
+            reportKey="revByMgr"
             title={t("fd.reports.card.revByMgr")}
             desc={t("fd.reports.card.revByMgrDesc")}
             onPreview={() =>
-              void loadJson("/api/company-finance/reports/revenue-by-manager", t("fd.reports.card.revByMgr"))
+              void loadJson(
+                "/api/company-finance/reports/revenue-by-manager",
+                t("fd.reports.card.revByMgr"),
+                "revByMgr"
+              )
             }
           />
         ) : null}
         {canReports ? (
           <ReportAction
+            reportKey="obligations"
             title={t("fd.reports.card.obligations")}
             desc={t("fd.reports.card.obligationsDesc")}
             onPreview={() =>
-              void loadJson("/api/company-finance/reports/manager-obligations", t("fd.reports.card.obligations"))
+              void loadJson(
+                "/api/company-finance/reports/manager-obligations",
+                t("fd.reports.card.obligations"),
+                "obligations"
+              )
             }
           />
         ) : null}
         {canReports ? (
           <ReportAction
+            reportKey="unpaid"
             title={t("fd.reports.card.unpaid")}
             desc={t("fd.reports.card.unpaidDesc")}
             onPreview={() =>
-              void loadJson("/api/company-finance/reports/unpaid-by-manager", t("fd.reports.card.unpaid"))
+              void loadJson(
+                "/api/company-finance/reports/unpaid-by-manager",
+                t("fd.reports.card.unpaid"),
+                "unpaid"
+              )
             }
           />
         ) : null}
         {canReports ? (
           <ReportAction
+            reportKey="prepaid"
             title={t("fd.reports.card.prepaid")}
             desc={t("fd.reports.card.prepaidDesc")}
             onPreview={() =>
               void loadJson(
                 "/api/company-finance/reports/prepaid-sales-by-manager",
-                t("fd.reports.card.prepaid")
+                t("fd.reports.card.prepaid"),
+                "prepaid"
               )
             }
           />
         ) : null}
         {canWallets || user?.role === "manager" ? (
           <ReportAction
+            reportKey="ledger"
             title={t("fd.reports.card.ledger")}
             desc={t("fd.reports.card.ledgerDesc")}
             onPreview={() =>
-              void loadJson(`/api/company-finance/wallet/ledger${mgrQs}`, t("fd.reports.card.ledger"))
+              void loadJson(`/api/company-finance/wallet/ledger${mgrQs}`, t("fd.reports.card.ledger"), "ledger")
             }
           />
         ) : null}
         {canStatement ? (
           <ReportAction
+            reportKey="walletStmt"
             title={t("fd.reports.card.walletStmt")}
             desc={t("fd.reports.card.walletStmtDesc")}
             onPreview={() => {
@@ -289,7 +378,8 @@ export function FinancialReportsHubPage() {
               }
               void loadJson(
                 `/api/company-finance/reports/wallet-statement${q}`,
-                t("fd.reports.card.walletStmt")
+                t("fd.reports.card.walletStmt"),
+                "walletStmt"
               );
             }}
             showCsv={Boolean(managerId)}
@@ -299,77 +389,51 @@ export function FinancialReportsHubPage() {
         ) : null}
         {canStatement || canReports ? (
           <ReportAction
+            reportKey="commissions"
             title={t("fd.reports.card.commissions")}
             desc={t("fd.reports.card.commissionsDesc")}
             onPreview={() =>
-              void loadJson(`/api/company-finance/commissions${mgrQs}`, t("fd.reports.card.commissions"))
+              void loadJson(
+                `/api/company-finance/commissions${mgrQs}`,
+                t("fd.reports.card.commissions"),
+                "commissions"
+              )
             }
           />
         ) : null}
         {canStatement || canReports ? (
           <ReportAction
+            reportKey="settlements"
             title={t("fd.reports.card.settlements")}
             desc={t("fd.reports.card.settlementsDesc")}
             onPreview={() =>
-              void loadJson("/api/company-finance/settlements/payments", t("fd.reports.card.settlements"))
+              void loadJson(
+                "/api/company-finance/settlements/payments",
+                t("fd.reports.card.settlements"),
+                "settlements"
+              )
             }
           />
         ) : null}
         {canReports && hasIspPermission(user?.role, user?.permissions, "expenses:view") ? (
           <ReportAction
+            reportKey="expenses"
             title={t("fd.reports.card.expenses")}
             desc={t("fd.reports.card.expensesDesc")}
-            onPreview={() => void loadJson("/api/company-finance/expenses", t("fd.reports.card.expenses"))}
+            onPreview={() =>
+              void loadJson("/api/company-finance/expenses", t("fd.reports.card.expenses"), "expenses")
+            }
           />
         ) : null}
         {canReports && hasIspPermission(user?.role, user?.permissions, "assets:view") ? (
           <ReportAction
+            reportKey="assets"
             title={t("fd.reports.card.assets")}
             desc={t("fd.reports.card.assetsDesc")}
-            onPreview={() => void loadJson("/api/company-finance/assets", t("fd.reports.card.assets"))}
+            onPreview={() => void loadJson("/api/company-finance/assets", t("fd.reports.card.assets"), "assets")}
           />
         ) : null}
       </div>
-
-      {preview && preview.rows.length > 0 ? (
-        <Card className="overflow-hidden p-4 print:border-0">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="font-semibold">{preview.title}</h2>
-            <span className="text-xs text-[hsl(var(--muted-foreground))]">
-              {preview.rows.length} {t("fd.reports.rows")}
-            </span>
-          </div>
-          <div className="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
-            <table className="w-full min-w-[520px] text-xs">
-              <thead className="bg-[hsl(var(--muted))]/40">
-                <tr>
-                  {preview.columns.map((c) => (
-                    <th key={c} className="whitespace-nowrap px-2 py-2 text-start font-medium">
-                      {c}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {preview.rows.slice(0, 200).map((row, i) => (
-                  <tr
-                    key={i}
-                    className={cn("border-t border-[hsl(var(--border))]/60", i % 2 === 1 && "bg-[hsl(var(--muted))]/20")}
-                  >
-                    {preview.columns.map((c) => (
-                      <td key={c} className="max-w-[220px] truncate px-2 py-1.5">
-                        {row[c] != null ? String(row[c]) : "—"}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      ) : preview && preview.rows.length === 0 ? (
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("fd.reports.empty")}</p>
-      ) : null}
     </div>
   );
 }

@@ -22,7 +22,7 @@ import {
   PortalSpeedTestPage,
   PortalSupportPage,
 } from "./pages/portal/PortalPages";
-import { QoeOverviewPage, RadiusMonitorOverviewPage, ResellersListPage } from "./pages/enterprise/EnterprisePages";
+import { ResellersListPage } from "./pages/enterprise/EnterprisePages";
 
 const DashboardPage = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.DashboardPage })));
 const UsersPage = lazy(() => import("./pages/Users").then((m) => ({ default: m.UsersPage })));
@@ -93,9 +93,6 @@ const CompanyFinancePage = lazy(() =>
   import("./pages/CompanyFinance").then((m) => ({ default: m.CompanyFinancePage }))
 );
 const UpdatesPage = lazy(() => import("./pages/Updates").then((m) => ({ default: m.UpdatesPage })));
-const EncodingHealthPage = lazy(() =>
-  import("./pages/EncodingHealth").then((m) => ({ default: m.EncodingHealthPage }))
-);
 const SpeedProfilesPage = lazy(() =>
   import("./pages/SpeedProfilesPages").then((m) => ({ default: m.SpeedProfilesPage }))
 );
@@ -170,12 +167,9 @@ function AppRoutes() {
           <Route path="monitoring" element={<InfrastructureMonitoringPage />} />
           <Route path="system-health" element={<SystemHealthPage />} />
           <Route path="server-logs" element={<ServerLogsPage />} />
-          <Route path="encoding-health" element={<EncodingHealthPage />} />
           <Route path="speed-profiles" element={<SpeedProfilesPage />} />
           <Route path="speed-profiles/schedules" element={<SpeedProfileSchedulesPage />} />
           <Route path="speed-profiles/live" element={<SpeedProfilesLivePage />} />
-          <Route path="qoe/overview" element={<QoeOverviewPage />} />
-          <Route path="radius-monitor/overview" element={<RadiusMonitorOverviewPage />} />
           <Route path="resellers" element={<ResellersListPage />} />
           <Route path="online-users" element={<OnlineUsersPage />} />
           <Route path="inventory" element={<Navigate to="/inventory/expenses" replace />} />

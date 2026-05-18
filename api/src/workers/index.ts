@@ -180,8 +180,6 @@ async function bootstrapRepeatables() {
   // Honors `radpostauth_retention_enabled` / `radpostauth_retention_months` settings.
   await replaceRepeatablesByName("prune-radpostauth");
   await addCron("prune-radpostauth", "0 3 1 * *");
-  await add("qoe-cycle", 5 * 60 * 1000);
-  await add("radius-monitor-cycle", 60 * 1000);
   const infraMs = Math.max(
     60_000,
     parseInt(process.env.INFRASTRUCTURE_MONITOR_MS ?? "180000", 10) || 180_000
