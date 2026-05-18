@@ -1879,3 +1879,22 @@ export async function sendOperationalAlertWhatsApp(
     return { sent: false, reason: err.slice(0, 400), phone: target };
   }
 }
+
+/** Outbound ChatOps reply via WAHA (same session as subscriber messaging). */
+export async function sendChatOpsWhatsAppReply(
+  tenantId: string,
+  phone: string,
+  text: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const settings = await getSettingsRow(tenantId);
+    if (!settings.enabled) return { ok: false, error: "whatsapp_disabled" };
+    const target = normalizePhone(phone);
+    if (!target) return { ok: false, error: "invalid_phone" };
+    await sendWahaMessage(settings, target, text.slice(0, 4000));
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: err };
+  }
+}

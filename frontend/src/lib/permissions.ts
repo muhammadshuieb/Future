@@ -61,6 +61,35 @@ export function hasIspPermission(
   return Boolean(permissions?.[key]);
 }
 
+export const CHATOPS_PERMISSION_KEYS = [
+  "chatops:use",
+  "chatops:view_subscriber",
+  "chatops:create_subscriber",
+  "chatops:renew_subscriber",
+  "chatops:disconnect_user",
+  "chatops:view_finance",
+  "chatops:print_prepaid_cards",
+  "chatops:view_monitoring",
+  "chatops:execute_router_actions",
+] as const;
+
+export type ChatOpsPermissionKey = (typeof CHATOPS_PERMISSION_KEYS)[number];
+
+export function hasChatOpsPermission(
+  role: string | undefined,
+  permissions: Record<string, boolean> | undefined,
+  key: ChatOpsPermissionKey
+): boolean {
+  if (role === "admin") return true;
+  if (!permissions?.["chatops:use"]) return false;
+  if (key === "chatops:use") return true;
+  return Boolean(permissions?.[key]);
+}
+
+export function canUseChatOps(role: string | undefined, permissions: Record<string, boolean> | undefined): boolean {
+  return role === "admin" || Boolean(permissions?.["chatops:use"]);
+}
+
 export function hasMonitoringPermission(
   role: string | undefined,
   permissions: Record<string, boolean> | undefined,

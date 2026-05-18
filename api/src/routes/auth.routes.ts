@@ -33,6 +33,11 @@ import {
   defaultMonitoringPermissionsViewer,
   normalizeMonitoringPermissions,
 } from "../lib/monitoring-permissions.js";
+import {
+  defaultChatOpsPermissionsAllOn,
+  defaultChatOpsPermissionsManager,
+  normalizeChatOpsPermissions,
+} from "../lib/chatops-permissions.js";
 import { loginRateLimiter } from "../middleware/rate-limit.js";
 import { requireAuth, type JwtPayload, type Role } from "../middleware/auth.js";
 
@@ -140,6 +145,7 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
             ...defaultSpeedProfilePermissionsAllOn(),
             ...defaultIspPermissionsAllOn(),
             ...defaultMonitoringPermissionsAllOn(),
+            ...defaultChatOpsPermissionsAllOn(),
             ...userOverride,
           };
         } else if (role === "manager") {
@@ -147,6 +153,7 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
             ...(await managerJwtPermissions(String(user.tenant_id), user)),
             ...normalizeIspPermissions(userOverride, defaultIspPermissionsManager()),
             ...normalizeMonitoringPermissions(userOverride, defaultMonitoringPermissionsManager()),
+            ...normalizeChatOpsPermissions({ ...userOverride }),
           };
         } else if (role === "viewer") {
           permissions = {

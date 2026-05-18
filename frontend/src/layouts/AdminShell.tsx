@@ -40,6 +40,7 @@ import {
   Zap,
   CreditCard,
   Bell,
+  MessageSquare,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -261,6 +262,7 @@ export function AdminShell() {
       : []),
   ];
   const whatsappNav: NavItem[] = [
+    { to: "/chatops", labelKey: "nav.chatops", icon: MessageSquare, tone: "sky" },
     { to: "/whatsapp/server-alerts", labelKey: "nav.whatsappServerAlerts", icon: Bell, tone: "amber" },
     { to: "/whatsapp/connection", labelKey: "nav.whatsappConnection", icon: Link2, tone: "green" },
     { to: "/whatsapp/templates", labelKey: "nav.whatsappTemplates", icon: FileText, tone: "indigo" },

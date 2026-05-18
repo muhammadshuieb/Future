@@ -51,6 +51,7 @@ import resellerPortalRoutes from "./routes/reseller-portal.routes.js";
 import radiusMonitorRoutes from "./routes/radius-monitor.routes.js";
 import infrastructureMonitoringRoutes from "./routes/infrastructure-monitoring.routes.js";
 import rmCardsRoutes from "./routes/rm-cards.routes.js";
+import chatopsRoutes from "./routes/chatops.routes.js";
 import { ensureRmCardsTable } from "./services/rm-cards.service.js";
 import { metricsMiddleware } from "./middleware/metrics.middleware.js";
 import { ensureDefaultAdminUser } from "./services/bootstrap-admin.service.js";
@@ -260,6 +261,7 @@ app.use("/api/reseller-portal", resellerPortalRoutes);
 app.use("/api/radius-monitor", radiusMonitorRoutes);
 app.use("/api/infrastructure-monitoring", infrastructureMonitoringRoutes);
 app.use("/api/rm-cards", rmCardsRoutes);
+app.use("/api/chatops", chatopsRoutes);
 
 // Express error handler: captures unhandled async errors from any route.
 // Must be declared AFTER all routes.
