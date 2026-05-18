@@ -991,7 +991,7 @@ export async function disconnectGoogleDriveBackup(tenantId: string): Promise<voi
   );
 }
 
-function hhmmToMinutes(hm: string): number {
+export function slotMinutes(hm: string): number {
   const parts = hm.trim().split(":");
   if (parts.length < 2) return -1;
   const h = Number.parseInt(parts[0]!, 10);
@@ -1000,7 +1000,11 @@ function hhmmToMinutes(hm: string): number {
   return h * 60 + m;
 }
 
-function localDateAndHmInZone(now: Date, timeZone: string): { date: string; hm: string } {
+function hhmmToMinutes(hm: string): number {
+  return slotMinutes(hm);
+}
+
+export function localDateAndHmInZone(now: Date, timeZone: string): { date: string; hm: string } {
   const date = new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
@@ -1051,7 +1055,7 @@ export async function updateBackupSchedule(
     time2?: string | null;
     retentionDays?: number;
   }
-): Promise<void> {
+): Promise<import("./backup-schedule-jobs.service.js").BackupScheduleSyncResult> {
   await ensureBackupSchema();
   await ensureScheduleColumns();
   const time1 = normalizeHm(input.time1);
@@ -1080,7 +1084,7 @@ export async function updateBackupSchedule(
     [tenantId, input.enabled ? 1 : 0, input.mode, time1, time2, retentionDays]
   );
   const { syncBackupScheduleCronJobs } = await import("./backup-schedule-jobs.service.js");
-  await syncBackupScheduleCronJobs(tenantId);
+  return syncBackupScheduleCronJobs(tenantId);
 }
 
 export async function deleteBackupRunsBulk(
@@ -1096,7 +1100,7 @@ export async function deleteBackupRunsBulk(
   return { requested: uniq.length, deleted };
 }
 
-function scheduledSlotKey(date: string, slot: string): string {
+export function scheduledSlotKey(date: string, slot: string): string {
   return `${date}|${slot}`;
 }
 
@@ -1182,14 +1186,22 @@ export async function getBackupAlert(tenantId: string): Promise<BackupAlert> {
      LIMIT 1`,
     [tenantId]
   );
-  const [dailyRows] = await pool.query<RowDataPacket[]>(
+  const timeZone = await resolveAppTimezone(tenantId);
+  const today = localDateAndHmInZone(new Date(), timeZone).date;
+  const [dailyCandidates] = await pool.query<RowDataPacket[]>(
     `SELECT started_at, status, drive_uploaded
      FROM backup_runs
-     WHERE tenant_id = ? AND triggered_by = 'system' AND DATE(started_at) = CURDATE()
+     WHERE tenant_id = ? AND triggered_by = 'system'
+       AND started_at >= DATE_SUB(NOW(), INTERVAL 36 HOUR)
      ORDER BY started_at DESC
-     LIMIT 1`,
+     LIMIT 12`,
     [tenantId]
   );
+  const dailyRows = dailyCandidates.filter((row) => {
+    const started = row.started_at ? new Date(String(row.started_at)) : null;
+    if (!started || Number.isNaN(started.getTime())) return false;
+    return localDateAndHmInZone(started, timeZone).date === today;
+  });
   const rclone = await getRcloneStatus(tenantId);
   const last = lastRows[0];
   if (!last) {

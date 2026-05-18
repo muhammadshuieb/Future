@@ -23,6 +23,18 @@ type BackupItem = {
   can_download: boolean;
 };
 
+type BackupScheduleHealth = {
+  schedule_enabled: boolean;
+  active_slots: string[];
+  cron_registered_slots: string[];
+  timezone: string;
+  worker_online: boolean;
+  worker_last_heartbeat_at: string | null;
+  sync_ok: boolean;
+  sync_errors: string[];
+  catchup_enqueued: string[];
+};
+
 type RcloneStatus = {
   enabled: boolean;
   configured: boolean;
@@ -77,6 +89,7 @@ export function MaintenancePage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [rcloneStatus, setRcloneStatus] = useState<RcloneStatus | null>(null);
+  const [scheduleHealth, setScheduleHealth] = useState<BackupScheduleHealth | null>(null);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleMode, setScheduleMode] = useState<"daily" | "twice_daily">("daily");
   const [scheduleTime1, setScheduleTime1] = useState("03:00");
@@ -218,8 +231,9 @@ export function MaintenancePage() {
       setItems(json.items);
       const g = await apiFetch("/api/maintenance/rclone");
       if (g.ok) {
-        const gj = (await g.json()) as { status: RcloneStatus };
+        const gj = (await g.json()) as { status: RcloneStatus; schedule_health?: BackupScheduleHealth };
         setRcloneStatus(gj.status);
+        setScheduleHealth(gj.schedule_health ?? null);
         setScheduleEnabled(Boolean(gj.status.schedule_enabled));
         setScheduleMode(gj.status.schedule_mode === "twice_daily" ? "twice_daily" : "daily");
         setScheduleTime1((gj.status.schedule_time_1 || "03:00").slice(0, 5));
@@ -894,8 +908,24 @@ export function MaintenancePage() {
         return;
       }
       try {
-        const saved = JSON.parse(raw) as { status?: RcloneStatus };
+        const saved = JSON.parse(raw) as {
+          status?: RcloneStatus;
+          schedule_sync?: BackupScheduleHealth;
+        };
         if (saved.status) setRcloneStatus(saved.status);
+        if (saved.schedule_sync) {
+          setScheduleHealth(saved.schedule_sync);
+          if (saved.schedule_sync.catchup_enqueued.length > 0) {
+            setInfo(
+              t("maintenance.scheduleCatchupEnqueued").replace(
+                "{times}",
+                saved.schedule_sync.catchup_enqueued.join(", ")
+              )
+            );
+            await load();
+            return;
+          }
+        }
       } catch {
         /* reload below */
       }
@@ -1386,6 +1416,31 @@ export function MaintenancePage() {
         <div className="border-t border-[hsl(var(--border))]/60 pt-4">
           <div className="mb-2 font-semibold">{t("maintenance.scheduleTitle")}</div>
           <p className="mb-3 text-sm opacity-80">{t("maintenance.scheduleHint")}</p>
+          {scheduleEnabled && scheduleHealth ? (
+            <div className="mb-3 space-y-1 rounded-lg border border-[hsl(var(--border))]/70 bg-[hsl(var(--muted))]/15 px-3 py-2 text-xs">
+              <p>
+                {t("maintenance.scheduleWorkerLabel")}:{" "}
+                {scheduleHealth.worker_online ? (
+                  <span className="text-emerald-400">{t("maintenance.scheduleWorkerOnline")}</span>
+                ) : (
+                  <span className="text-red-400">{t("maintenance.scheduleWorkerOffline")}</span>
+                )}
+              </p>
+              {scheduleHealth.sync_ok ? (
+                <p className="text-emerald-400/90">{t("maintenance.scheduleCronOk")}</p>
+              ) : (
+                <p className="text-amber-400">{t("maintenance.scheduleCronMismatch")}</p>
+              )}
+              {scheduleHealth.catchup_enqueued.length > 0 ? (
+                <p className="text-sky-400">
+                  {t("maintenance.scheduleCatchupEnqueued").replace(
+                    "{times}",
+                    scheduleHealth.catchup_enqueued.join(", ")
+                  )}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <label className="mb-3 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -1455,7 +1510,7 @@ export function MaintenancePage() {
               </p>
               {scheduleEnabled && (rcloneStatus.schedule_active_times?.length ?? 0) > 0 ? (
                 <p>
-                  {scheduleMode === "twice_daily"
+                  {rcloneStatus.schedule_mode === "twice_daily"
                     ? t("maintenance.scheduleActiveTwice")
                         .replace("{time1}", rcloneStatus.schedule_active_times![0] ?? scheduleTime1)
                         .replace("{time2}", rcloneStatus.schedule_active_times![1] ?? scheduleTime2)

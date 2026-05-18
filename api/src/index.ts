@@ -425,6 +425,17 @@ async function start() {
     console.error("[bootstrap] disk monitor failed", error);
   }
   try {
+    const { syncBackupScheduleCronJobsForDefaultTenant } = await import(
+      "./services/backup-schedule-jobs.service.js"
+    );
+    const sync = await syncBackupScheduleCronJobsForDefaultTenant();
+    console.log(
+      `[bootstrap] backup schedule sync: registered=${sync.cron_registered_slots.join(",") || "none"} worker=${sync.worker_online ? "online" : "offline"}`
+    );
+  } catch (error) {
+    console.error("[bootstrap] backup schedule sync failed", error);
+  }
+  try {
     const { startTelegramStatusReportScheduler } = await import(
       "./services/infrastructure/telegram-status-report-scheduler.service.js"
     );

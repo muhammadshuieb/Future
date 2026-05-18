@@ -17,6 +17,7 @@ import {
   updateBackupSchedule,
   updateRcloneSettings,
 } from "../services/backup.service.js";
+import { getBackupScheduleHealth } from "../services/backup-schedule-jobs.service.js";
 import { previewRadacctYearPrune, runRadacctYearPrune } from "../services/radacct-prune.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { inferApiPublicOrigin, inferReturnFrontendOrigin } from "../lib/public-origin.js";
@@ -105,8 +106,11 @@ const rcloneSettingsBody = z.object({
 router.get("/rclone", async (req, res) => {
   try {
     const tenantId = req.auth!.tenantId;
-    const status = await getRcloneStatus(tenantId);
-    res.json({ status });
+    const [status, schedule_health] = await Promise.all([
+      getRcloneStatus(tenantId),
+      getBackupScheduleHealth(tenantId),
+    ]);
+    res.json({ status, schedule_health });
   } catch (e) {
     console.error("maintenance rclone status", e);
     res.status(500).json({ error: "rclone_status_failed" });
@@ -210,7 +214,7 @@ router.put("/backup-schedule", async (req, res) => {
   }
   try {
     const tenantId = req.auth!.tenantId;
-    await updateBackupSchedule(tenantId, {
+    const scheduleSync = await updateBackupSchedule(tenantId, {
       enabled: parsed.data.enabled,
       mode: parsed.data.mode,
       time1: parsed.data.time1,
@@ -218,7 +222,7 @@ router.put("/backup-schedule", async (req, res) => {
       retentionDays: parsed.data.retentionDays,
     });
     const status = await getRcloneStatus(tenantId);
-    res.json({ ok: true, status });
+    res.json({ ok: true, status, schedule_sync: scheduleSync });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     if (msg === "backup_schedule_times_too_close") {

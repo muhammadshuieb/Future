@@ -217,10 +217,23 @@ async function main() {
     setInterval(tick, mikrotikSyncMs).unref();
   }
 
+  await bootstrapRepeatables();
+
   await connection.set(workerHeartbeatKey, new Date().toISOString());
   setInterval(() => {
     connection.set(workerHeartbeatKey, new Date().toISOString()).catch(() => {});
   }, 30_000).unref();
+
+  const backupScheduleResyncMs = Math.max(
+    5 * 60_000,
+    parseInt(process.env.BACKUP_SCHEDULE_RESYNC_MS ?? "1800000", 10) || 1_800_000
+  );
+  setInterval(() => {
+    syncBackupScheduleCronJobsForDefaultTenant().catch((err) => {
+      console.warn("[backup-schedule] periodic resync failed", err);
+    });
+  }, backupScheduleResyncMs).unref();
+
   await listenEvent(Events.INVOICE_PAID, async (payload) => {
     await enqueueWahaInvoiceReceipt({
       tenantId: payload.tenantId,
@@ -236,7 +249,7 @@ async function main() {
     async (job) => {
       await dispatchWorkerJob({ pool, coa, nasHealth }, job);
     },
-    { connection, concurrency: 1, lockDuration: 240_000, stalledInterval: 120_000 }
+    { connection, concurrency: 1, lockDuration: 1_800_000, stalledInterval: 300_000 }
   );
 
   worker.on("failed", (job, err) => {
@@ -248,7 +261,6 @@ async function main() {
     console.error("job failed", job?.name, err);
   });
 
-  await bootstrapRepeatables();
   startWorkerMetricsServer();
   console.log("Worker started (BullMQ)");
 }

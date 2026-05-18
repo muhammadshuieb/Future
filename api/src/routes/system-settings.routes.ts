@@ -109,7 +109,10 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
     const tenantId = req.auth!.tenantId;
     const settings = await updateSystemSettings(tenantId, next);
     if (parsed.data.app_timezone !== undefined && parsed.data.app_timezone !== cur.app_timezone) {
-      await syncBackupScheduleCronJobs(tenantId);
+      const sync = await syncBackupScheduleCronJobs(tenantId);
+      if (!sync.sync_ok) {
+        console.warn("[system-settings] backup schedule sync after timezone change", sync.sync_errors);
+      }
     }
     res.json({ settings });
   } catch (e) {

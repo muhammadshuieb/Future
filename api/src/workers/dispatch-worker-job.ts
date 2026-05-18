@@ -217,7 +217,15 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
     case BACKUP_SCHEDULED_JOB: {
       const slot = typeof job.data?.slot === "string" ? job.data.slot : "";
       if (!slot) break;
-      await runScheduledBackupAtSlot(tenantId, slot, await resolveAppTimezone(tenantId));
+      const backupTenantId =
+        typeof job.data?.tenantId === "string" && job.data.tenantId.trim()
+          ? job.data.tenantId.trim()
+          : tenantId;
+      await runScheduledBackupAtSlot(
+        backupTenantId,
+        slot,
+        await resolveAppTimezone(backupTenantId)
+      );
       break;
     }
     case "whatsapp-expiry-reminders":

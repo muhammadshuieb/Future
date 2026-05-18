@@ -10,7 +10,7 @@
     "start:worker": "node dist/workers/index.js",
     "worker": "tsx watch src/workers/index.ts",
     "seed:staff": "tsx src/scripts/seed-staff.ts",
-    "test": "node --import tsx --test src/tests/subscriber-access-guard.test.ts src/tests/utf8-i18n-roundtrip.test.ts src/tests/enterprise-modules.test.ts src/tests/speed-profile.service.test.ts src/tests/radius-attr-format.test.ts src/tests/package-access-scope.test.ts src/tests/expiration-date.test.ts src/tests/radius-sync-deny.test.ts src/tests/prepaid-card-lifecycle.test.ts src/tests/subscriber-simultaneous-use.test.ts src/tests/infrastructure-alert-engine.test.ts src/tests/chatops.test.ts"
+    "test": "node --import tsx --test src/tests/subscriber-access-guard.test.ts src/tests/utf8-i18n-roundtrip.test.ts src/tests/enterprise-modules.test.ts src/tests/speed-profile.service.test.ts src/tests/radius-attr-format.test.ts src/tests/package-access-scope.test.ts src/tests/expiration-date.test.ts src/tests/radius-sync-deny.test.ts src/tests/prepaid-card-lifecycle.test.ts src/tests/subscriber-simultaneous-use.test.ts src/tests/infrastructure-alert-engine.test.ts src/tests/chatops.test.ts src/tests/backup-schedule.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
