@@ -8,7 +8,14 @@ import { useI18n } from "../context/LocaleContext";
 import { useAuth } from "../context/AuthContext";
 
 type Template = {
-  template_key: "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
+  template_key:
+    | "new_account"
+    | "expiry_soon"
+    | "payment_due"
+    | "usage_threshold"
+    | "invoice_paid"
+    | "profile_updated"
+    | "payment_received";
   body: string;
   updated_at: string | null;
 };
@@ -23,6 +30,8 @@ export function WhatsAppTemplatesPage() {
     payment_due: "",
     usage_threshold: "",
     invoice_paid: "",
+    profile_updated: "",
+    payment_received: "",
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,6 +95,8 @@ export function WhatsAppTemplatesPage() {
         payment_due: data.items.find((x) => x.template_key === "payment_due")?.body ?? "",
         usage_threshold: data.items.find((x) => x.template_key === "usage_threshold")?.body ?? "",
         invoice_paid: data.items.find((x) => x.template_key === "invoice_paid")?.body ?? "",
+        profile_updated: data.items.find((x) => x.template_key === "profile_updated")?.body ?? "",
+        payment_received: data.items.find((x) => x.template_key === "payment_received")?.body ?? "",
       };
       setTemplates(next);
       if (
@@ -110,6 +121,8 @@ export function WhatsAppTemplatesPage() {
               payment_due: fixed.items.find((x) => x.template_key === "payment_due")?.body ?? "",
               usage_threshold: fixed.items.find((x) => x.template_key === "usage_threshold")?.body ?? "",
               invoice_paid: fixed.items.find((x) => x.template_key === "invoice_paid")?.body ?? "",
+              profile_updated: fixed.items.find((x) => x.template_key === "profile_updated")?.body ?? "",
+              payment_received: fixed.items.find((x) => x.template_key === "payment_received")?.body ?? "",
             });
             setInfo(t("whatsapp.professionalApplied"));
           }
@@ -132,7 +145,7 @@ export function WhatsAppTemplatesPage() {
     setError(null);
     setInfo(null);
     try {
-      const [a, b, c, d, e] = await Promise.all([
+      const [a, b, c, d, e, f, g] = await Promise.all([
         apiFetch("/api/whatsapp/templates/new_account", {
           method: "PUT",
           body: JSON.stringify({ body: templates.new_account }),
@@ -153,12 +166,22 @@ export function WhatsAppTemplatesPage() {
           method: "PUT",
           body: JSON.stringify({ body: templates.invoice_paid }),
         }),
+        apiFetch("/api/whatsapp/templates/profile_updated", {
+          method: "PUT",
+          body: JSON.stringify({ body: templates.profile_updated }),
+        }),
+        apiFetch("/api/whatsapp/templates/payment_received", {
+          method: "PUT",
+          body: JSON.stringify({ body: templates.payment_received }),
+        }),
       ]);
       if (!a.ok) throw new Error(await readApiError(a));
       if (!b.ok) throw new Error(await readApiError(b));
       if (!c.ok) throw new Error(await readApiError(c));
       if (!d.ok) throw new Error(await readApiError(d));
       if (!e.ok) throw new Error(await readApiError(e));
+      if (!f.ok) throw new Error(await readApiError(f));
+      if (!g.ok) throw new Error(await readApiError(g));
       const settingsRes = await apiFetch("/api/whatsapp/settings", {
         method: "PUT",
         body: JSON.stringify({
@@ -261,10 +284,20 @@ export function WhatsAppTemplatesPage() {
           value={templates.invoice_paid}
           onChange={(e) => setTemplates((x) => ({ ...x, invoice_paid: e.target.value }))}
         />
+        <TextAreaField
+          label={t("whatsapp.templateProfileUpdated")}
+          value={templates.profile_updated}
+          onChange={(e) => setTemplates((x) => ({ ...x, profile_updated: e.target.value }))}
+        />
+        <TextAreaField
+          label={t("whatsapp.templatePaymentReceived")}
+          value={templates.payment_received}
+          onChange={(e) => setTemplates((x) => ({ ...x, payment_received: e.target.value }))}
+        />
         <div className="text-xs opacity-70">
           {t("whatsapp.templateVars")}:{" "}
           <code>
-            {"{{company_name}}, {{full_name}}, {{username}}, {{password}}, {{package_name}}, {{expiration_date}}, {{expiration_time}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}, {{invoice_no}}, {{amount}}, {{paid_at}}"}
+            {"{{company_name}}, {{full_name}}, {{username}}, {{password}}, {{package_name}}, {{expiration_date}}, {{expiration_time}}, {{days_left}}, {{due_amount}}, {{currency}}, {{unpaid_count}}, {{oldest_due_date}}, {{billing_detail}}, {{usage_percent}}, {{used_gb}}, {{quota_gb}}, {{remaining_percent}}, {{invoice_no}}, {{amount}}, {{paid_at}}, {{change_detail}}"}
           </code>
         </div>
         <p className="text-xs opacity-60">{t("whatsapp.templateVarsBillingHint")}</p>

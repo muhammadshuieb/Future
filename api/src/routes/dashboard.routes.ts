@@ -141,6 +141,7 @@ router.get("/summary", async (req, res) => {
     rclone_enabled: false,
     rclone_connected: false,
     rclone_last_error: null as string | null,
+    daily_backup_success: false,
     daily_backup_uploaded: false,
     daily_backup_at: null as string | null,
   };
@@ -250,7 +251,14 @@ router.get("/summary", async (req, res) => {
       }
     }
 
-    if (await hasTable(pool, "user_usage_daily")) {
+    if (await hasTable(pool, "radacct") && (await hasTable(pool, "subscribers"))) {
+      try {
+        bandwidth_today_bytes = await accounting.getTenantBandwidthTodayBytes(t);
+      } catch (e) {
+        console.warn("dashboard summary bandwidth today (radacct)", e);
+        bandwidth_today_bytes = 0;
+      }
+    } else if (await hasTable(pool, "user_usage_daily")) {
       try {
         const [bwDay] = await pool.query<RowDataPacket[]>(
           `SELECT COALESCE(SUM(total_bytes),0) AS b FROM user_usage_daily WHERE tenant_id = ? AND day = CURDATE()`,
@@ -393,6 +401,7 @@ router.get("/summary", async (req, res) => {
         rclone_enabled: false,
         rclone_connected: false,
         rclone_last_error: null,
+        daily_backup_success: false,
         daily_backup_uploaded: false,
         daily_backup_at: null,
       },

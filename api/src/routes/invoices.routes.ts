@@ -299,9 +299,8 @@ router.post("/:id/mark-paid", requireRole("admin", "manager", "accountant"), asy
       radiusReason = (error as Error).message;
       console.error("radius sync after invoice payment failed", error);
     }
-    await emitEvent(Events.INVOICE_PAID, {
+    await emitEvent(Events.PAYMENT_RECEIVED, {
       tenantId: t,
-      invoiceId: req.params.id,
       subscriberId: tx.subscriberId,
       invoiceNo: tx.invoiceNo,
       amount: tx.amount,

@@ -9,6 +9,8 @@ import { runScheduledBackupAtSlot } from "../services/backup.service.js";
 import {
   BACKUP_RETENTION_CLEANUP_JOB,
   BACKUP_SCHEDULED_JOB,
+  BACKUP_SCHEDULE_TICK_JOB,
+  runBackupScheduleTick,
 } from "../services/backup-schedule-jobs.service.js";
 import { runBackupRetentionCleanup } from "../services/backup.service.js";
 import { resolveAppTimezone } from "../services/system-settings.service.js";
@@ -16,7 +18,7 @@ import {
   sendOperationalAlertWhatsApp,
   resolveWhatsAppSessionOwnerPhone,
   sendExpiryReminders,
-  sendInvoicePaidWhatsApp,
+  sendPaymentReceivedWhatsApp,
   sendNewSubscriberWhatsApp,
   sendPaymentDueReminders,
   sendUsageThresholdAlerts,
@@ -240,6 +242,17 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
       await runBackupRetentionCleanup(cleanupTenantId);
       break;
     }
+    case BACKUP_SCHEDULE_TICK_JOB: {
+      const tickTenantId =
+        typeof job.data?.tenantId === "string" && job.data.tenantId.trim()
+          ? job.data.tenantId.trim()
+          : tenantId;
+      const tick = await runBackupScheduleTick(tickTenantId);
+      if (tick.ran_slots.length > 0) {
+        log.info(`backup_schedule_tick ran slots ${tick.ran_slots.join(",")}`, { tenantId: tickTenantId }, "backup");
+      }
+      break;
+    }
     case "whatsapp-expiry-reminders":
       await sendExpiryReminders(tenantId);
       break;
@@ -283,7 +296,19 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
       break;
     case QueueJobNames.WAHA_SEND_INVOICE_RECEIPT: {
       const payload = job.data as WahaInvoiceReceiptJobData;
-      await sendInvoicePaidWhatsApp({
+      await sendPaymentReceivedWhatsApp({
+        tenantId: payload.tenantId,
+        subscriberId: payload.subscriberId,
+        invoiceNo: payload.invoiceNo,
+        amount: payload.amount,
+        currency: payload.currency,
+        paidAt: payload.paidAt,
+      });
+      return { ok: true };
+    }
+    case QueueJobNames.WAHA_SEND_PAYMENT_RECEIVED: {
+      const payload = job.data as WahaInvoiceReceiptJobData;
+      await sendPaymentReceivedWhatsApp({
         tenantId: payload.tenantId,
         subscriberId: payload.subscriberId,
         invoiceNo: payload.invoiceNo,

@@ -66,6 +66,7 @@ type Summary = {
     rclone_enabled: boolean;
     rclone_connected: boolean;
     rclone_last_error: string | null;
+    daily_backup_success: boolean;
     daily_backup_uploaded: boolean;
     daily_backup_at: string | null;
   };
@@ -650,9 +651,27 @@ export function DashboardPage() {
                 )}
               </div>
               <div className="flex justify-between gap-1">
-                <span className="opacity-65">{t("dash.dailyBackupUpload")}</span>
-                <StatusPill ok={summary.backup.daily_backup_uploaded} text={summary.backup.daily_backup_uploaded ? t("dash.uploadedToday") : t("dash.notUploadedToday")} />
+                <span className="opacity-65">{t("dash.dailyBackupRun")}</span>
+                <StatusPill
+                  ok={summary.backup.daily_backup_success}
+                  text={
+                    summary.backup.daily_backup_success ? t("dash.backupDoneToday") : t("dash.noBackupToday")
+                  }
+                />
               </div>
+              {summary.backup.rclone_enabled ? (
+                <div className="flex justify-between gap-1">
+                  <span className="opacity-65">{t("dash.dailyBackupUpload")}</span>
+                  <StatusPill
+                    ok={summary.backup.daily_backup_uploaded}
+                    text={
+                      summary.backup.daily_backup_uploaded
+                        ? t("dash.uploadedToday")
+                        : t("dash.notUploadedToday")
+                    }
+                  />
+                </div>
+              ) : null}
             </ServiceCard>
           </div>
         </div>

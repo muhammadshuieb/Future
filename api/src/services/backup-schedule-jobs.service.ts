@@ -4,14 +4,22 @@ import {
   getActiveBackupScheduleSlots,
   getRcloneSettings,
   localDateAndHmInZone,
+  runScheduledBackupAtSlot,
   scheduledSlotKey,
   slotMinutes,
 } from "./backup.service.js";
+import type { RowDataPacket } from "mysql2";
+import { pool } from "../db/pool.js";
 import { resolveAppTimezone } from "./system-settings.service.js";
 import { taskQueue } from "./task-queue.service.js";
 
 export const BACKUP_SCHEDULED_JOB = "backup-scheduled";
 export const BACKUP_RETENTION_CLEANUP_JOB = "backup-retention-cleanup";
+/** Interval tick — reliable fallback when BullMQ cron does not enqueue jobs. */
+export const BACKUP_SCHEDULE_TICK_JOB = "backup-schedule-tick";
+
+const SLOT_GRACE_MINUTES = 35;
+const FAILED_RETRY_MINUTES = 20;
 
 const WORKER_HEARTBEAT_KEY = "future-radius:worker:heartbeat";
 const WORKER_ONLINE_MS = 90_000;
@@ -271,9 +279,88 @@ export async function syncBackupRetentionCleanupCronJob(tenantId: string): Promi
   }
 }
 
+async function hasRunningSystemBackup(tenantId: string): Promise<boolean> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM backup_runs WHERE tenant_id = ? AND status = 'running' LIMIT 1`,
+    [tenantId]
+  );
+  return rows.length > 0;
+}
+
+async function shouldThrottleAfterFailedBackup(tenantId: string): Promise<boolean> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT status, started_at
+     FROM backup_runs
+     WHERE tenant_id = ? AND triggered_by = 'system'
+     ORDER BY started_at DESC
+     LIMIT 1`,
+    [tenantId]
+  );
+  const last = rows[0];
+  if (!last || String(last.status) !== "failed") return false;
+  const started = new Date(String(last.started_at)).getTime();
+  return Number.isFinite(started) && Date.now() - started < FAILED_RETRY_MINUTES * 60_000;
+}
+
+/**
+ * Runs every few minutes on the worker (same pattern as nas-health / update-usage).
+ * Ensures scheduled backups fire even when BullMQ cron repeat jobs are not enqueued.
+ */
+export async function runBackupScheduleTick(tenantId: string): Promise<{
+  ran_slots: string[];
+  skipped_reason?: string;
+}> {
+  const settings = await getRcloneSettings(tenantId);
+  if (!settings.scheduleEnabled) {
+    return { ran_slots: [], skipped_reason: "schedule_disabled" };
+  }
+  if (await hasRunningSystemBackup(tenantId)) {
+    return { ran_slots: [], skipped_reason: "backup_running" };
+  }
+  if (await shouldThrottleAfterFailedBackup(tenantId)) {
+    return { ran_slots: [], skipped_reason: "recent_failure" };
+  }
+
+  const timeZone = await resolveAppTimezone(tenantId);
+  const { date, hm } = localDateAndHmInZone(new Date(), timeZone);
+  const nowMin = slotMinutes(hm);
+  if (nowMin < 0) return { ran_slots: [], skipped_reason: "invalid_clock" };
+
+  const ranSlots: string[] = [];
+  let currentSettings = settings;
+
+  for (const slot of getActiveBackupScheduleSlots(currentSettings)) {
+    const slotMin = slotMinutes(slot);
+    if (slotMin < 0 || nowMin < slotMin) continue;
+
+    const key = scheduledSlotKey(date, slot);
+    if (currentSettings.lastScheduledSlot === key) continue;
+
+    // Due: from slot time until end of grace window, or any missed slot today (catch-up).
+    const inGrace = nowMin < slotMin + SLOT_GRACE_MINUTES;
+    const missedEarlier = nowMin >= slotMin + SLOT_GRACE_MINUTES;
+    if (!inGrace && !missedEarlier) continue;
+
+    console.info(`[backup-schedule-tick] running tenant=${tenantId} slot=${slot} now=${hm} tz=${timeZone}`);
+    await runScheduledBackupAtSlot(tenantId, slot, timeZone);
+    ranSlots.push(slot);
+    currentSettings = await getRcloneSettings(tenantId);
+
+    if (await hasRunningSystemBackup(tenantId)) break;
+    if (await shouldThrottleAfterFailedBackup(tenantId)) break;
+  }
+
+  return { ran_slots: ranSlots };
+}
+
 /** Called by worker/API on boot — loads schedule from DB (same as Maintenance page). */
 export async function syncBackupScheduleCronJobsForDefaultTenant(): Promise<BackupScheduleSyncResult> {
   const result = await syncBackupScheduleCronJobs(config.defaultTenantId);
   await syncBackupRetentionCleanupCronJob(config.defaultTenantId);
+  try {
+    await runBackupScheduleTick(config.defaultTenantId);
+  } catch (e) {
+    console.warn("[backup-schedule-tick] boot run failed", e);
+  }
   return result;
 }

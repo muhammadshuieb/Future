@@ -12,10 +12,19 @@ import { insertCommissionEntry, resolveRenewalCommission } from "./manager-commi
 import { assignResponsibleManagerOnFinancialEvent } from "./subscriber-manager-assignment.service.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
-import { sendSubscriberBillingDemandWhatsApp } from "./whatsapp.service.js";
+import {
+  sendSubscriberBillingDemandWhatsApp,
+  sendSubscriberProfileUpdatedWhatsApp,
+} from "./whatsapp.service.js";
 
 type PaidInvoiceNotice = {
   invoice_id: string;
+  invoice_no: string;
+  amount: number;
+  currency: string;
+};
+
+type PaymentReceivedNotice = {
   invoice_no: string;
   amount: number;
   currency: string;
@@ -453,6 +462,7 @@ export async function recordPackagePayment(
 
     const result = await withTransaction(async (conn) => {
       const paidInvoices: PaidInvoiceNotice[] = [];
+      const paymentNotices: PaymentReceivedNotice[] = [];
       const [subRows] = await conn.query<RowDataPacket[]>(
         `SELECT id, username, package_id, expiration_date FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1 FOR UPDATE`,
         [subscriberId, tenantId]
@@ -512,6 +522,11 @@ export async function recordPackagePayment(
              VALUES (?, ?, ?, ?, ?, ?, ?, 'posted', ?)`,
             [payId, tenantId, al.invoice_id, subscriberId, al.amount, b.currency.slice(0, 8), method, new Date()]
           );
+          paymentNotices.push({
+            amount: al.amount,
+            invoice_no: String(inv.invoice_no ?? ""),
+            currency: String(inv.currency ?? b.currency).toUpperCase(),
+          });
           const newPaid = paidSoFar + al.amount;
           if (newPaid + 0.009 >= amount) {
             await conn.execute(`UPDATE invoices SET status = 'paid' WHERE id = ? AND tenant_id = ?`, [al.invoice_id, tenantId]);
@@ -545,12 +560,13 @@ export async function recordPackagePayment(
             partial,
             expiration_audit: extension,
             paid_invoices: paidInvoices,
+            payment_notices: paymentNotices,
           };
         }
         if (auth.role === "manager") {
           await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
         }
-        return { kind: "ok" as const, allocation: true, partial, paid_invoices: paidInvoices };
+        return { kind: "ok" as const, allocation: true, partial, paid_invoices: paidInvoices, payment_notices: paymentNotices };
       }
 
       const invs = await invoiceRowsForUpdate(conn, pool, tenantId, subscriberId);
@@ -608,6 +624,11 @@ export async function recordPackagePayment(
          VALUES (?, ?, ?, ?, ?, ?, ?, 'posted', ?)`,
         [payId, tenantId, invoiceId, subscriberId, payTarget, b.currency.slice(0, 8), method, new Date()]
       );
+      paymentNotices.push({
+        amount: payTarget,
+        invoice_no: String(invRow.invoice_no ?? ""),
+        currency: String(invRow.currency ?? b.currency).toUpperCase(),
+      });
       const newPaid = paidSoFar + payTarget;
       let partial = false;
       if (newPaid + 0.009 >= invAmount) {
@@ -637,6 +658,7 @@ export async function recordPackagePayment(
           invoice_id: invoiceId!,
           expiration_audit: extension,
           paid_invoices: paidInvoices,
+          payment_notices: paymentNotices,
         };
       } else {
         partial = true;
@@ -644,7 +666,14 @@ export async function recordPackagePayment(
       if (auth.role === "manager") {
         await assignResponsibleManagerOnFinancialEvent(conn, tenantId, subscriberId, auth.sub, "invoice_payment");
       }
-      return { kind: "ok" as const, partial, payment_id: payId, invoice_id: invoiceId!, paid_invoices: paidInvoices };
+      return {
+        kind: "ok" as const,
+        partial,
+        payment_id: payId,
+        invoice_id: invoiceId!,
+        paid_invoices: paidInvoices,
+        payment_notices: paymentNotices,
+      };
     });
 
     if (result.kind === "not_found") return { ok: false, error: "not_found" };
@@ -658,24 +687,37 @@ export async function recordPackagePayment(
       payment_id?: string;
       invoice_id?: string;
       paid_invoices?: PaidInvoiceNotice[];
+      payment_notices?: PaymentReceivedNotice[];
       expiration_audit?: {
         previous_expiration_date: string | null;
         new_expiration_date: string;
         used_explicit_date: boolean;
       };
     };
-    for (const inv of r.paid_invoices ?? []) {
-      await emitEvent(Events.INVOICE_PAID, {
+    const paidAt = new Date().toISOString();
+    for (const pay of r.payment_notices ?? []) {
+      await emitEvent(Events.PAYMENT_RECEIVED, {
         tenantId,
-        invoiceId: inv.invoice_id,
         subscriberId,
-        invoiceNo: inv.invoice_no,
-        amount: inv.amount,
-        currency: inv.currency,
-        paidAt: new Date().toISOString(),
+        invoiceNo: pay.invoice_no,
+        amount: pay.amount,
+        currency: pay.currency,
+        paidAt,
       }).catch((err) => {
-        console.error("[recordPackagePayment] invoice paid WhatsApp enqueue failed", err);
+        console.error("[recordPackagePayment] payment received WhatsApp enqueue failed", err);
       });
+    }
+    if (b.package_id) {
+      const [pkgRows] = await pool.query<RowDataPacket[]>(
+        `SELECT name FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+        [b.package_id, tenantId]
+      );
+      const pkgName = String(pkgRows[0]?.name ?? b.package_id);
+      void sendSubscriberProfileUpdatedWhatsApp({
+        tenantId,
+        subscriberId,
+        changeDetail: `تم تغيير الباقة إلى ${pkgName}`,
+      }).catch(() => {});
     }
     return {
       ok: true,

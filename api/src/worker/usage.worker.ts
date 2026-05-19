@@ -232,6 +232,18 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
     } catch (e) {
       console.error("[usage-worker] syncSubscribersUsedBytes", e);
     }
+    if (await hasTable(pool, "user_usage_daily")) {
+      const today = new Date().toISOString().slice(0, 10);
+      const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+      try {
+        await accounting.rollupDailyForStoppedSessions(tenantId, today);
+        if (yesterday !== today) {
+          await accounting.rollupDailyForStoppedSessions(tenantId, yesterday);
+        }
+      } catch (e) {
+        console.error("[usage-worker] rollupDailyForStoppedSessions", e);
+      }
+    }
   }
 
   // Anyone who still has Cleartext-Password in radcheck but fails subscription rules → hard deny (no naked deletes).

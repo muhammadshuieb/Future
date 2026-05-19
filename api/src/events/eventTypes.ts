@@ -3,6 +3,7 @@ export const Events = {
   USER_EXPIRED: "user.expired",
   USER_QUOTA_SUSPENDED: "user.quota_suspended",
   INVOICE_PAID: "invoice.paid",
+  PAYMENT_RECEIVED: "payment.received",
   WHATSAPP_SENT: "whatsapp.sent",
 } as const;
 
@@ -30,6 +31,14 @@ export type EventPayloadByName = {
   [Events.INVOICE_PAID]: {
     tenantId: string;
     invoiceId: string;
+    subscriberId: string;
+    invoiceNo: string;
+    amount: number;
+    currency: string;
+    paidAt: string;
+  };
+  [Events.PAYMENT_RECEIVED]: {
+    tenantId: string;
     subscriberId: string;
     invoiceNo: string;
     amount: number;

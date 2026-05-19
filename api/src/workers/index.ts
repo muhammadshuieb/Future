@@ -8,7 +8,7 @@ import { installLogger, markDbReady, log } from "../services/logger.service.js";
 installLogger({ source: "worker" });
 import { CoaService } from "../services/coa.service.js";
 import { NasHealthService } from "../services/nas-health.service.js";
-import { enqueueWahaInvoiceReceipt } from "../services/task-queue.service.js";
+import { enqueueWahaPaymentReceived } from "../services/task-queue.service.js";
 import { listenEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
 import {
@@ -24,7 +24,10 @@ import {
   mysqlPoolConnections,
 } from "../services/metrics.service.js";
 import { dispatchWorkerJob } from "./dispatch-worker-job.js";
-import { syncBackupScheduleCronJobsForDefaultTenant } from "../services/backup-schedule-jobs.service.js";
+import {
+  BACKUP_SCHEDULE_TICK_JOB,
+  syncBackupScheduleCronJobsForDefaultTenant,
+} from "../services/backup-schedule-jobs.service.js";
 import { startDiskMonitor } from "../services/disk-monitor.service.js";
 
 /**
@@ -165,6 +168,12 @@ async function bootstrapRepeatables() {
   await add("generate-invoices", everyDay);
   await replaceRepeatablesByName("daily-backup");
   await replaceRepeatablesByName("backup-scheduler");
+  await replaceRepeatablesByName(BACKUP_SCHEDULE_TICK_JOB);
+  const backupTickMs = Math.max(
+    60_000,
+    parseInt(process.env.BACKUP_SCHEDULE_TICK_MS ?? "180000", 10) || 180_000
+  );
+  await add(BACKUP_SCHEDULE_TICK_JOB, backupTickMs);
   await syncBackupScheduleCronJobsForDefaultTenant();
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
@@ -234,8 +243,8 @@ async function main() {
     });
   }, backupScheduleResyncMs).unref();
 
-  await listenEvent(Events.INVOICE_PAID, async (payload) => {
-    await enqueueWahaInvoiceReceipt({
+  await listenEvent(Events.PAYMENT_RECEIVED, async (payload) => {
+    await enqueueWahaPaymentReceived({
       tenantId: payload.tenantId,
       subscriberId: payload.subscriberId,
       invoiceNo: payload.invoiceNo,

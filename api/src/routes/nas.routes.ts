@@ -35,18 +35,36 @@ const nasBody = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 });
 
-router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, name, ip, type, status, coa_port, mikrotik_api_enabled, mikrotik_api_user,
+const nasListColumns = `id, name, ip, type, status, coa_port, mikrotik_api_enabled, mikrotik_api_user,
             mikrotik_api_port, traffic_monitor_interface,
             online_status, last_ping_ok, last_radius_ok, last_check_at, session_count,
-            wireguard_tunnel_ip, created_at, updated_at
+            wireguard_tunnel_ip, created_at, updated_at`;
+
+router.get("/", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${nasListColumns}
      FROM nas_devices
      WHERE tenant_id = ?
      ORDER BY name`,
     [req.auth!.tenantId]
   );
   res.json({ nas_servers: rows, nas_devices: rows });
+});
+
+router.get("/:id", requireRole("admin", "manager", "accountant", "viewer"), async (req, res) => {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${nasListColumns}
+     FROM nas_devices
+     WHERE id = ? AND tenant_id = ?
+     LIMIT 1`,
+    [req.params.id, req.auth!.tenantId]
+  );
+  const row = rows[0];
+  if (!row) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.json({ nas: row, nas_device: row });
 });
 
 router.post("/", requireRole("admin", "manager"), denyViewerWrites, denyAccountant, async (req, res) => {
@@ -149,8 +167,10 @@ router.delete("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcc
 });
 
 router.post("/:id/test-mikrotik-api", requireRole("admin", "manager"), denyAccountant, async (req, res) => {
+  const col = await getTableColumns(pool, "nas_devices");
+  const portCol = col.has("mikrotik_api_port") ? ", mikrotik_api_port" : "";
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password
+    `SELECT id, ip, wireguard_tunnel_ip, mikrotik_api_enabled, mikrotik_api_user, mikrotik_api_password${portCol}
      FROM nas_devices WHERE id = ? AND tenant_id = ? LIMIT 1`,
     [req.params.id, req.auth!.tenantId]
   );

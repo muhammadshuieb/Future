@@ -119,8 +119,11 @@ export type BackupAlert = {
   rclone_enabled: boolean;
   rclone_connected: boolean;
   rclone_last_error: string | null;
-  daily_backup_uploaded: boolean;
+  /** Successful automatic backup today (local dump, with or without Drive). */
+  daily_backup_success: boolean;
   daily_backup_at: string | null;
+  /** Drive upload succeeded for today's automatic backup. */
+  daily_backup_uploaded: boolean;
 };
 
 const BACKUP_PREFIX = "radius-backup-";
@@ -1168,6 +1171,19 @@ export async function updateBackupSchedule(
   } catch (e) {
     console.warn("[backup] retention cleanup after schedule save", e);
   }
+  if (input.enabled) {
+    try {
+      const { runBackupScheduleTick } = await import("./backup-schedule-jobs.service.js");
+      const tick = await runBackupScheduleTick(tenantId);
+      if (tick.ran_slots.length > 0) {
+        scheduleSync.catchup_enqueued = [
+          ...new Set([...scheduleSync.catchup_enqueued, ...tick.ran_slots]),
+        ];
+      }
+    } catch (e) {
+      console.warn("[backup] schedule tick after save", e);
+    }
+  }
   return scheduleSync;
 }
 
@@ -1298,6 +1314,7 @@ export async function getBackupAlert(tenantId: string): Promise<BackupAlert> {
       rclone_enabled: rclone.enabled,
       rclone_connected: rclone.connected,
       rclone_last_error: rclone.last_error,
+      daily_backup_success: false,
       daily_backup_uploaded: false,
       daily_backup_at: null,
     };
@@ -1318,6 +1335,7 @@ export async function getBackupAlert(tenantId: string): Promise<BackupAlert> {
     rclone_enabled: rclone.enabled,
     rclone_connected: rclone.connected,
     rclone_last_error: rclone.last_error,
+    daily_backup_success: Boolean(daily?.started_at) && daily?.status === "success",
     daily_backup_uploaded:
       Boolean(daily?.started_at) &&
       daily?.status === "success" &&

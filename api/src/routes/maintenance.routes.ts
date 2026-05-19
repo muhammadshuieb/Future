@@ -17,7 +17,10 @@ import {
   updateBackupSchedule,
   updateRcloneSettings,
 } from "../services/backup.service.js";
-import { getBackupScheduleHealth } from "../services/backup-schedule-jobs.service.js";
+import {
+  getBackupScheduleHealth,
+  runBackupScheduleTick,
+} from "../services/backup-schedule-jobs.service.js";
 import { previewRadacctYearPrune, runRadacctYearPrune } from "../services/radacct-prune.service.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { inferApiPublicOrigin, inferReturnFrontendOrigin } from "../lib/public-origin.js";
@@ -231,6 +234,18 @@ router.put("/backup-schedule", async (req, res) => {
     }
     console.error("maintenance backup schedule", e);
     res.status(500).json({ error: "backup_schedule_save_failed" });
+  }
+});
+
+router.post("/backup-schedule/run-now", async (req, res) => {
+  try {
+    const tenantId = req.auth!.tenantId;
+    const tick = await runBackupScheduleTick(tenantId);
+    const status = await getRcloneStatus(tenantId);
+    res.json({ ok: true, tick, status });
+  } catch (e) {
+    console.error("maintenance backup schedule run-now", e);
+    res.status(500).json({ error: "backup_schedule_run_failed" });
   }
 });
 

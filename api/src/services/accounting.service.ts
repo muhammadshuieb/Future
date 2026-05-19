@@ -118,6 +118,40 @@ export class AccountingService {
     );
   }
 
+  /**
+   * Tenant-wide bytes attributed to today (server `CURDATE()`), from radacct.
+   * Includes active sessions (uses last accounting heartbeat when still open).
+   */
+  async getTenantBandwidthTodayBytes(tenantId: string): Promise<number> {
+    if (!(await hasTable(this.pool, "radacct"))) return 0;
+    if (!(await hasTable(this.pool, "subscribers"))) return 0;
+    const rawOct = await this.sessionOctetExpression();
+    const octR = rawOct
+      .replace(/acctinputoctets/g, "r.acctinputoctets")
+      .replace(/acctoutputoctets/g, "r.acctoutputoctets")
+      .replace(/acctinputgigawords/g, "r.acctinputgigawords")
+      .replace(/acctoutputgigawords/g, "r.acctoutputgigawords");
+    const hasAcctUpdate = await hasColumn(this.pool, "radacct", "acctupdatetime");
+    const dayExpr = hasAcctUpdate
+      ? `DATE(COALESCE(r.acctstoptime, r.acctupdatetime, r.acctstarttime))`
+      : `DATE(COALESCE(r.acctstoptime, r.acctstarttime))`;
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `
+      SELECT COALESCE(SUM(session_bytes), 0) AS b
+      FROM (
+        SELECT MAX(${octR}) AS session_bytes
+        FROM radacct r
+        INNER JOIN subscribers s ON s.username = r.username AND s.tenant_id = ?
+        WHERE r.username <> ''
+          AND ${dayExpr} = CURDATE()
+        GROUP BY r.radacctid
+      ) t
+      `,
+      [tenantId]
+    );
+    return Number(rows[0]?.b ?? 0);
+  }
+
   /** Attribute traffic to the day the session stopped (billing-style daily totals). */
   async rollupDailyForStoppedSessions(tenantId: string, day: string): Promise<void> {
     if (!(await hasTable(this.pool, "radacct"))) return;

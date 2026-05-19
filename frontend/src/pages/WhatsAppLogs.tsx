@@ -9,7 +9,15 @@ import { useAuth } from "../context/AuthContext";
 type LogItem = {
   id: string;
   phone: string;
-  template_key: "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid" | null;
+  template_key:
+    | "new_account"
+    | "expiry_soon"
+    | "payment_due"
+    | "usage_threshold"
+    | "invoice_paid"
+    | "profile_updated"
+    | "payment_received"
+    | null;
   status: "sent" | "failed";
   error_message: string | null;
   created_at: string;
@@ -40,6 +48,8 @@ export function WhatsAppLogsPage() {
       if (key === "payment_due") return t("whatsapp.logType.payment_due");
       if (key === "usage_threshold") return t("whatsapp.logType.usage_threshold");
       if (key === "invoice_paid") return t("whatsapp.logType.invoice_paid");
+      if (key === "profile_updated") return t("whatsapp.logType.profile_updated");
+      if (key === "payment_received") return t("whatsapp.logType.payment_received");
       return t("whatsapp.logType.general");
     },
     [t]

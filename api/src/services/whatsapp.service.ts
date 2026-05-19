@@ -5,8 +5,15 @@ import { config } from "../config.js";
 import { hasColumn, hasTable, invalidateColumnCache } from "../db/schemaGuards.js";
 import { emitEvent } from "../events/eventBus.js";
 import { Events } from "../events/eventTypes.js";
-type WhatsAppTemplateKey = "new_account" | "expiry_soon" | "payment_due" | "usage_threshold" | "invoice_paid";
-type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "invoice_paid" | "financial_report";
+type WhatsAppTemplateKey =
+  | "new_account"
+  | "expiry_soon"
+  | "payment_due"
+  | "usage_threshold"
+  | "invoice_paid"
+  | "profile_updated"
+  | "payment_received";
+type WhatsAppLogTemplateKey = WhatsAppTemplateKey | "financial_report";
 
 type WhatsAppSettingsRow = RowDataPacket & {
   tenant_id: string;
@@ -114,6 +121,10 @@ const DEFAULT_TEMPLATES: Record<WhatsAppTemplateKey, string> = {
     "مرحباً {{full_name}}،\n{{company_name}} — تنبيه استهلاك الباقة: تم استخدام {{usage_percent}}% من إجمالي الحصة.\n\n• اسم المستخدم: {{username}}\n• الاستهلاك: {{used_gb}} GB من أصل {{quota_gb}} GB\n• النسبة المتبقية: {{remaining_percent}}%\n• تاريخ انتهاء الباقة: {{expiration_date}} (المتبقي {{days_left}} يوم)\n\nيرجى شحن أو تجديد الباقة قبل نفادها لضمان استمرار الخدمة.",
   invoice_paid:
     "مرحباً {{full_name}}،\n{{company_name}} — تم تأكيد دفع الفاتورة بنجاح.\n\n• رقم الفاتورة: {{invoice_no}}\n• المبلغ المدفوع: {{amount}} {{currency}}\n• وقت الدفع: {{paid_at}}\n\nشكراً لثقتكم.",
+  profile_updated:
+    "مرحباً {{full_name}}،\n{{company_name}} — تم تحديث بيانات حسابك.\n\n• اسم المستخدم: {{username}}\n• التغيير: {{change_detail}}\n\nإذا لم تطلب هذا التحديث يرجى التواصل معنا فوراً.",
+  payment_received:
+    "مرحباً {{full_name}}،\n{{company_name}} — تم استلام دفعتكم المالية.\n\n• المبلغ: {{amount}} {{currency}}\n• وقت الاستلام: {{paid_at}}\n• رقم الفاتورة: {{invoice_no}}\n\nشكراً لثقتكم.",
 };
 
 const nextAllowedSendByTenant = new Map<string, number>();
@@ -239,13 +250,25 @@ async function ensureSchemaInner(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
   const templatesKeyType = await columnMysqlType("whatsapp_templates", "template_key");
-  if (templatesKeyType.startsWith("enum") && !templatesKeyType.includes("invoice_paid")) {
-    await pool.query(`
-      ALTER TABLE whatsapp_templates
-      MODIFY COLUMN template_key
-        ENUM('new_account','expiry_soon','payment_due','usage_threshold','invoice_paid') NOT NULL
-    `);
-    invalidateColumnCache();
+  if (templatesKeyType.startsWith("enum")) {
+    const requiredKeys = [
+      "new_account",
+      "expiry_soon",
+      "payment_due",
+      "usage_threshold",
+      "invoice_paid",
+      "profile_updated",
+      "payment_received",
+    ];
+    const missing = requiredKeys.some((k) => !templatesKeyType.includes(k));
+    if (missing) {
+      await pool.query(`
+        ALTER TABLE whatsapp_templates
+        MODIFY COLUMN template_key
+          ENUM('new_account','expiry_soon','payment_due','usage_threshold','invoice_paid','profile_updated','payment_received') NOT NULL
+      `);
+      invalidateColumnCache();
+    }
   }
   const logsKeyType = await columnMysqlType("whatsapp_message_logs", "template_key");
   if (logsKeyType.startsWith("enum")) {
@@ -384,13 +407,7 @@ async function getTemplateMap(tenantId: string): Promise<Record<WhatsAppTemplate
     `SELECT template_key, body FROM whatsapp_templates WHERE tenant_id = ?`,
     [tenantId]
   );
-  const map: Record<WhatsAppTemplateKey, string> = {
-    new_account: DEFAULT_TEMPLATES.new_account,
-    expiry_soon: DEFAULT_TEMPLATES.expiry_soon,
-    payment_due: DEFAULT_TEMPLATES.payment_due,
-    usage_threshold: DEFAULT_TEMPLATES.usage_threshold,
-    invoice_paid: DEFAULT_TEMPLATES.invoice_paid,
-  };
+  const map: Record<WhatsAppTemplateKey, string> = { ...DEFAULT_TEMPLATES };
   for (const row of rows) {
     const key = row.template_key;
     const body = String(row.body ?? "");
@@ -899,6 +916,8 @@ export async function applyProfessionalArabicTemplates(tenantId: string): Promis
   await updateWhatsAppTemplate(tenantId, "payment_due", DEFAULT_TEMPLATES.payment_due);
   await updateWhatsAppTemplate(tenantId, "usage_threshold", DEFAULT_TEMPLATES.usage_threshold);
   await updateWhatsAppTemplate(tenantId, "invoice_paid", DEFAULT_TEMPLATES.invoice_paid);
+  await updateWhatsAppTemplate(tenantId, "profile_updated", DEFAULT_TEMPLATES.profile_updated);
+  await updateWhatsAppTemplate(tenantId, "payment_received", DEFAULT_TEMPLATES.payment_received);
 }
 
 export async function sendUsageThresholdAlerts(tenantId: string): Promise<{ sent: number; failed: number }> {
@@ -1595,6 +1614,150 @@ export async function sendInvoicePaidWhatsApp(input: {
       phone,
       templateKey: "invoice_paid",
       messageBody: templates.invoice_paid,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+  }
+}
+
+export async function sendPaymentReceivedWhatsApp(input: {
+  tenantId: string;
+  subscriberId: string;
+  invoiceNo?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  paidAt?: Date | string | null;
+}): Promise<void> {
+  await ensureSchema();
+  const settings = await getSettingsRow(input.tenantId);
+  if (!settings.enabled) return;
+  const [subRows] = await pool.query<RowDataPacket[]>(
+    `SELECT id, username, first_name, last_name, nickname, phone
+     FROM subscribers
+     WHERE tenant_id = ? AND id = ?
+     LIMIT 1`,
+    [input.tenantId, input.subscriberId]
+  );
+  const row = subRows[0];
+  if (!row) return;
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) return;
+  const phone = normalizePhone(String(row.phone ?? ""));
+  if (!phone) return;
+  const fullName =
+    [String(row.first_name ?? ""), String(row.last_name ?? "")]
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(" ") ||
+    String(row.nickname ?? "").trim() ||
+    String(row.username ?? "");
+  const templates = await getTemplateMap(input.tenantId);
+  const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
+  const paidAtText = Number.isNaN(paidAt.getTime())
+    ? String(input.paidAt ?? "")
+    : paidAt.toISOString().slice(0, 16).replace("T", " ");
+  const currency =
+    String(input.currency ?? "").trim().toUpperCase() === "SYP"
+      ? "SYP"
+      : String(input.currency ?? "USD").trim() || "USD";
+  const amountText =
+    input.amount != null && Number.isFinite(input.amount) ? Number(input.amount).toFixed(2) : "—";
+  const templateVars = {
+    full_name: fullName,
+    username: String(row.username ?? ""),
+    invoice_no: String(input.invoiceNo ?? "—"),
+    amount: amountText,
+    currency,
+    paid_at: paidAtText,
+  };
+  try {
+    await enforceMessageInterval(input.tenantId, settings, { skip: true });
+    const result = await deliverWhatsAppMessage(settings, phone, templates.payment_received, templateVars);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "payment_received",
+      messageBody: result.messageBody,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(input.tenantId, true, null);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "payment_received",
+      messageBody: templates.payment_received,
+      status: "failed",
+      providerMessageId: null,
+      errorMessage: err.slice(0, 4000),
+    });
+    await setLastCheck(input.tenantId, false, err.slice(0, 4000));
+  }
+}
+
+export async function sendSubscriberProfileUpdatedWhatsApp(input: {
+  tenantId: string;
+  subscriberId: string;
+  changeDetail: string;
+}): Promise<void> {
+  await ensureSchema();
+  const settings = await getSettingsRow(input.tenantId);
+  if (!settings.enabled) return;
+  const detail = String(input.changeDetail ?? "").trim();
+  if (!detail) return;
+  const [subRows] = await pool.query<RowDataPacket[]>(
+    `SELECT id, username, first_name, last_name, nickname, phone
+     FROM subscribers
+     WHERE tenant_id = ? AND id = ?
+     LIMIT 1`,
+    [input.tenantId, input.subscriberId]
+  );
+  const row = subRows[0];
+  if (!row) return;
+  if (await subscriberHasWhatsAppOptOut(input.tenantId, input.subscriberId)) return;
+  const phone = normalizePhone(String(row.phone ?? ""));
+  if (!phone) return;
+  const fullName =
+    [String(row.first_name ?? ""), String(row.last_name ?? "")]
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(" ") ||
+    String(row.nickname ?? "").trim() ||
+    String(row.username ?? "");
+  const templates = await getTemplateMap(input.tenantId);
+  const templateVars = {
+    full_name: fullName,
+    username: String(row.username ?? ""),
+    change_detail: detail,
+  };
+  try {
+    await enforceMessageInterval(input.tenantId, settings, { skip: true });
+    const result = await deliverWhatsAppMessage(settings, phone, templates.profile_updated, templateVars);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "profile_updated",
+      messageBody: result.messageBody,
+      status: "sent",
+      providerMessageId: result.providerId,
+      errorMessage: null,
+    });
+    await setLastCheck(input.tenantId, true, null);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await insertMessageLog({
+      tenantId: input.tenantId,
+      subscriberId: input.subscriberId,
+      phone,
+      templateKey: "profile_updated",
+      messageBody: templates.profile_updated,
       status: "failed",
       providerMessageId: null,
       errorMessage: err.slice(0, 4000),

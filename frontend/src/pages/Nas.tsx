@@ -13,6 +13,14 @@ import { cn } from "../lib/utils";
 
 type NasRow = Record<string, unknown>;
 
+function readNasMikrotikPort(row: NasRow): number | null {
+  const raw = row.mikrotik_api_port;
+  if (raw == null || raw === "") return null;
+  const p = Number(raw);
+  if (!Number.isFinite(p) || p < 1 || p > 65535) return null;
+  return Math.floor(p);
+}
+
 export function NasPage() {
   const { t, isRtl } = useI18n();
   const { user } = useAuth();
@@ -42,6 +50,9 @@ export function NasPage() {
   const [mikrotikApiUser, setMikrotikApiUser] = useState("");
   const [mikrotikApiPassword, setMikrotikApiPassword] = useState("");
   const [mikrotikApiPort, setMikrotikApiPort] = useState("8728");
+  /** Saved port from DB when editing (null = use default 8728 in UI). */
+  const [editSavedApiPort, setEditSavedApiPort] = useState<number | null>(null);
+  const [editDetailLoading, setEditDetailLoading] = useState(false);
   const [trafficMonitorInterface, setTrafficMonitorInterface] = useState("");
   const [interfaceOptions, setInterfaceOptions] = useState<{ name: string; type: string }[]>([]);
   const [interfacesLoading, setInterfacesLoading] = useState(false);
@@ -106,13 +117,17 @@ export function NasPage() {
     });
     try {
       const r = await apiFetch(`/api/nas/${nasId}/test-mikrotik-api`, { method: "POST" });
-      const j = (await r.json()) as { ok?: boolean; message?: string; host?: string };
+      const j = (await r.json()) as { ok?: boolean; message?: string; host?: string; port?: number };
       if (r.ok) {
+        const portSuffix =
+          j.port != null && Number.isFinite(j.port) ? ` (${j.port})` : "";
         setApiTestResult((prev) => ({
           ...prev,
           [nasId]: {
             ok: Boolean(j.ok),
-            message: j.ok ? t("nas.mikrotikApiTestOk") : String(j.message ?? t("nas.mikrotikApiTestFail")),
+            message: j.ok
+              ? `${t("nas.mikrotikApiTestOk")}${portSuffix}`
+              : String(j.message ?? t("nas.mikrotikApiTestFail")),
           },
         }));
       } else {
@@ -171,30 +186,52 @@ export function NasPage() {
     setMikrotikApiUser("");
     setMikrotikApiPassword("");
     setMikrotikApiPort("8728");
+    setEditSavedApiPort(null);
     setTrafficMonitorInterface("");
     setInterfaceOptions([]);
     setFormError(null);
     setModal("create");
   }
 
-  function openEdit(n: NasRow) {
-    setEditId(String(n.id));
+  function applyNasRowToForm(n: NasRow) {
+    const savedPort = readNasMikrotikPort(n);
+    setEditSavedApiPort(savedPort);
     setName(String(n.name ?? ""));
     setIp(String(n.ip ?? ""));
-    setSecret("");
-    setShowSecretInput(false);
-    setSecretInputLoading(false);
-    setPassword("");
     setNasType(String(n.type ?? "mikrotik"));
     setMikrotikApiEnabled(Boolean(n.mikrotik_api_enabled));
     setMikrotikApiUser(String(n.mikrotik_api_user ?? ""));
     setMikrotikApiPassword("");
-    setMikrotikApiPort(String(n.mikrotik_api_port ?? 8728));
+    setMikrotikApiPort(savedPort != null ? String(savedPort) : "8728");
     setTrafficMonitorInterface(String(n.traffic_monitor_interface ?? ""));
     setInterfaceOptions([]);
-    setFormError(null);
-    setModal("edit");
   }
+
+  async function openEdit(n: NasRow) {
+    const id = String(n.id);
+    setEditId(id);
+    setSecret("");
+    setShowSecretInput(false);
+    setSecretInputLoading(false);
+    setPassword("");
+    setFormError(null);
+    applyNasRowToForm(n);
+    setModal("edit");
+    setEditDetailLoading(true);
+    try {
+      const r = await apiFetch(`/api/nas/${id}`);
+      if (r.ok) {
+        const j = (await r.json()) as { nas?: NasRow; nas_device?: NasRow };
+        const row = j.nas ?? j.nas_device;
+        if (row) applyNasRowToForm(row);
+      }
+    } finally {
+      setEditDetailLoading(false);
+    }
+  }
+
+  const showMikrotikSettings =
+    mikrotikApiEnabled || (modal === "edit" && editSavedApiPort != null);
 
   async function loadMikrotikInterfaces(nasId: string) {
     setInterfacesLoading(true);
@@ -358,7 +395,7 @@ export function NasPage() {
                   <div className="flex items-center gap-0.5">
                     <button
                       type="button"
-                      onClick={() => openEdit(n)}
+                      onClick={() => void openEdit(n)}
                       className="rounded-lg p-2 text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted))]"
                       aria-label={t("common.edit")}
                     >
@@ -387,6 +424,11 @@ export function NasPage() {
               <span>
                 {t("nas.mikrotikApiEnabled")}: {Boolean(n.mikrotik_api_enabled) ? t("common.yes") : t("common.no")}
               </span>
+              {readNasMikrotikPort(n) != null ? (
+                <span>
+                  {t("nas.mikrotikApiPort")}: {readNasMikrotikPort(n)}
+                </span>
+              ) : null}
             </div>
             {Boolean(n.mikrotik_api_enabled) && canManage ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -503,23 +545,35 @@ export function NasPage() {
             />
             {t("nas.mikrotikApiEnabled")}
           </label>
-          {mikrotikApiEnabled ? (
+          {editDetailLoading ? (
+            <p className="text-[11px] opacity-60">{t("common.loading")}</p>
+          ) : null}
+          {showMikrotikSettings ? (
             <>
-            <p className="text-[11px] leading-relaxed opacity-65">{t("nas.mikrotikApiHint")}</p>
+            {mikrotikApiEnabled ? (
+              <p className="text-[11px] leading-relaxed opacity-65">{t("nas.mikrotikApiHint")}</p>
+            ) : editSavedApiPort != null ? (
+              <p className="text-[11px] leading-relaxed opacity-65">{t("nas.mikrotikApiPortSavedHint")}</p>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
+              {mikrotikApiEnabled ? (
+                <>
+                  <TextField
+                    label={t("nas.mikrotikApiUser")}
+                    value={mikrotikApiUser}
+                    onChange={(e) => setMikrotikApiUser(e.target.value)}
+                  />
+                  <TextField
+                    label={t("nas.mikrotikApiPassword")}
+                    type="password"
+                    value={mikrotikApiPassword}
+                    onChange={(e) => setMikrotikApiPassword(e.target.value)}
+                    hint={modal === "edit" ? t("nas.secretHint") : undefined}
+                  />
+                </>
+              ) : null}
               <TextField
-                label={t("nas.mikrotikApiUser")}
-                value={mikrotikApiUser}
-                onChange={(e) => setMikrotikApiUser(e.target.value)}
-              />
-              <TextField
-                label={t("nas.mikrotikApiPassword")}
-                type="password"
-                value={mikrotikApiPassword}
-                onChange={(e) => setMikrotikApiPassword(e.target.value)}
-                hint={modal === "edit" ? t("nas.secretHint") : undefined}
-              />
-              <TextField
+                className={mikrotikApiEnabled ? undefined : "sm:col-span-2"}
                 label={t("nas.mikrotikApiPort")}
                 type="number"
                 min={1}
@@ -529,6 +583,7 @@ export function NasPage() {
                 hint={t("nas.mikrotikApiPortHint")}
               />
             </div>
+            {mikrotikApiEnabled ? (
             <div className="space-y-2">
               <label className="block text-xs font-medium opacity-80">{t("nas.trafficInterface")}</label>
               <div className="flex flex-wrap gap-2">
@@ -558,6 +613,7 @@ export function NasPage() {
               </div>
               <p className="text-[11px] opacity-60">{t("nas.trafficInterfaceHint")}</p>
             </div>
+            ) : null}
             </>
           ) : null}
           <div className="flex justify-end gap-2 pt-2">

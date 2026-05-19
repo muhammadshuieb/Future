@@ -18,7 +18,10 @@ import {
 import { writeFinancialAudit } from "../services/financial-audit.service.js";
 import { CoaService } from "../services/coa.service.js";
 import { AccountingService } from "../services/accounting.service.js";
-import { sendSubscriberFinancialReportWhatsApp } from "../services/whatsapp.service.js";
+import {
+  sendSubscriberFinancialReportWhatsApp,
+  sendSubscriberProfileUpdatedWhatsApp,
+} from "../services/whatsapp.service.js";
 import { enqueueWahaNewSubscriber } from "../services/task-queue.service.js";
 import {
   assertStaffCanAssignPackage,
@@ -872,6 +875,23 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
   }
   const body = parsed.data;
   const tenantId = req.auth!.tenantId;
+  const profileFieldsChanging =
+    body.password !== undefined || body.phone !== undefined || body.package_id !== undefined;
+  let prevProfile: { phone: string | null; package_id: string | null } | null = null;
+  if (profileFieldsChanging) {
+    const [prevRows] = await pool.query<RowDataPacket[]>(
+      `SELECT phone, package_id FROM subscribers WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [req.params.id, tenantId]
+    );
+    if (!prevRows[0]) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    prevProfile = {
+      phone: prevRows[0].phone != null ? String(prevRows[0].phone) : null,
+      package_id: prevRows[0].package_id != null ? String(prevRows[0].package_id) : null,
+    };
+  }
 
   let previousExpiration: string | null = null;
   if (body.expiration_date !== undefined) {
@@ -989,6 +1009,33 @@ router.patch("/:id", requireRole("admin", "manager"), denyViewerWrites, denyAcco
   await radiusSync.syncSubscriber(req.params.id, tenantId, {
     simultaneousUse: body.simultaneous_use,
   });
+  if (prevProfile) {
+    const changes: string[] = [];
+    if (body.password !== undefined) changes.push("تم تحديث كلمة المرور");
+    if (body.phone !== undefined) {
+      const prevPhone = (prevProfile.phone ?? "").trim();
+      const nextPhone = (body.phone?.trim() || "").trim();
+      if (prevPhone !== nextPhone) changes.push("تم تحديث رقم الهاتف");
+    }
+    if (body.package_id !== undefined && body.package_id !== prevProfile.package_id) {
+      let pkgLabel = body.package_id ?? "—";
+      if (body.package_id) {
+        const [pkgRows] = await pool.query<RowDataPacket[]>(
+          `SELECT name FROM packages WHERE id = ? AND tenant_id = ? LIMIT 1`,
+          [body.package_id, tenantId]
+        );
+        pkgLabel = String(pkgRows[0]?.name ?? body.package_id);
+      }
+      changes.push(`تم تغيير الباقة إلى ${pkgLabel}`);
+    }
+    if (changes.length) {
+      void sendSubscriberProfileUpdatedWhatsApp({
+        tenantId,
+        subscriberId: req.params.id,
+        changeDetail: changes.join(" — "),
+      }).catch(() => {});
+    }
+  }
   res.json({ ok: true });
 });
 

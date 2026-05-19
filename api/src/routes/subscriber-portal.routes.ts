@@ -17,6 +17,7 @@ import {
   getPortalMePayload,
   verifyPortalCredentials,
 } from "../services/portal-subscriber.service.js";
+import { sendSubscriberProfileUpdatedWhatsApp } from "../services/whatsapp.service.js";
 
 const router = Router();
 const radiusSync = new RadiusSyncService(pool);
@@ -147,7 +148,14 @@ router.patch("/:username/password", async (req, res, next) => {
        WHERE subscriber_id = ? AND tenant_id = ?`,
       [parsed.data.password, String(row.id), String(row.tenant_id)]
     );
-    await radiusSync.syncSubscriber(String(row.id), String(row.tenant_id || config.defaultTenantId));
+    const tenantId = String(row.tenant_id || config.defaultTenantId);
+    const subscriberId = String(row.id);
+    await radiusSync.syncSubscriber(subscriberId, tenantId);
+    void sendSubscriberProfileUpdatedWhatsApp({
+      tenantId,
+      subscriberId,
+      changeDetail: "تم تحديث كلمة المرور",
+    }).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     next(e);

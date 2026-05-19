@@ -10,7 +10,10 @@ import {
 import { AccountingService } from "./accounting.service.js";
 import { RadiusSyncService } from "./radius-sync.service.js";
 import { getSystemSettings } from "./system-settings.service.js";
-import { sendSubscriberFinancialReportWhatsApp } from "./whatsapp.service.js";
+import {
+  sendSubscriberFinancialReportWhatsApp,
+  sendSubscriberProfileUpdatedWhatsApp,
+} from "./whatsapp.service.js";
 
 export type PortalSubscriberRow = RowDataPacket & {
   id: string;
@@ -363,6 +366,11 @@ export async function changePortalPassword(
       [newPassword, subscriberId, tenantId]
     );
     await radiusSync.syncSubscriber(subscriberId, tenantId);
+    void sendSubscriberProfileUpdatedWhatsApp({
+      tenantId,
+      subscriberId,
+      changeDetail: "تم تحديث كلمة المرور",
+    }).catch(() => {});
   }
 }
 

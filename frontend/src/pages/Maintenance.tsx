@@ -96,6 +96,7 @@ export function MaintenancePage() {
   const [scheduleTime2, setScheduleTime2] = useState("15:00");
   const [retentionDays, setRetentionDays] = useState(7);
   const [savingSchedule, setSavingSchedule] = useState(false);
+  const [runningScheduled, setRunningScheduled] = useState(false);
   const [testingRclone, setTestingRclone] = useState(false);
   const [pasteTokenJson, setPasteTokenJson] = useState("");
   const [savingPasteToken, setSavingPasteToken] = useState(false);
@@ -877,6 +878,37 @@ export function MaintenancePage() {
     }
   }
 
+  async function runScheduledBackupNow() {
+    setRunningScheduled(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await apiFetch("/api/maintenance/backup-schedule/run-now", {
+        method: "POST",
+        body: "{}",
+      });
+      const raw = await res.text();
+      if (!res.ok) {
+        setError(raw.trim().slice(0, 400) || res.statusText);
+        return;
+      }
+      const json = JSON.parse(raw) as {
+        tick?: { ran_slots?: string[]; skipped_reason?: string };
+      };
+      const ran = json.tick?.ran_slots ?? [];
+      if (ran.length > 0) {
+        setInfo(t("maintenance.runScheduledNowOk"));
+      } else if (json.tick?.skipped_reason) {
+        setInfo(t("maintenance.runScheduledNowSkipped").replace("{reason}", json.tick.skipped_reason));
+      } else {
+        setInfo(t("maintenance.runScheduledNowOk"));
+      }
+      await load();
+    } finally {
+      setRunningScheduled(false);
+    }
+  }
+
   async function saveBackupSchedule() {
     setSavingSchedule(true);
     setError(null);
@@ -1529,9 +1561,21 @@ export function MaintenancePage() {
               ) : null}
             </div>
           ) : null}
-          <Button type="button" onClick={() => void saveBackupSchedule()} disabled={savingSchedule}>
-            {savingSchedule ? t("common.loading") : t("maintenance.scheduleSave")}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={() => void saveBackupSchedule()} disabled={savingSchedule}>
+              {savingSchedule ? t("common.loading") : t("maintenance.scheduleSave")}
+            </Button>
+            {scheduleEnabled ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void runScheduledBackupNow()}
+                disabled={runningScheduled || savingSchedule}
+              >
+                {runningScheduled ? t("common.loading") : t("maintenance.runScheduledNow")}
+              </Button>
+            ) : null}
+          </div>
         </div>
       </Card>
 

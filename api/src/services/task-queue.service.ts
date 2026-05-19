@@ -4,6 +4,7 @@ import { FUTURE_RADIUS_JOB_QUEUE } from "../lib/bullmq-queue-name.js";
 
 export const QueueJobNames = {
   WAHA_SEND_INVOICE_RECEIPT: "waha.send-invoice-receipt",
+  WAHA_SEND_PAYMENT_RECEIVED: "waha.send-payment-received",
   WAHA_SEND_NEW_SUBSCRIBER: "waha.send-new-subscriber",
   COA_DISCONNECT: "coa.disconnect",
 } as const;
@@ -45,6 +46,16 @@ const queueEvents = new QueueEvents(FUTURE_RADIUS_JOB_QUEUE, { connection: queue
 
 export async function enqueueWahaInvoiceReceipt(data: WahaInvoiceReceiptJobData): Promise<Job> {
   return taskQueue.add(QueueJobNames.WAHA_SEND_INVOICE_RECEIPT, data, {
+    priority: 1,
+    attempts: 3,
+    backoff: { type: "exponential", delay: 2000 },
+    removeOnComplete: 1000,
+    removeOnFail: 2000,
+  });
+}
+
+export async function enqueueWahaPaymentReceived(data: WahaInvoiceReceiptJobData): Promise<Job> {
+  return taskQueue.add(QueueJobNames.WAHA_SEND_PAYMENT_RECEIVED, data, {
     priority: 1,
     attempts: 3,
     backoff: { type: "exponential", delay: 2000 },
