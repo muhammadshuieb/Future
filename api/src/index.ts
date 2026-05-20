@@ -388,6 +388,12 @@ async function start() {
   markDbReady();
   log.info("api boot: migrations applied, flushing buffered logs", {}, "bootstrap");
   try {
+    const { runServerLogRetentionOnBoot } = await import("./services/logger.service.js");
+    await runServerLogRetentionOnBoot(config.defaultTenantId);
+  } catch (error) {
+    console.error("[bootstrap] server_logs retention failed", error);
+  }
+  try {
     const result = await ensureRadiusDbUser();
     console.log(`[bootstrap] radius db user: ${result.status}`);
   } catch (error) {

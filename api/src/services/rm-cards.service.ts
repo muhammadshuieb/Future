@@ -176,7 +176,7 @@ export async function ensureRmCardsTable(pool: Pool): Promise<void> {
       KEY idx_rm_cards_tenant_series (tenant_id, series),
       KEY idx_rm_cards_tenant_package (tenant_id, package_id),
       KEY idx_rm_cards_tenant_expiration (tenant_id, expiration)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 }
 

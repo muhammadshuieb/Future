@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   backup_alert_enabled TINYINT(1) NOT NULL DEFAULT 0,
   backup_alert_phone VARCHAR(32) DEFAULT NULL,
   backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
-  server_log_retention_days INT NOT NULL DEFAULT 14,
+  server_log_retention_days INT NOT NULL DEFAULT 5,
   radpostauth_retention_enabled TINYINT(1) NOT NULL DEFAULT 1,
   radpostauth_retention_months INT NOT NULL DEFAULT 2,
   user_idle_timeout_minutes INT NOT NULL DEFAULT 4,

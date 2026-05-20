@@ -43,7 +43,7 @@ export function SettingsPage() {
     backup_alert_enabled: false,
     backup_alert_phone: "",
     backup_alert_use_session_owner: true,
-    server_log_retention_days: 14,
+    server_log_retention_days: 5,
     radpostauth_retention_enabled: true,
     radpostauth_retention_months: 2,
     user_idle_timeout_minutes: 4,
@@ -187,7 +187,7 @@ export function SettingsPage() {
           onChange={(e) =>
             setSettings((prev) => ({
               ...prev,
-              server_log_retention_days: Math.max(3, Math.min(90, Number(e.target.value) || 14)),
+              server_log_retention_days: Math.max(3, Math.min(90, Number(e.target.value) || 5)),
             }))
           }
           hint={t("settings.logRetentionHint")}

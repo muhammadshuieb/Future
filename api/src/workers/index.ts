@@ -228,6 +228,13 @@ async function main() {
 
   await bootstrapRepeatables();
 
+  try {
+    const { runServerLogRetentionOnBoot } = await import("../services/logger.service.js");
+    await runServerLogRetentionOnBoot(config.defaultTenantId);
+  } catch (error) {
+    console.error("[worker] server_logs retention bootstrap failed", error);
+  }
+
   await connection.set(workerHeartbeatKey, new Date().toISOString());
   setInterval(() => {
     connection.set(workerHeartbeatKey, new Date().toISOString()).catch(() => {});

@@ -563,9 +563,10 @@ export async function resolveEffectiveSpeedProfile(
   }
 
   const [subs] = await pool.query<RowDataPacket[]>(
-    `SELECT s.*, p.mikrotik_rate_limit AS pkg_mikrotik
+    `SELECT s.*, p.mikrotik_rate_limit AS pkg_mikrotik, c.branch_id
      FROM subscribers s
-     LEFT JOIN packages p ON p.id = s.package_id
+     LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
+     LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
      WHERE s.id = ? AND s.tenant_id = ?
      LIMIT 1`,
     [subscriberId, tenantId]
@@ -835,6 +836,7 @@ async function collectSubscriberIdsToEvaluate(pool: Pool, tenantId: string): Pro
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT DISTINCT s.id
      FROM subscribers s
+     LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
      WHERE s.tenant_id = ? AND LOWER(TRIM(COALESCE(s.status, ''))) = 'active'
        AND (
          EXISTS (
@@ -849,7 +851,7 @@ async function collectSubscriberIdsToEvaluate(pool: Pool, tenantId: string): Pro
                (sch.target_type = 'subscriber' AND sch.target_id = s.id)
                OR (sch.target_type = 'package' AND sch.target_id = s.package_id)
                OR (sch.target_type = 'tenant' AND (sch.target_id IS NULL OR sch.target_id = s.tenant_id))
-               OR (sch.target_type = 'branch' AND sch.target_id = s.branch_id)
+               OR (sch.target_type = 'branch' AND sch.target_id = c.branch_id)
              )
          )
        )`,

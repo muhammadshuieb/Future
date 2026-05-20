@@ -25,6 +25,10 @@ const PREPAID_BATCH = Math.max(
   Math.min(2000, parseInt(process.env.PREPAID_CARD_LIFECYCLE_BATCH ?? "500", 10) || 500)
 );
 
+/** rm_cards may use utf8mb4_0900_ai_ci until migration 032; radacct uses utf8mb4_unicode_ci. */
+const RM_CARDNUM_EQ_RADACCT_USERNAME = (cardAlias: string) =>
+  `${cardAlias}.cardnum COLLATE utf8mb4_unicode_ci = r.username COLLATE utf8mb4_unicode_ci`;
+
 export type PrepaidLifecycleSummary = {
   usage_refreshed: number;
   expired: number;
@@ -88,13 +92,13 @@ export async function refreshPrepaidCardsUsageFromRadacct(pool: Pool, tenantId: 
            MIN(r.acctstarttime) AS first_start,
            MAX(COALESCE(r.acctupdatetime, r.acctstoptime, r.acctstarttime)) AS last_touch
          FROM radacct r
-         INNER JOIN rm_cards c2 ON c2.cardnum = r.username AND c2.tenant_id = ?
+         INNER JOIN rm_cards c2 ON ${RM_CARDNUM_EQ_RADACCT_USERNAME("c2")} AND c2.tenant_id = ?
          WHERE r.username <> ''
            ${lifecycleFilter}
          GROUP BY r.username, r.radacctid
        ) agg
        GROUP BY agg.username
-     ) u ON u.username = c.cardnum
+     ) u ON u.username COLLATE utf8mb4_unicode_ci = c.cardnum COLLATE utf8mb4_unicode_ci
      SET
        c.used_bytes = u.total_bytes,
        c.used_seconds = u.total_seconds,
@@ -305,7 +309,7 @@ async function closeStalePrepaidCardRadacct(pool: Pool, tenantId: string): Promi
   if (!(await hasColumn(pool, "rm_cards", "lifecycle_status"))) return 0;
   const [result] = await pool.query(
     `UPDATE radacct r
-     INNER JOIN rm_cards c ON c.cardnum = r.username AND c.tenant_id = ?
+     INNER JOIN rm_cards c ON ${RM_CARDNUM_EQ_RADACCT_USERNAME("c")} AND c.tenant_id = ?
      SET r.acctstoptime = NOW(),
          r.acctsessiontime = GREATEST(0, TIMESTAMPDIFF(SECOND, r.acctstarttime, NOW())),
          r.acctterminatecause = CASE

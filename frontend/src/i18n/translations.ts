@@ -784,7 +784,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.serverLogs": "سجل السيرفر",
     "settings.logRetentionDays": "احتفاظ بسجلات الأخطاء (أيام)",
     "settings.logRetentionHint":
-      "يُنظَّف الجدول تلقائياً كل ساعة تقريباً حسب عدد الأيام هنا (افتراضي أصغر = مساحة أقل).",
+      "يُحذف تلقائياً ما يزيد عمره عن هذا العدد (افتراضي 5 أيام بعد التثبيت، وتنظيف كل ساعة). يمكن تغييره بين 3 و90 يوماً.",
     "settings.criticalAlerts": "تنبيهات واتساب للأخطاء الحرجة",
     "settings.enableCriticalAlerts": "تفعيل إرسال تنبيه واتساب عند أخطاء تستدعي التدخل",
     "settings.alertPhone": "رقم واتساب للتنبيهات",
@@ -2354,7 +2354,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.serverLogs": "Server logs",
     "settings.logRetentionDays": "Server log retention (days)",
     "settings.logRetentionHint":
-      "Logs are pruned automatically about every hour based on this value (lower = less database size).",
+      "Entries older than this are deleted automatically (default 5 days after install; hourly cleanup). Adjustable from 3 to 90 days.",
     "settings.criticalAlerts": "Critical error WhatsApp alerts",
     "settings.enableCriticalAlerts": "Send WhatsApp when critical errors need intervention",
     "settings.alertPhone": "WhatsApp number for alerts",

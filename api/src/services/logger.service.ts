@@ -187,7 +187,23 @@ export function installLogger(options: { source?: LogSource } = {}): void {
  * Delete log rows older than `retentionDays`, then trim `server_log_alerts`
  * so the alerts table does not grow without bound.
  */
-export async function pruneOldLogs(retentionDays = 14): Promise<{ logs: number; alerts: number }> {
+/** Run once on API/worker boot so retention applies right after install (not only on hourly cron). */
+export async function runServerLogRetentionOnBoot(tenantId: string): Promise<void> {
+  try {
+    const { getSystemSettings } = await import("./system-settings.service.js");
+    const { server_log_retention_days } = await getSystemSettings(tenantId);
+    const { logs, alerts } = await pruneOldLogs(server_log_retention_days);
+    log.info(
+      `server_logs_retention_boot retention_days=${server_log_retention_days} deleted_logs=${logs} deleted_alerts=${alerts}`,
+      { retention_days: server_log_retention_days, logs, alerts },
+      "bootstrap"
+    );
+  } catch (e) {
+    console.warn("[bootstrap] server_logs retention prune skipped", e);
+  }
+}
+
+export async function pruneOldLogs(retentionDays = 5): Promise<{ logs: number; alerts: number }> {
   let logs = 0;
   let alerts = 0;
   try {

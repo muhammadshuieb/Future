@@ -58,7 +58,7 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
       backup_alert_enabled TINYINT(1) NOT NULL DEFAULT 0,
       backup_alert_phone VARCHAR(32) DEFAULT NULL,
       backup_alert_use_session_owner TINYINT(1) NOT NULL DEFAULT 1,
-      server_log_retention_days INT NOT NULL DEFAULT 14,
+      server_log_retention_days INT NOT NULL DEFAULT 5,
       radpostauth_retention_enabled TINYINT(1) NOT NULL DEFAULT 1,
       radpostauth_retention_months INT NOT NULL DEFAULT 2,
       user_idle_timeout_minutes INT NOT NULL DEFAULT 4,
@@ -141,7 +141,7 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     backup_alert_use_session_owner: col.has("backup_alert_use_session_owner")
       ? Boolean(Number(row.backup_alert_use_session_owner ?? 1))
       : true,
-    server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 14))),
+    server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 5))),
     radpostauth_retention_enabled: col.has("radpostauth_retention_enabled")
       ? Boolean(Number(row.radpostauth_retention_enabled ?? 1))
       : true,
@@ -265,7 +265,7 @@ export async function updateSystemSettings(
     input.backup_alert_enabled ? 1 : 0,
     normalizePhone(input.backup_alert_phone) || null,
     input.backup_alert_use_session_owner ? 1 : 0,
-    Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 14))),
+    Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 5))),
   ];
   if (col.has("radpostauth_retention_enabled")) {
     baseSets.push("radpostauth_retention_enabled = ?");
