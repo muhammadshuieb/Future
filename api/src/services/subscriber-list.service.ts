@@ -294,7 +294,6 @@ export async function querySubscribersList(
     `SELECT COUNT(*) AS c
      FROM subscribers s
      LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
-     LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
      ${nasJoin}
      ${regJoin}
      WHERE ${whereSql}`,
@@ -312,7 +311,7 @@ export async function querySubscribersList(
     `SELECT s.*,
             p.name AS package_name,
             p.quota_total_bytes,
-            c.display_name AS customer_name,
+            TRIM(CONCAT(COALESCE(s.first_name,''), ' ', COALESCE(s.last_name,''))) AS customer_name,
             ${activeSessionsExpr} AS active_sessions,
             ${isOnlineExpr} AS is_online,
             ${activeSessionIdExpr} AS active_session_id,
@@ -329,7 +328,6 @@ export async function querySubscribersList(
             ${regSelect}
      FROM subscribers s
      LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
-     LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
      ${nasJoin}
      ${regJoin}
      WHERE ${whereSql}

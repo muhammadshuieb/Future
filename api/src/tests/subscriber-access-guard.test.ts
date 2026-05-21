@@ -8,7 +8,6 @@ import {
 function baseRow(over: Partial<SubscriberAccessRow> = {}): SubscriberAccessRow {
   return {
     tenant_status: "active",
-    customer_status: null,
     subscriber_status: "active",
     expiration_date: null,
     package_id: "pkg-1",
@@ -29,12 +28,6 @@ describe("evaluateSubscriberAccessFromRow", () => {
     const r = evaluateSubscriberAccessFromRow(baseRow({ tenant_status: "suspended" }));
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.reason, "tenant_inactive");
-  });
-
-  it("rejects inactive customer when linked", () => {
-    const r = evaluateSubscriberAccessFromRow(baseRow({ customer_status: "blocked" }));
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.reason, "customer_inactive");
   });
 
   it("rejects expired subscription date", () => {

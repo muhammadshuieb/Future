@@ -177,6 +177,7 @@ async function bootstrapRepeatables() {
   await syncBackupScheduleCronJobsForDefaultTenant();
   await add("whatsapp-health-check", everyMin);
   await add("prune-server-logs", everyMin * 60);
+  await add("prune-whatsapp-logs", everyMin * 60);
   await add("ops-critical-alerts", everyMin * 2);
   if (!false) {
     await add("whatsapp-usage-alerts", everyMin * 30);
@@ -185,10 +186,11 @@ async function bootstrapRepeatables() {
   await replaceRepeatablesByName("whatsapp-payment-due-reminders");
   await addCron("whatsapp-expiry-reminders", "0 12 * * *");
   await addCron("whatsapp-payment-due-reminders", "10 12 * * *");
-  // Monthly radpostauth retention sweep — runs on the 1st of each month at 03:00.
-  // Honors `radpostauth_retention_enabled` / `radpostauth_retention_months` settings.
+  // Daily data retention (radacct, sessions, usage_daily, radpostauth).
+  await replaceRepeatablesByName("prune-data-retention");
+  await addCron("prune-data-retention", "30 3 * * *");
+  // Legacy monthly job kept for manual/back-compat triggers only.
   await replaceRepeatablesByName("prune-radpostauth");
-  await addCron("prune-radpostauth", "0 3 1 * *");
   const infraMs = Math.max(
     60_000,
     parseInt(process.env.INFRASTRUCTURE_MONITOR_MS ?? "180000", 10) || 180_000
@@ -231,6 +233,8 @@ async function main() {
   try {
     const { runServerLogRetentionOnBoot } = await import("../services/logger.service.js");
     await runServerLogRetentionOnBoot(config.defaultTenantId);
+    const { runWhatsappLogRetentionOnBoot } = await import("../services/whatsapp.service.js");
+    await runWhatsappLogRetentionOnBoot(config.defaultTenantId);
   } catch (error) {
     console.error("[worker] server_logs retention bootstrap failed", error);
   }

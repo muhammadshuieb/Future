@@ -252,13 +252,11 @@ async function runUsageAndExpiryCycleUnlocked(opts: {
       `SELECT DISTINCT s.username
        FROM subscribers s
        INNER JOIN tenants t ON t.id = s.tenant_id
-       LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
        INNER JOIN radcheck rc ON rc.username = s.username AND rc.attribute = 'Cleartext-Password'
        WHERE s.tenant_id = ?
          AND (
            LOWER(TRIM(COALESCE(t.status, ''))) <> 'active'
-           OR (c.id IS NOT NULL AND LOWER(TRIM(COALESCE(c.status, ''))) <> 'active')
            OR LOWER(TRIM(COALESCE(s.status, ''))) <> 'active'
            OR (s.expiration_date IS NOT NULL AND s.expiration_date < NOW())
            OR s.package_id IS NULL

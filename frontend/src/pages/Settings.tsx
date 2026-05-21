@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bell, Database, Radio, Save, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { Bell, Database, Radio, Save, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { useTheme } from "../context/ThemeContext";
 import { Button } from "../components/ui/Button";
@@ -16,7 +16,12 @@ type SystemSettings = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  whatsapp_log_retention_days: number;
+  radacct_closed_retention_days: number;
+  sessions_offline_retention_days: number;
+  user_usage_daily_retention_days: number;
   radpostauth_retention_enabled: boolean;
+  radpostauth_retention_days: number;
   radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
   admin_session_timeout_minutes: number;
@@ -43,8 +48,13 @@ export function SettingsPage() {
     backup_alert_enabled: false,
     backup_alert_phone: "",
     backup_alert_use_session_owner: true,
-    server_log_retention_days: 5,
+    server_log_retention_days: 14,
+    whatsapp_log_retention_days: 30,
+    radacct_closed_retention_days: 180,
+    sessions_offline_retention_days: 90,
+    user_usage_daily_retention_days: 365,
     radpostauth_retention_enabled: true,
+    radpostauth_retention_days: 90,
     radpostauth_retention_months: 2,
     user_idle_timeout_minutes: 4,
     admin_session_timeout_minutes: 5,
@@ -104,24 +114,23 @@ export function SettingsPage() {
     }
   }
 
-  async function runRadpostauthPrune() {
+  async function runDataRetention() {
     setErr(null);
     setMsg(null);
     try {
-      const res = await apiFetch("/api/system-settings/radpostauth-prune", { method: "POST" });
+      const res = await apiFetch("/api/system-settings/run-retention", { method: "POST" });
       if (!res.ok) {
         const raw = await readApiError(res);
         setErr(formatStaffApiError(res.status, raw, t));
         return;
       }
-      const j = (await res.json()) as { deleted?: number; cutoff?: string | null; ran?: boolean };
-      const deleted = Number(j.deleted ?? 0);
-      const cutoff = j.cutoff ?? "—";
-      setMsg(
-        t("settings.radpostauthPruneDone")
-          .replace("{deleted}", String(deleted))
-          .replace("{cutoff}", String(cutoff))
-      );
+      const j = (await res.json()) as {
+        steps?: { table: string; deleted: number }[];
+      };
+      const summary = (j.steps ?? [])
+        .map((s) => `${s.table}: ${s.deleted}`)
+        .join(" · ");
+      setMsg(t("settings.retentionRunDone").replace("{summary}", summary || "—"));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -175,9 +184,12 @@ export function SettingsPage() {
 
       <Card className="space-y-4">
         <div className="flex items-center gap-2 font-semibold">
-          <AlertTriangle className="h-4 w-4 text-amber-500" />
-          {t("settings.serverLogs")}
+          <Database className="h-4 w-4 text-rose-500" />
+          {t("settings.dataRetentionPolicy")}
         </div>
+        <p className="whitespace-pre-wrap text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">
+          {t("settings.dataRetentionIntro")}
+        </p>
         <TextField
           label={t("settings.logRetentionDays")}
           type="number"
@@ -187,21 +199,76 @@ export function SettingsPage() {
           onChange={(e) =>
             setSettings((prev) => ({
               ...prev,
-              server_log_retention_days: Math.max(3, Math.min(90, Number(e.target.value) || 5)),
+              server_log_retention_days: Math.max(3, Math.min(90, Number(e.target.value) || 14)),
             }))
           }
           hint={t("settings.logRetentionHint")}
         />
-      </Card>
-
-      <Card className="space-y-4">
-        <div className="flex items-center gap-2 font-semibold">
-          <Database className="h-4 w-4 text-rose-500" />
-          {t("settings.radpostauthRetention")}
-        </div>
-        <p className="whitespace-pre-wrap text-xs text-[hsl(var(--muted-foreground))] leading-relaxed">
-          {t("settings.radpostauthRetentionIntro")}
-        </p>
+        <TextField
+          label={t("settings.whatsappLogRetentionDays")}
+          type="number"
+          min={1}
+          max={180}
+          value={String(settings.whatsapp_log_retention_days)}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              whatsapp_log_retention_days: Math.max(1, Math.min(180, Number(e.target.value) || 30)),
+            }))
+          }
+          hint={t("settings.whatsappLogRetentionHint")}
+        />
+        <TextField
+          label={t("settings.radacctClosedRetentionDays")}
+          type="number"
+          min={30}
+          max={730}
+          value={String(settings.radacct_closed_retention_days)}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              radacct_closed_retention_days: Math.max(
+                30,
+                Math.min(730, Number(e.target.value) || 180)
+              ),
+            }))
+          }
+          hint={t("settings.radacctClosedRetentionHint")}
+        />
+        <TextField
+          label={t("settings.sessionsOfflineRetentionDays")}
+          type="number"
+          min={30}
+          max={365}
+          value={String(settings.sessions_offline_retention_days)}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              sessions_offline_retention_days: Math.max(
+                30,
+                Math.min(365, Number(e.target.value) || 90)
+              ),
+            }))
+          }
+          hint={t("settings.sessionsOfflineRetentionHint")}
+        />
+        <TextField
+          label={t("settings.userUsageDailyRetentionDays")}
+          type="number"
+          min={90}
+          max={730}
+          value={String(settings.user_usage_daily_retention_days)}
+          onChange={(e) =>
+            setSettings((prev) => ({
+              ...prev,
+              user_usage_daily_retention_days: Math.max(
+                90,
+                Math.min(730, Number(e.target.value) || 365)
+              ),
+            }))
+          }
+          hint={t("settings.userUsageDailyRetentionHint")}
+        />
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -213,18 +280,18 @@ export function SettingsPage() {
           {t("settings.radpostauthRetentionEnabled")}
         </label>
         <TextField
-          label={t("settings.radpostauthRetentionMonths")}
+          label={t("settings.radpostauthRetentionDays")}
           type="number"
-          min={1}
-          max={36}
-          value={String(settings.radpostauth_retention_months)}
+          min={30}
+          max={365}
+          value={String(settings.radpostauth_retention_days)}
           onChange={(e) =>
             setSettings((prev) => ({
               ...prev,
-              radpostauth_retention_months: Math.max(1, Math.min(36, Number(e.target.value) || 2)),
+              radpostauth_retention_days: Math.max(30, Math.min(365, Number(e.target.value) || 90)),
             }))
           }
-          hint={t("settings.radpostauthRetentionMonthsHint")}
+          hint={t("settings.radpostauthRetentionDaysHint")}
           disabled={!settings.radpostauth_retention_enabled}
         />
         <div className="flex flex-wrap gap-2">
@@ -232,14 +299,9 @@ export function SettingsPage() {
             <Save className="h-4 w-4" />
             {saving ? t("common.loading") : t("common.save")}
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={runRadpostauthPrune}
-            disabled={!settings.radpostauth_retention_enabled || saving || loading}
-          >
+          <Button type="button" variant="outline" onClick={() => void runDataRetention()} disabled={saving || loading}>
             <Trash2 className="h-4 w-4" />
-            {t("settings.radpostauthPruneNow")}
+            {t("settings.retentionRunNow")}
           </Button>
         </div>
       </Card>

@@ -10,7 +10,6 @@ import { isSubscriptionExpiredByCalendarDate } from "./expiration-date.js";
 
 export type SubscriberAccessRow = {
   tenant_status: string | null;
-  customer_status: string | null;
   subscriber_status: string | null;
   expiration_date: Date | string | null;
   package_id: string | null;
@@ -41,11 +40,6 @@ export function evaluateSubscriberAccessFromRow(
 ): { ok: true } | { ok: false; reason: string } {
   if (normStatus(r.tenant_status) !== "active") {
     return { ok: false, reason: "tenant_inactive" };
-  }
-  if (r.customer_status != null && String(r.customer_status).trim() !== "") {
-    if (normStatus(r.customer_status) !== "active") {
-      return { ok: false, reason: "customer_inactive" };
-    }
   }
   const st = normStatus(r.subscriber_status);
   if (st !== "active") {
@@ -124,7 +118,6 @@ export async function loadSubscriberAccessRow(
        sc.password AS credential_password,
        (SELECT ip_address FROM subscriber_static_ips WHERE subscriber_id = s.id LIMIT 1) AS ip_address,
        t.status AS tenant_status,
-       c.status AS customer_status,
        p.active AS package_active, p.quota_total_bytes,
        p.simultaneous_use AS package_simultaneous_use,
        p.mikrotik_rate_limit, p.framed_ip_address, p.mikrotik_address_list, p.default_framed_pool,
@@ -133,7 +126,6 @@ export async function loadSubscriberAccessRow(
      FROM subscribers s
      INNER JOIN tenants t ON t.id = s.tenant_id
      LEFT JOIN subscriber_credentials sc ON sc.subscriber_id = s.id AND sc.tenant_id = s.tenant_id
-     LEFT JOIN customers c ON c.id = s.customer_id
      LEFT JOIN packages p ON p.id = s.package_id AND p.tenant_id = s.tenant_id
      WHERE `;
   const params: unknown[] = [];
@@ -163,7 +155,6 @@ export async function loadSubscriberAccessRow(
     tenant_id: String(row.tenant_id),
     username: String(row.username ?? ""),
     tenant_status: row.tenant_status != null ? String(row.tenant_status) : null,
-    customer_status: row.customer_status != null ? String(row.customer_status) : null,
     subscriber_status: row.subscriber_status != null ? String(row.subscriber_status) : null,
     expiration_date: row.expiration_date ?? null,
     package_id: row.package_id != null ? String(row.package_id) : null,

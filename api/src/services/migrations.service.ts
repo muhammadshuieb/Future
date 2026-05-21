@@ -108,7 +108,8 @@ function isBenignMigrationError(err: unknown): boolean {
     code === "ER_DUP_FIELDNAME" ||
     code === "ER_DUP_KEYNAME" ||
     code === "ER_TABLE_EXISTS_ERROR" ||
-    code === "ER_FK_DUP_NAME"
+    code === "ER_FK_DUP_NAME" ||
+    code === "ER_CANT_DROP_FIELD_OR_KEY"
   ) {
     return true;
   }
@@ -116,6 +117,7 @@ function isBenignMigrationError(err: unknown): boolean {
     1050, // ER_TABLE_EXISTS_ERROR
     1060, // ER_DUP_FIELDNAME
     1061, // ER_DUP_KEYNAME
+    1091, // ER_CANT_DROP_FIELD_OR_KEY (missing FK on re-apply)
     1826, // duplicate foreign key constraint name (MySQL 8+)
   ]);
   if (errno !== undefined && benignErrnos.has(errno)) return true;
@@ -124,7 +126,9 @@ function isBenignMigrationError(err: unknown): boolean {
     msg.includes("duplicate key name") ||
     msg.includes("duplicate foreign key constraint name") ||
     msg.includes("duplicate key") ||
-    (msg.includes("already exists") && (msg.includes("table") || msg.includes("database")))
+    (msg.includes("already exists") && (msg.includes("table") || msg.includes("database"))) ||
+    msg.includes("check that column/key exists") ||
+    msg.includes("can't drop")
   ) {
     return true;
   }

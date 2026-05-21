@@ -14,7 +14,6 @@ function baseRow(
 ) {
   return {
     tenant_status: "active",
-    customer_status: null,
     subscriber_status: "active",
     expiration_date: null,
     package_id: "pkg-1",

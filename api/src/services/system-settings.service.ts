@@ -13,8 +13,13 @@ export type SystemSettingsView = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
-  /** Auto-prune of `radpostauth` runs on the 1st of each month when enabled. */
+  /** Delete `whatsapp_message_logs` rows older than this many days (hourly worker). */
+  whatsapp_log_retention_days: number;
+  radacct_closed_retention_days: number;
+  sessions_offline_retention_days: number;
+  user_usage_daily_retention_days: number;
   radpostauth_retention_enabled: boolean;
+  radpostauth_retention_days: number;
   /**
    * Number of calendar months to retain. Default 2 means: at the start of month N
    * we delete everything older than the start of month (N-1), so months (N-2) and
@@ -101,6 +106,38 @@ export async function ensureSystemSettings(tenantId: string): Promise<void> {
   } catch {
     /* column exists */
   }
+  try {
+    await pool.query(
+      `ALTER TABLE system_settings ADD COLUMN whatsapp_log_retention_days INT NOT NULL DEFAULT 7 AFTER server_log_retention_days`
+    );
+  } catch {
+    /* column exists */
+  }
+  const retentionCols: [string, string][] = [
+    [
+      "radacct_closed_retention_days",
+      "INT NOT NULL DEFAULT 180 COMMENT 'Closed radacct retention days'",
+    ],
+    [
+      "sessions_offline_retention_days",
+      "INT NOT NULL DEFAULT 90 COMMENT 'Offline sessions retention days'",
+    ],
+    [
+      "user_usage_daily_retention_days",
+      "INT NOT NULL DEFAULT 365 COMMENT 'user_usage_daily retention days'",
+    ],
+    [
+      "radpostauth_retention_days",
+      "INT NOT NULL DEFAULT 90 COMMENT 'radpostauth retention days'",
+    ],
+  ];
+  for (const [name, def] of retentionCols) {
+    try {
+      await pool.query(`ALTER TABLE system_settings ADD COLUMN ${name} ${def}`);
+    } catch {
+      /* column exists */
+    }
+  }
 }
 
 /** Tenant timezone from settings, falling back to APP_TIMEZONE env. */
@@ -141,10 +178,25 @@ function rowToView(row: RowDataPacket, col: Set<string>): SystemSettingsView {
     backup_alert_use_session_owner: col.has("backup_alert_use_session_owner")
       ? Boolean(Number(row.backup_alert_use_session_owner ?? 1))
       : true,
-    server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 5))),
+    server_log_retention_days: Math.max(3, Math.min(90, Number(row.server_log_retention_days ?? 14))),
+    whatsapp_log_retention_days: col.has("whatsapp_log_retention_days")
+      ? Math.max(1, Math.min(180, Number(row.whatsapp_log_retention_days ?? 30)))
+      : 30,
+    radacct_closed_retention_days: col.has("radacct_closed_retention_days")
+      ? Math.max(30, Math.min(730, Number(row.radacct_closed_retention_days ?? 180)))
+      : 180,
+    sessions_offline_retention_days: col.has("sessions_offline_retention_days")
+      ? Math.max(30, Math.min(365, Number(row.sessions_offline_retention_days ?? 90)))
+      : 90,
+    user_usage_daily_retention_days: col.has("user_usage_daily_retention_days")
+      ? Math.max(90, Math.min(730, Number(row.user_usage_daily_retention_days ?? 365)))
+      : 365,
     radpostauth_retention_enabled: col.has("radpostauth_retention_enabled")
       ? Boolean(Number(row.radpostauth_retention_enabled ?? 1))
       : true,
+    radpostauth_retention_days: col.has("radpostauth_retention_days")
+      ? Math.max(30, Math.min(365, Number(row.radpostauth_retention_days ?? 90)))
+      : 90,
     radpostauth_retention_months: col.has("radpostauth_retention_months")
       ? Math.max(1, Math.min(36, Number(row.radpostauth_retention_months ?? 2)))
       : 2,
@@ -222,7 +274,12 @@ export type SystemSettingsInput = {
   backup_alert_phone: string;
   backup_alert_use_session_owner: boolean;
   server_log_retention_days: number;
+  whatsapp_log_retention_days: number;
+  radacct_closed_retention_days: number;
+  sessions_offline_retention_days: number;
+  user_usage_daily_retention_days: number;
   radpostauth_retention_enabled: boolean;
+  radpostauth_retention_days: number;
   radpostauth_retention_months: number;
   user_idle_timeout_minutes: number;
   admin_session_timeout_minutes: number;
@@ -258,6 +315,9 @@ export async function updateSystemSettings(
     "backup_alert_use_session_owner = ?",
     "server_log_retention_days = ?",
   ];
+  if (col.has("whatsapp_log_retention_days")) {
+    baseSets.push("whatsapp_log_retention_days = ?");
+  }
   const baseVals: (string | number | Buffer | null)[] = [
     input.critical_alert_enabled ? 1 : 0,
     normalizePhone(input.critical_alert_phone) || null,
@@ -265,8 +325,33 @@ export async function updateSystemSettings(
     input.backup_alert_enabled ? 1 : 0,
     normalizePhone(input.backup_alert_phone) || null,
     input.backup_alert_use_session_owner ? 1 : 0,
-    Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 5))),
+    Math.max(3, Math.min(90, Math.floor(input.server_log_retention_days || 14))),
   ];
+  if (col.has("whatsapp_log_retention_days")) {
+    baseVals.push(Math.max(1, Math.min(180, Math.floor(input.whatsapp_log_retention_days || 30))));
+  }
+  if (col.has("radacct_closed_retention_days")) {
+    baseSets.push("radacct_closed_retention_days = ?");
+    baseVals.push(
+      Math.max(30, Math.min(730, Math.floor(input.radacct_closed_retention_days || 180)))
+    );
+  }
+  if (col.has("sessions_offline_retention_days")) {
+    baseSets.push("sessions_offline_retention_days = ?");
+    baseVals.push(
+      Math.max(30, Math.min(365, Math.floor(input.sessions_offline_retention_days || 90)))
+    );
+  }
+  if (col.has("user_usage_daily_retention_days")) {
+    baseSets.push("user_usage_daily_retention_days = ?");
+    baseVals.push(
+      Math.max(90, Math.min(730, Math.floor(input.user_usage_daily_retention_days || 365)))
+    );
+  }
+  if (col.has("radpostauth_retention_days")) {
+    baseSets.push("radpostauth_retention_days = ?");
+    baseVals.push(Math.max(30, Math.min(365, Math.floor(input.radpostauth_retention_days || 90))));
+  }
   if (col.has("radpostauth_retention_enabled")) {
     baseSets.push("radpostauth_retention_enabled = ?");
     baseVals.push(input.radpostauth_retention_enabled ? 1 : 0);

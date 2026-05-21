@@ -784,7 +784,28 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.serverLogs": "سجل السيرفر",
     "settings.logRetentionDays": "احتفاظ بسجلات الأخطاء (أيام)",
     "settings.logRetentionHint":
-      "يُحذف تلقائياً ما يزيد عمره عن هذا العدد (افتراضي 5 أيام بعد التثبيت، وتنظيف كل ساعة). يمكن تغييره بين 3 و90 يوماً.",
+      "يُحذف تلقائياً ما يزيد عمره عن هذا العدد (افتراضي 14 يوماً، تنظيف كل ساعة). يمكن تغييره بين 3 و90 يوماً.",
+    "settings.whatsappLogRetentionDays": "احتفاظ سجل رسائل واتساب (أيام)",
+    "settings.whatsappLogRetentionHint":
+      "يُحذف تلقائياً من سجل الرسائل ما يزيد عمره عن هذا العدد (افتراضي 30 يوماً، تنظيف كل ساعة). يمكن تغييره بين 1 و180 يوماً.",
+    "settings.dataRetentionPolicy": "سياسة الاحتفاظ بالبيانات",
+    "settings.dataRetentionIntro":
+      "تُنظَّف الجداول التشغيلية يومياً عند 03:30 (سجلات السيرفر وواتساب كل ساعة). لا يُحذف: الفواتير، المدفوعات، سجلات التدقيق، الجلسات النشطة في radacct، أو radcheck/radreply.",
+    "settings.radacctClosedRetentionDays": "جلسات RADIUS المغلقة — radacct (أيام)",
+    "settings.radacctClosedRetentionHint":
+      "يُحذف فقط ما له acctstoptime أقدم من الحد (افتراضي 180 = 6 أشهر). الجلسات المفتوحة لا تُمس.",
+    "settings.sessionsOfflineRetentionDays": "جلسات النظام OFFLINE — sessions (أيام)",
+    "settings.sessionsOfflineRetentionHint":
+      "يُحذف صفوف sessions بحالة OFFLINE الأقدم من الحد (افتراضي 90 يوماً).",
+    "settings.userUsageDailyRetentionDays": "التجميع اليومي — user_usage_daily (أيام)",
+    "settings.userUsageDailyRetentionHint":
+      "يُحذف التجميع اليومي الأقدم من الحد (افتراضي 365 = 12 شهراً).",
+    "settings.radpostauthRetentionEnabled": "تفعيل تنظيف محاولات الدخول (radpostauth)",
+    "settings.radpostauthRetentionDays": "محاولات الدخول radpostauth (أيام)",
+    "settings.radpostauthRetentionDaysHint":
+      "يُحذف ما يزيد عمره عن هذا العدد (افتراضي 90 يوماً). يعمل مع المهمة اليومية أو التشغيل اليدوي.",
+    "settings.retentionRunNow": "تشغيل التنظيف الآن",
+    "settings.retentionRunDone": "اكتمل التنظيف: {summary}",
     "settings.criticalAlerts": "تنبيهات واتساب للأخطاء الحرجة",
     "settings.enableCriticalAlerts": "تفعيل إرسال تنبيه واتساب عند أخطاء تستدعي التدخل",
     "settings.alertPhone": "رقم واتساب للتنبيهات",
@@ -2354,7 +2375,28 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.serverLogs": "Server logs",
     "settings.logRetentionDays": "Server log retention (days)",
     "settings.logRetentionHint":
-      "Entries older than this are deleted automatically (default 5 days after install; hourly cleanup). Adjustable from 3 to 90 days.",
+      "Entries older than this are deleted automatically (default 14 days; hourly cleanup). Adjustable from 3 to 90 days.",
+    "settings.whatsappLogRetentionDays": "WhatsApp message log retention (days)",
+    "settings.whatsappLogRetentionHint":
+      "Deletes whatsapp_message_logs older than this (default 30 days; hourly cleanup). Adjustable from 1 to 180 days.",
+    "settings.dataRetentionPolicy": "Data retention policy",
+    "settings.dataRetentionIntro":
+      "Operational tables are pruned daily at 03:30 (server and WhatsApp logs hourly). Never auto-deleted: invoices, payments, audit logs, open radacct sessions, or radcheck/radreply.",
+    "settings.radacctClosedRetentionDays": "Closed RADIUS sessions — radacct (days)",
+    "settings.radacctClosedRetentionHint":
+      "Only rows with acctstoptime older than the limit are removed (default 180 = 6 months). Active sessions are kept.",
+    "settings.sessionsOfflineRetentionDays": "OFFLINE app sessions — sessions (days)",
+    "settings.sessionsOfflineRetentionHint":
+      "Deletes sessions rows in OFFLINE state older than the limit (default 90 days).",
+    "settings.userUsageDailyRetentionDays": "Daily usage rollup — user_usage_daily (days)",
+    "settings.userUsageDailyRetentionHint":
+      "Deletes daily rollup rows older than the limit (default 365 = 12 months).",
+    "settings.radpostauthRetentionEnabled": "Enable radpostauth login-attempt cleanup",
+    "settings.radpostauthRetentionDays": "Login attempts radpostauth (days)",
+    "settings.radpostauthRetentionDaysHint":
+      "Deletes rows older than this (default 90 days). Runs on the daily job or manual run.",
+    "settings.retentionRunNow": "Run cleanup now",
+    "settings.retentionRunDone": "Cleanup finished: {summary}",
     "settings.criticalAlerts": "Critical error WhatsApp alerts",
     "settings.enableCriticalAlerts": "Send WhatsApp when critical errors need intervention",
     "settings.alertPhone": "WhatsApp number for alerts",

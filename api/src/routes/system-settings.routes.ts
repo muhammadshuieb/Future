@@ -10,6 +10,7 @@ import {
   sendOperationalAlertWhatsApp,
 } from "../services/whatsapp.service.js";
 import { pruneRadpostauth } from "../services/radpostauth-retention.service.js";
+import { runDataRetentionCycle } from "../services/data-retention.service.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -32,7 +33,12 @@ const bodySchema = z.object({
   backup_alert_phone: z.string().max(32).optional(),
   backup_alert_use_session_owner: z.boolean().optional(),
   server_log_retention_days: z.number().int().min(3).max(90),
+  whatsapp_log_retention_days: z.number().int().min(1).max(180).optional(),
+  radacct_closed_retention_days: z.number().int().min(30).max(730).optional(),
+  sessions_offline_retention_days: z.number().int().min(30).max(365).optional(),
+  user_usage_daily_retention_days: z.number().int().min(90).max(730).optional(),
   radpostauth_retention_enabled: z.boolean().optional(),
+  radpostauth_retention_days: z.number().int().min(30).max(365).optional(),
   radpostauth_retention_months: z.number().int().min(1).max(36).optional(),
   user_idle_timeout_minutes: z.number().int().min(2).max(10080).optional(),
   admin_session_timeout_minutes: z.union([
@@ -77,8 +83,16 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
     const next: SystemSettingsInput = {
       ...cur,
       ...parsed.data,
+      radacct_closed_retention_days:
+        parsed.data.radacct_closed_retention_days ?? cur.radacct_closed_retention_days,
+      sessions_offline_retention_days:
+        parsed.data.sessions_offline_retention_days ?? cur.sessions_offline_retention_days,
+      user_usage_daily_retention_days:
+        parsed.data.user_usage_daily_retention_days ?? cur.user_usage_daily_retention_days,
       radpostauth_retention_enabled:
         parsed.data.radpostauth_retention_enabled ?? cur.radpostauth_retention_enabled,
+      radpostauth_retention_days:
+        parsed.data.radpostauth_retention_days ?? cur.radpostauth_retention_days,
       radpostauth_retention_months:
         parsed.data.radpostauth_retention_months ?? cur.radpostauth_retention_months,
       user_idle_timeout_minutes: parsed.data.user_idle_timeout_minutes ?? cur.user_idle_timeout_minutes,
@@ -120,6 +134,20 @@ router.put("/", routePolicy({ allow: ["admin", "manager"] }), async (req, res) =
     res.status(500).json({ error: "system_settings_save_failed" });
   }
 });
+
+router.post(
+  "/run-retention",
+  routePolicy({ allow: ["admin", "manager"] }),
+  async (req, res) => {
+    try {
+      const steps = await runDataRetentionCycle(req.auth!.tenantId);
+      res.json({ ok: true, steps });
+    } catch (e) {
+      console.error("system settings run retention", e);
+      res.status(500).json({ error: "data_retention_failed" });
+    }
+  }
+);
 
 router.post(
   "/radpostauth-prune",

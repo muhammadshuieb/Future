@@ -390,6 +390,8 @@ async function start() {
   try {
     const { runServerLogRetentionOnBoot } = await import("./services/logger.service.js");
     await runServerLogRetentionOnBoot(config.defaultTenantId);
+    const { runWhatsappLogRetentionOnBoot } = await import("./services/whatsapp.service.js");
+    await runWhatsappLogRetentionOnBoot(config.defaultTenantId);
   } catch (error) {
     console.error("[bootstrap] server_logs retention failed", error);
   }

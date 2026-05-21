@@ -25,6 +25,7 @@ import {
   testWhatsAppConnection,
 } from "../services/whatsapp.service.js";
 import { pruneOldLogs } from "../services/logger.service.js";
+import { pruneWhatsappMessageLogs } from "../services/whatsapp.service.js";
 import { runUsageAndExpiryCycle } from "../worker/usage.worker.js";
 import {
   QueueJobNames,
@@ -35,6 +36,7 @@ import {
 import { getSystemSettings } from "../services/system-settings.service.js";
 import { hasTable } from "../db/schemaGuards.js";
 import { pruneRadpostauth } from "../services/radpostauth-retention.service.js";
+import { runDataRetentionCycle } from "../services/data-retention.service.js";
 import { runPackageDynamicSpeedApplyAllTenants } from "../services/dynamic-speed.service.js";
 import {
   runSpeedProfileApplyAllTenants,
@@ -268,6 +270,16 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
     case "prune-server-logs":
       await pruneOldLogs((await getSystemSettings(tenantId)).server_log_retention_days);
       break;
+    case "prune-whatsapp-logs": {
+      const settings = await getSystemSettings(tenantId);
+      const result = await pruneWhatsappMessageLogs(settings.whatsapp_log_retention_days, tenantId);
+      log.info(
+        `prune_whatsapp_logs retention_days=${settings.whatsapp_log_retention_days} deleted=${result.deleted}`,
+        result,
+        "whatsapp"
+      );
+      break;
+    }
     case "ops-critical-alerts":
       await sendCriticalOpsAlerts(pool, tenantId);
       break;
@@ -286,6 +298,9 @@ export async function dispatchWorkerJob(ctx: WorkerDispatchContext, job: Job): P
           "radpostauth-retention"
         );
       }
+      break;
+    case "prune-data-retention":
+      await runDataRetentionCycle(tenantId);
       break;
     case "infrastructure-monitor-cycle":
       await runInfrastructureMonitorCycle(pool, tenantId);

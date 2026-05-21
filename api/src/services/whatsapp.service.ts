@@ -1172,6 +1172,47 @@ export async function listWhatsAppLogs(tenantId: string, limit = 100): Promise<W
   }));
 }
 
+/** Clamp configured retention (default 7 days). */
+export function clampWhatsappLogRetentionDays(days: number): number {
+  return Math.max(1, Math.min(180, Math.floor(days || 7)));
+}
+
+/**
+ * Delete `whatsapp_message_logs` older than `retentionDays` for one tenant.
+ * When `tenantId` is omitted, prunes all tenants (cron).
+ */
+export async function pruneWhatsappMessageLogs(
+  retentionDays: number,
+  tenantId?: string
+): Promise<{ deleted: number }> {
+  await ensureSchema();
+  const days = clampWhatsappLogRetentionDays(retentionDays);
+  const params: unknown[] = [days];
+  let where = "created_at < DATE_SUB(NOW(), INTERVAL ? DAY)";
+  if (tenantId) {
+    where += " AND tenant_id = ?";
+    params.push(tenantId);
+  }
+  const [res] = await pool.execute(`DELETE FROM whatsapp_message_logs WHERE ${where}`, params);
+  return { deleted: Number((res as { affectedRows?: number }).affectedRows ?? 0) };
+}
+
+export async function runWhatsappLogRetentionOnBoot(tenantId: string): Promise<void> {
+  try {
+    const { getSystemSettings } = await import("./system-settings.service.js");
+    const { log } = await import("./logger.service.js");
+    const { whatsapp_log_retention_days } = await getSystemSettings(tenantId);
+    const { deleted } = await pruneWhatsappMessageLogs(whatsapp_log_retention_days, tenantId);
+    log.info(
+      `whatsapp_logs_retention_boot retention_days=${whatsapp_log_retention_days} deleted=${deleted}`,
+      { retention_days: whatsapp_log_retention_days, deleted },
+      "bootstrap"
+    );
+  } catch (e) {
+    console.warn("[bootstrap] whatsapp_message_logs retention prune skipped", e);
+  }
+}
+
 export async function deleteWhatsAppLogs(
   tenantId: string,
   input: { all?: boolean; failedOnly?: boolean; ids?: string[] }
